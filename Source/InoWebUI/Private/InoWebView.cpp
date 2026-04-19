@@ -58,18 +58,6 @@ namespace
         return Out;
     }
 
-    /** Serialize a single JsonValue back to a condensed JSON string (for passing to BP). */
-    FString JsonValueToString(const TSharedPtr<FJsonValue>& Value)
-    {
-        if (!Value.IsValid() || Value->Type == EJson::Null)
-        {
-            return TEXT("null");
-        }
-        FString Out;
-        auto Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
-        FJsonSerializer::Serialize(Value, FString(), Writer);
-        return Out;
-    }
 }
 
 UInoWebView::UInoWebView() = default;
@@ -160,7 +148,7 @@ void UInoWebView::Hide()
 // ─────────────────────────────────────────────────────────────────────────────
 //  Messaging (Phase 2)
 // ─────────────────────────────────────────────────────────────────────────────
-void UInoWebView::PostMessage(FName Channel, const FString& PayloadJson)
+void UInoWebView::PostMessage(FName Channel, const FJsonObjectWrapper& Payload)
 {
     check(IsInGameThread());
 
@@ -172,7 +160,16 @@ void UInoWebView::PostMessage(FName Channel, const FString& PayloadJson)
         return;
     }
 
-    const FString Envelope = BuildEnvelope(Channel, PayloadJson);
+    // Serialize the wrapper to its compact JSON form. An empty or invalid
+    // wrapper becomes the literal "null" so the JS bridge still sees a
+    // well-formed envelope.
+    FString PayloadStr;
+    if (!Payload.JsonObject.IsValid() || !Payload.JsonObjectToString(PayloadStr))
+    {
+        PayloadStr = TEXT("null");
+    }
+
+    const FString Envelope = BuildEnvelope(Channel, PayloadStr);
     Impl->PostMessageJson(Envelope);
 }
 
@@ -182,9 +179,9 @@ void UInoWebView::DispatchIncomingEnvelope(const FString& EnvelopeJson)
 
     // Parse the envelope. Anything non-conforming is dropped with a warning
     // rather than letting garbled input reach Blueprint handlers.
-    TSharedPtr<FJsonObject> Obj;
+    TSharedPtr<FJsonObject> EnvObj;
     const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(EnvelopeJson);
-    if (!FJsonSerializer::Deserialize(Reader, Obj) || !Obj.IsValid())
+    if (!FJsonSerializer::Deserialize(Reader, EnvObj) || !EnvObj.IsValid())
     {
         UE_LOG(LogInoWebUI, Warning,
             TEXT("UInoWebView[%s]: dropped malformed JS message (not valid JSON object)."),
@@ -193,7 +190,7 @@ void UInoWebView::DispatchIncomingEnvelope(const FString& EnvelopeJson)
     }
 
     FString ChannelStr;
-    if (!Obj->TryGetStringField(TEXT("channel"), ChannelStr) || ChannelStr.IsEmpty())
+    if (!EnvObj->TryGetStringField(TEXT("channel"), ChannelStr) || ChannelStr.IsEmpty())
     {
         UE_LOG(LogInoWebUI, Warning,
             TEXT("UInoWebView[%s]: dropped JS message with missing/empty 'channel'."),
@@ -201,17 +198,34 @@ void UInoWebView::DispatchIncomingEnvelope(const FString& EnvelopeJson)
         return;
     }
 
-    // Payload is allowed to be any JSON value (object, array, scalar, null).
-    // Re-serialize it to a string so BP handlers receive a self-contained blob
-    // that's easy to pass through FJsonObjectConverter / Parse JSON nodes.
-    const TSharedPtr<FJsonValue> PayloadVal = Obj->TryGetField(TEXT("payload"));
-    const FString PayloadStr = JsonValueToString(PayloadVal);
+    // Repackage the payload into an FJsonObjectWrapper for Blueprint.
+    // • object    → passed through verbatim
+    // • non-obj   → wrapped in { "value": <payload> } so BP always sees an object
+    // • null/none → empty wrapper (default-constructed JsonObject)
+    FJsonObjectWrapper Wrapper;
+    const TSharedPtr<FJsonValue> PayloadVal = EnvObj->TryGetField(TEXT("payload"));
+
+    if (PayloadVal.IsValid() && PayloadVal->Type == EJson::Object)
+    {
+        Wrapper.JsonObject = PayloadVal->AsObject();
+    }
+    else if (PayloadVal.IsValid() && PayloadVal->Type != EJson::Null)
+    {
+        const TSharedRef<FJsonObject> Wrap = MakeShared<FJsonObject>();
+        Wrap->SetField(TEXT("value"), PayloadVal);
+        Wrapper.JsonObject = Wrap;
+    }
+    // else: Wrapper keeps its default-constructed (empty) JsonObject
+
+    // Populate JsonString so the wrapper is BP-Details-panel friendly and
+    // round-trip serialization (PostSerialize / ExportTextItem) works.
+    Wrapper.JsonObjectToString(Wrapper.JsonString);
 
     UE_LOG(LogInoWebUI, Verbose,
         TEXT("UInoWebView[%s] <- JS  {channel='%s', payload=%s}"),
-        *WebViewName.ToString(), *ChannelStr, *PayloadStr);
+        *WebViewName.ToString(), *ChannelStr, *Wrapper.JsonString);
 
-    OnMessageReceived.Broadcast(FName(*ChannelStr), PayloadStr);
+    OnMessageReceived.Broadcast(FName(*ChannelStr), Wrapper);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
