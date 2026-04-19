@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(dir \"E:\\\\Projects\\\\Project\\\\InoAgentDemo\\\\Plugins\\\\InoWebUI\" /s /b)"
+      "Bash(dir \"E:\\\\Projects\\\\Project\\\\InoAgentDemo\\\\Plugins\\\\InoWebUI\" /s /b)",
+      "Bash(powershell -ExecutionPolicy Bypass -File Scripts\\\\AcquireWebView2SDK.ps1)",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"E:\\\\Projects\\\\Project\\\\InoAgentDemo\\\\Plugins\\\\InoWebUI\\\\Scripts\\\\AcquireWebView2SDK.ps1\")"
     ]
   }
 }
