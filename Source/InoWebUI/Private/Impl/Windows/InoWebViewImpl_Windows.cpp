@@ -204,6 +204,9 @@ struct FInoWebViewImpl_Windows::FInternal
     EventRegistrationToken DocumentTitleChangedToken{};
     EventRegistrationToken ScriptDialogOpeningToken{};
     EventRegistrationToken NewWindowRequestedToken{};
+    EventRegistrationToken GotFocusToken{};
+    EventRegistrationToken LostFocusToken{};
+    EventRegistrationToken ProcessFailedToken{};
 
     /**
      * Lifetime token. Async callbacks capture a TWeakPtr to this; if the
@@ -535,6 +538,48 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
                     return S_OK;
                 }).Get(),
             &Internal->ScriptDialogOpeningToken);
+
+        // ── Focus events (Controller, not WebView) ──────────────────────────
+        Internal->Controller->add_GotFocus(
+            Callback<ICoreWebView2FocusChangedEventHandler>(
+                [this, WeakLifetime](ICoreWebView2Controller*, IUnknown*) -> HRESULT
+                {
+                    if (WeakLifetime.IsValid() && OnGotFocusCallback) OnGotFocusCallback();
+                    return S_OK;
+                }).Get(),
+            &Internal->GotFocusToken);
+
+        Internal->Controller->add_LostFocus(
+            Callback<ICoreWebView2FocusChangedEventHandler>(
+                [this, WeakLifetime](ICoreWebView2Controller*, IUnknown*) -> HRESULT
+                {
+                    if (WeakLifetime.IsValid() && OnLostFocusCallback) OnLostFocusCallback();
+                    return S_OK;
+                }).Get(),
+            &Internal->LostFocusToken);
+
+        // ── Chromium subprocess failures ────────────────────────────────────
+        Internal->WebView->add_ProcessFailed(
+            Callback<ICoreWebView2ProcessFailedEventHandler>(
+                [this, WeakLifetime](ICoreWebView2*, ICoreWebView2ProcessFailedEventArgs* Args) -> HRESULT
+                {
+                    if (!WeakLifetime.IsValid() || !Args) return S_OK;
+
+                    COREWEBVIEW2_PROCESS_FAILED_KIND KindRaw =
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED;
+                    Args->get_ProcessFailedKind(&KindRaw);
+
+                    // Build a readable description. ICoreWebView2ProcessFailedEventArgs2
+                    // (newer) has ProcessDescription; fall back to the kind name otherwise.
+                    FString Description = FString::Printf(TEXT("Kind=%d"), static_cast<int32>(KindRaw));
+
+                    UE_LOG(LogInoWebUI, Error,
+                        TEXT("WebView2 subprocess failed: %s"), *Description);
+
+                    if (OnProcessFailedCallback) OnProcessFailedCallback(Description);
+                    return S_OK;
+                }).Get(),
+            &Internal->ProcessFailedToken);
 
         // ── window.open / target="_blank" ───────────────────────────────────
         // Default: block popups. put_Handled(TRUE) tells WebView2 we've taken
@@ -922,6 +967,14 @@ void FInoWebViewImpl_Windows::SetMuted(bool bMuted)
         return;
     }
     WebView8->put_IsMuted(bMuted ? 1 : 0);
+}
+
+void FInoWebViewImpl_Windows::FocusWebView()
+{
+    check(IsInGameThread());
+    if (!bReady || !Internal->Controller) return;
+
+    Internal->Controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
 }
 
 void FInoWebViewImpl_Windows::PostMessageJson(const FString& Json)

@@ -119,6 +119,9 @@ public:
     TFunction<void(const FString& Title)>                OnDocumentTitleChangedCallback;
     TFunction<void(EInoScriptDialogKind, const FString& Message)>  OnScriptDialogCallback;
     TFunction<void(const FString& URI)>                  OnNewWindowRequestedCallback;
+    TFunction<void()>                                    OnGotFocusCallback;
+    TFunction<void()>                                    OnLostFocusCallback;
+    TFunction<void(const FString& Description)>          OnProcessFailedCallback;
 
     // ── Phase 3 — runtime polish ────────────────────────────────────────────
 
@@ -143,6 +146,9 @@ public:
      * bStartMuted handles the one-shot "mute at startup" case.
      */
     virtual void SetMuted(bool bMuted) = 0;
+
+    /** Move keyboard focus to the WebView (COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC). */
+    virtual void FocusWebView() = 0;
 };
 
 /**

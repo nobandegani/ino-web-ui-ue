@@ -35,6 +35,7 @@ public:
     virtual void OpenDevTools() override;
     virtual void ExecuteJavaScript(const FString& Code) override;
     virtual void SetMuted(bool bMuted) override;
+    virtual void FocusWebView() override;
 
 private:
     /** Opaque state — defined in the .cpp so WebView2.h stays out of headers. */

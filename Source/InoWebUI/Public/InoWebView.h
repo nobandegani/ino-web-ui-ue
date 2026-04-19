@@ -51,6 +51,15 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInoWebScriptDialog,
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInoWebNewWindowRequested,
     const FString&, URI);
 
+/** Fired when focus enters or leaves the WebView. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebFocusChanged);
+
+/** Fired when a Chromium subprocess fails (renderer crashed, OOM, etc.).
+ *  After this the WebView may be in an unusable state — a common response
+ *  is to Reload() or destroy and recreate. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInoWebProcessFailed,
+    const FString&, Description);
+
 /**
  * UInoWebView — Blueprint-visible handle to a single native WebView overlay.
  *
@@ -153,6 +162,18 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
     FOnInoWebNewWindowRequested OnNewWindowRequested;
 
+    /** Fires when the WebView receives keyboard focus. */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebFocusChanged OnGotFocus;
+
+    /** Fires when the WebView loses keyboard focus. */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebFocusChanged OnLostFocus;
+
+    /** Fires when a Chromium subprocess fails (renderer crash, OOM, …). */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebProcessFailed OnProcessFailed;
+
     // ── Runtime polish (Phase 3) ────────────────────────────────────────────
 
     /**
@@ -175,6 +196,14 @@ public:
     /** Mute / unmute audio output from the page. */
     UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
     void SetMuted(bool bMuted);
+
+    /**
+     * Give keyboard focus to the WebView so HTML <input> / <textarea>
+     * elements receive typing. Without this, the game might still have
+     * focus while the cursor is in a text field.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void FocusWebView();
 
     // ── State queries ───────────────────────────────────────────────────────
 

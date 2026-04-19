@@ -115,6 +115,13 @@ void UInoWebView::Init(FName InName, TUniquePtr<IInoWebViewImpl>&& InImpl,
         OnNewWindowRequested.Broadcast(URI);
     };
 
+    Impl->OnGotFocusCallback     = [this] { OnGotFocus.Broadcast();     };
+    Impl->OnLostFocusCallback    = [this] { OnLostFocus.Broadcast();    };
+    Impl->OnProcessFailedCallback = [this](const FString& Description)
+    {
+        OnProcessFailed.Broadcast(Description);
+    };
+
     const bool bOk = Impl->Initialize(ParentNativeHandle, Config);
     if (!bOk)
     {
@@ -270,6 +277,11 @@ void UInoWebView::ExecuteJavaScript(const FString& Code)
 void UInoWebView::SetMuted(bool bMuted)
 {
     if (Impl.IsValid()) Impl->SetMuted(bMuted);
+}
+
+void UInoWebView::FocusWebView()
+{
+    if (Impl.IsValid()) Impl->FocusWebView();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
