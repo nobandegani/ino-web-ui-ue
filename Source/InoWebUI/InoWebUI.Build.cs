@@ -21,6 +21,7 @@ public class InoWebUI : ModuleRules
             "Slate",
             "SlateCore",
             "ApplicationCore",      // FGenericWindow -> OS window handle (HWND)
+            "Json",                 // UE <-> JS message envelope (de)serialization
         });
 
         if (Target.Platform == UnrealTargetPlatform.Win64)

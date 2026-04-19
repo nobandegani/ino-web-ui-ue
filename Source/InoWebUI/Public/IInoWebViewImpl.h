@@ -77,6 +77,30 @@ public:
      * no-ops.
      */
     virtual void Shutdown() = 0;
+
+    // ── Messaging (Phase 2) ─────────────────────────────────────────────────
+
+    /**
+     * Send a raw JSON string to the loaded page. Delivered to JS as the
+     * `event.data` payload of a 'message' event on window.chrome.webview
+     * (or equivalent per-platform). The string is passed verbatim — the
+     * caller (UInoWebView) is responsible for envelope construction.
+     *
+     * Safe to call before IsReady(); implementations queue pre-ready
+     * messages and replay them once ready.
+     */
+    virtual void PostMessageJson(const FString& Json) = 0;
+
+    /**
+     * Owner-settable callback fired when JS posts a message to the native
+     * side. The string is the raw message content as sent by JS (our
+     * envelope JSON, by convention). Always invoked on the game thread.
+     *
+     * The owner (UInoWebView) sets this once before Initialize(); it is
+     * never overwritten at runtime. Not a virtual method because there's
+     * no per-platform behavior — it's just a callback slot.
+     */
+    TFunction<void(const FString&)> OnMessageReceivedJson;
 };
 
 /**
