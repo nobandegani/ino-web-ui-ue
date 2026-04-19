@@ -16,7 +16,7 @@ pixels in the HTML reveal the 3D scene underneath.
 This is fundamentally different from UE's built-in `WebBrowser` plugin, which
 textures the browser output — we skip all of that, zero copy, zero stall.
 
-**Current status: Phase 3 (Win64 only — overlay + two-way messaging + runtime polish).**
+**Current status: Phase 4 (Win64 only — overlay + messaging + runtime polish + local content serving).**
 
 ---
 
@@ -168,6 +168,24 @@ WebUI->DestroyWebView(TEXT("MainUI"));
 ```
 
 ### Loading local content
+
+**Recommended (Phase 4): virtual-host mapping.** Serve a folder via a fake
+https origin. Fixes every `file://` pitfall (React Router, relative imports,
+fetch CORS, service workers, ES modules).
+
+```cpp
+FInoWebViewConfig Config;
+Config.VirtualHostName   = TEXT("inoweb.local");
+Config.VirtualHostFolder = TEXT("WebUI/dist");       // <project>/Content/WebUI/dist
+Config.InitialURL        = TEXT("https://inoweb.local/index.html");
+Subsystem->CreateWebView(TEXT("MainUI"), Config);
+```
+
+Or, if your Vite/Webpack config sets `base: './'` (relative assets), even
+simpler — just point the InitialURL at `index.html` and every subresource
+resolves from the mapped folder automatically.
+
+**Legacy: direct file path.** Works for single-file HTML with no imports:
 
 ```cpp
 View->LoadLocalFile(TEXT("WebUI/dist/index.html"));
@@ -334,7 +352,7 @@ All defaults are "locked down for game UI." A dev build typically wants
 | 1 | Overlay: create, load URL, show/hide, resize tracking | ✔ done |
 | 2 | Two-way messaging (`PostMessage`, `OnMessageReceived`, `window.InoWebUI`) | ✔ done |
 | 3 | DevTools / ExecuteJS / mute / context-menu & accelerator toggles / UA override | ✔ done |
-| 4 | Pluggable local-content server (so shipped builds don't need `file://`) | — |
+| 4 | Virtual-host mapping (serve local content as `https://`) | ✔ done |
 | 5 | DirectComposition-based hosting (fixes PIE transparency) | — |
 | 6 | macOS implementation (`WKWebView`) | — |
 | 7 | Android implementation (`android.webkit.WebView`) | — |
