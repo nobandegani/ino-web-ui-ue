@@ -5,7 +5,9 @@
       "Bash(powershell -ExecutionPolicy Bypass -File Scripts\\\\AcquireWebView2SDK.ps1)",
       "Bash(powershell -ExecutionPolicy Bypass -File \"E:\\\\Projects\\\\Project\\\\InoAgentDemo\\\\Plugins\\\\InoWebUI\\\\Scripts\\\\AcquireWebView2SDK.ps1\")",
       "Bash(powershell -ExecutionPolicy Bypass -File \"E:\\\\Projects\\\\Project\\\\InoAgentDemo\\\\Plugins\\\\InoWebUI\\\\Scripts\\\\_InspectNupkg.ps1\")",
-      "Bash(del \"E:\\\\Projects\\\\Project\\\\InoAgentDemo\\\\Plugins\\\\InoWebUI\\\\Scripts\\\\_InspectNupkg.ps1\")"
+      "Bash(del \"E:\\\\Projects\\\\Project\\\\InoAgentDemo\\\\Plugins\\\\InoWebUI\\\\Scripts\\\\_InspectNupkg.ps1\")",
+      "Bash(find \"C:/Inoland/Epic Games/UE_5.7/Engine/Source/Runtime/Core\" -name \"*.h\" -exec grep -l \"CeilToInt\" {} \\\\;)",
+      "Bash(find \"C:/Inoland/Epic Games/UE_5.7/Engine/Source\" -name \"*.h\" -exec grep -l \"FDeprecateVector2DResult\" {} \\\\;)"
     ]
   }
 }
