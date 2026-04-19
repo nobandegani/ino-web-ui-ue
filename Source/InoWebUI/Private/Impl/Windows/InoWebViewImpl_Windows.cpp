@@ -363,14 +363,21 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
         }
     }
 
-    // Start filling the parent's client area; the subsystem will push updates on resize.
-    RECT ClientRect;
-    ::GetClientRect(Internal->ParentHwnd, &ClientRect);
-    Internal->Controller->put_Bounds(ClientRect);
+    // Initial bounds: the subsystem's BroadcastClientRectToAll runs right
+    // after CreateWebView, so pending bounds are almost always queued by the
+    // time we get here. If nothing was queued (edge case, e.g., viewport not
+    // yet in a world), fall back to the raw HWND client rect — correct for
+    // OS-chromed standalone windows, approximate for Slate-chromed PIE
+    // windows until the next ViewportResizedEvent refines it.
+    if (!Internal->PendingBounds.IsSet())
+    {
+        RECT ClientRect;
+        ::GetClientRect(Internal->ParentHwnd, &ClientRect);
+        Internal->Controller->put_Bounds(ClientRect);
+    }
 
     bReady = true;
-    UE_LOG(LogInoWebUI, Log, TEXT("WebView2 controller ready (%dx%d)."),
-        ClientRect.right - ClientRect.left, ClientRect.bottom - ClientRect.top);
+    UE_LOG(LogInoWebUI, Log, TEXT("WebView2 controller ready."));
 
     ApplyPendingOperations();
 }
@@ -493,21 +500,30 @@ void FInoWebViewImpl_Windows::PostMessageJson(const FString& Json)
     }
 }
 
-void FInoWebViewImpl_Windows::SyncBounds(int32 X, int32 Y, int32 Width, int32 Height)
+void FInoWebViewImpl_Windows::SyncBounds(int32 ScreenX, int32 ScreenY, int32 Width, int32 Height)
 {
     check(IsInGameThread());
 
     if (!bReady)
     {
-        Internal->PendingBounds = FInternal::FRect{ X, Y, Width, Height };
+        Internal->PendingBounds = FInternal::FRect{ ScreenX, ScreenY, Width, Height };
         return;
     }
 
+    // Convert from screen coords to the parent HWND's client-area coords.
+    // This is what makes PIE work correctly: for Slate-chromed windows the
+    // HWND's "client area" includes Slate's drawn title bar, so plain (0,0)
+    // would cover the title. Going through screen-space avoids that — the
+    // subsystem tells us the real content rect in screen coords, and the
+    // ScreenToClient call lands us correctly inside the HWND.
+    POINT TopLeft = { ScreenX, ScreenY };
+    ::ScreenToClient(Internal->ParentHwnd, &TopLeft);
+
     RECT Bounds;
-    Bounds.left   = X;
-    Bounds.top    = Y;
-    Bounds.right  = X + Width;
-    Bounds.bottom = Y + Height;
+    Bounds.left   = TopLeft.x;
+    Bounds.top    = TopLeft.y;
+    Bounds.right  = TopLeft.x + Width;
+    Bounds.bottom = TopLeft.y + Height;
     Internal->Controller->put_Bounds(Bounds);
 }
 

@@ -237,23 +237,26 @@ void UInoWebUISubsystem::BroadcastClientRectToAll()
     TSharedPtr<SWindow> Window = GetParentWindow();
     if (!Window.IsValid()) return;
 
-    // SWindow::GetClientSizeInScreen returns UE::Slate::FDeprecateVector2DResult
-    // (FVector2f-based in UE 5.7). Physical pixels on Windows — matches what
-    // WebView2::put_Bounds expects, so no DPI conversion is needed.
-    // Using 'auto' avoids FVector2f↔FVector2D deprecation warnings.
-    const auto ClientSize = Window->GetClientSizeInScreen();
+    // GetClientRectInScreen respects whatever chrome Slate draws on top of
+    // the HWND — crucial for PIE "New Editor Window" mode, where the HWND's
+    // own client area includes the Slate-drawn title bar and we must NOT
+    // overlap it. For a standalone OS-chromed game window this just returns
+    // the OS client area as expected.
+    const FSlateRect ClientRect = Window->GetClientRectInScreen();
 
     // CeilToInt32 (explicit int32) — plain CeilToInt overloads to int64 for
     // double input, which would narrow when assigned to int32.
-    const int32 Width  = FMath::Max(0, FMath::CeilToInt32(ClientSize.X));
-    const int32 Height = FMath::Max(0, FMath::CeilToInt32(ClientSize.Y));
+    const int32 ScreenX = FMath::FloorToInt32(ClientRect.Left);
+    const int32 ScreenY = FMath::FloorToInt32(ClientRect.Top);
+    const int32 Width   = FMath::Max(0, FMath::CeilToInt32(ClientRect.Right  - ClientRect.Left));
+    const int32 Height  = FMath::Max(0, FMath::CeilToInt32(ClientRect.Bottom - ClientRect.Top));
 
-    // Origin is always (0,0) because put_Bounds is in parent-client coords.
+    // Screen-space coords — the impl converts to parent-HWND coords.
     for (const auto& Pair : WebViews)
     {
         if (UInoWebView* View = Pair.Value)
         {
-            View->OnParentResized(0, 0, Width, Height);
+            View->OnParentResized(ScreenX, ScreenY, Width, Height);
         }
     }
 }

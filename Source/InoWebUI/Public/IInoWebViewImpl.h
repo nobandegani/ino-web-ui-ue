@@ -62,11 +62,19 @@ public:
     virtual void SetVisible(bool bVisible) = 0;
 
     /**
-     * Update the WebView's bounds to match a rectangle in client-space of the
-     * parent window (origin = parent's client top-left, not screen coords).
-     * Called by the subsystem whenever the UE viewport resizes.
+     * Update the WebView's bounds. Inputs are **screen-space pixel coords**
+     * (origin = top-left of the monitor). The implementation is responsible
+     * for converting them to whatever parent-local coord system the native
+     * WebView expects.
+     *
+     * Reason for using screen coords instead of parent-client coords:
+     * Slate-chromed UE windows (e.g., PIE "New Editor Window") have no OS
+     * chrome, so the HWND's "client area" covers the entire window including
+     * the Slate-drawn title bar. Passing screen coords lets us express the
+     * actual usable content area (excluding Slate chrome) portably, and the
+     * impl does a single ScreenToClient pass to project into its HWND.
      */
-    virtual void SyncBounds(int32 X, int32 Y, int32 Width, int32 Height) = 0;
+    virtual void SyncBounds(int32 ScreenX, int32 ScreenY, int32 Width, int32 Height) = 0;
 
     /**
      * Release all native resources. MUST be called before the parent window
