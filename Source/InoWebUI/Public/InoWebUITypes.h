@@ -91,4 +91,36 @@ struct INOWEBUI_API FInoWebViewConfig
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
     FString UserAgentOverride;
+
+    // ── Phase 4 — local content serving ─────────────────────────────────────
+
+    /**
+     * Virtual host name that will be mapped to VirtualHostFolder. When both
+     * are set, requests to  https://<VirtualHostName>/<path>  are served
+     * from disk by WebView2's built-in loopback (SetVirtualHostNameToFolderMapping).
+     * This is the RECOMMENDED way to serve production web UI — it fixes all
+     * the file:// pitfalls (relative imports, React Router, fetch CORS,
+     * service workers, ES modules).
+     *
+     * Convention: a short dotted name that won't collide with real DNS,
+     * like "inoweb.local" or "ui.local". The ".local" suffix is RFC 6762
+     * link-local — browsers treat it as always-local for security purposes.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    FString VirtualHostName;
+
+    /**
+     * Folder on disk that VirtualHostName maps to. Treated as relative to
+     * the project's Content/ directory unless absolute (contains ':' or
+     * starts with '/').
+     *
+     * Example:
+     *   VirtualHostName   = "inoweb.local"
+     *   VirtualHostFolder = "WebUI/dist"
+     *   InitialURL        = "https://inoweb.local/index.html"
+     *   → serves  <project>/Content/WebUI/dist/index.html  and every
+     *     relative import/asset reference inside it.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    FString VirtualHostFolder;
 };

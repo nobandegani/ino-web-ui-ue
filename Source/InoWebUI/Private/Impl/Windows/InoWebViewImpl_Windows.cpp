@@ -409,6 +409,57 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
         }
     }
 
+    // ── Phase 4: virtual-host → folder mapping ──────────────────────────────
+    if (!Internal->Config.VirtualHostName.IsEmpty() &&
+        !Internal->Config.VirtualHostFolder.IsEmpty())
+    {
+        ComPtr<ICoreWebView2_3> WebView3;
+        if (FAILED(Internal->WebView.As(&WebView3)))
+        {
+            UE_LOG(LogInoWebUI, Warning,
+                TEXT("ICoreWebView2_3 unavailable (Runtime < 101); "
+                     "virtual-host mapping skipped — fall back to file:// URIs."));
+        }
+        else
+        {
+            // Resolve folder: absolute stays absolute; relative is anchored at
+            // the project's Content/ directory (matches LoadLocalFile's rule).
+            const FString& FolderIn = Internal->Config.VirtualHostFolder;
+            const FString AbsoluteFolder = FPaths::IsRelative(FolderIn)
+                ? FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir() / FolderIn)
+                : FPaths::ConvertRelativePathToFull(FolderIn);
+
+            // Warn early if the folder doesn't exist. Mapping still succeeds
+            // but every request will 404, which is confusing to debug.
+            if (!IFileManager::Get().DirectoryExists(*AbsoluteFolder))
+            {
+                UE_LOG(LogInoWebUI, Warning,
+                    TEXT("VirtualHostFolder does not exist: %s — requests to "
+                         "https://%s/ will all return 404."),
+                    *AbsoluteFolder, *Internal->Config.VirtualHostName);
+            }
+
+            const HRESULT Hr = WebView3->SetVirtualHostNameToFolderMapping(
+                *Internal->Config.VirtualHostName,
+                *AbsoluteFolder,
+                COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
+
+            if (FAILED(Hr))
+            {
+                UE_LOG(LogInoWebUI, Warning,
+                    TEXT("SetVirtualHostNameToFolderMapping failed: 0x%08X  (%s -> %s)"),
+                    static_cast<uint32>(Hr),
+                    *Internal->Config.VirtualHostName, *AbsoluteFolder);
+            }
+            else
+            {
+                UE_LOG(LogInoWebUI, Log,
+                    TEXT("Virtual host mapped:  https://%s/  ->  %s"),
+                    *Internal->Config.VirtualHostName, *AbsoluteFolder);
+            }
+        }
+    }
+
     // Initial bounds: the subsystem's BroadcastClientRectToAll runs right
     // after CreateWebView, so pending bounds are almost always queued by the
     // time we get here. If nothing was queued (edge case, e.g., viewport not
