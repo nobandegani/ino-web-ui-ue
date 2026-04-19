@@ -1,53 +1,66 @@
-// Some copyright should be here...
+// Copyright Inoksan. All Rights Reserved.
 
 using UnrealBuildTool;
+using System.IO;
 
 public class InoWebUI : ModuleRules
 {
-	public InoWebUI(ReadOnlyTargetRules Target) : base(Target)
-	{
-		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-		
-		PublicIncludePaths.AddRange(
-			new string[] {
-				// ... add public include paths required here ...
-			}
-			);
-				
-		
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				// ... add other private include paths required here ...
-			}
-			);
-			
-		
-		PublicDependencyModuleNames.AddRange(
-			new string[]
-			{
-				"Core",
-				// ... add other public dependencies that you statically link with here ...
-			}
-			);
-			
-		
-		PrivateDependencyModuleNames.AddRange(
-			new string[]
-			{
-				"CoreUObject",
-				"Engine",
-				"Slate",
-				"SlateCore",
-				// ... add private dependencies that you statically link with here ...	
-			}
-			);
-		
-		
-		DynamicallyLoadedModuleNames.AddRange(
-			new string[]
-			{
-				// ... add any modules that your module loads dynamically here ...
-			}
-			);
-	}
+    public InoWebUI(ReadOnlyTargetRules Target) : base(Target)
+    {
+        PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+
+        PublicDependencyModuleNames.AddRange(new string[]
+        {
+            "Core",
+        });
+
+        PrivateDependencyModuleNames.AddRange(new string[]
+        {
+            "CoreUObject",
+            "Engine",
+            "Slate",
+            "SlateCore",
+            "ApplicationCore",      // FGenericWindow -> OS window handle (HWND)
+        });
+
+        if (Target.Platform == UnrealTargetPlatform.Win64)
+        {
+            SetupWebView2(Target);
+        }
+    }
+
+    // ── WebView2 (Windows only) ───────────────────────────────────────────────
+    void SetupWebView2(ReadOnlyTargetRules Target)
+    {
+        string SDKRoot   = Path.Combine(PluginDirectory, "Source", "ThirdParty", "WebView2");
+        string IncPath   = Path.Combine(SDKRoot, "include");
+        string StaticLib = Path.Combine(SDKRoot, "lib", "Win64", "WebView2LoaderStatic.lib");
+
+        if (!File.Exists(StaticLib))
+        {
+            throw new BuildException(
+                "\n" +
+                "WebView2 SDK not found. Run this script first:\n" +
+                "  Plugins/InoWebUI/Scripts/AcquireWebView2SDK.ps1\n\n" +
+                "Expected file: " + StaticLib + "\n");
+        }
+
+        // Third-party headers — suppress warnings
+        PublicSystemIncludePaths.Add(IncPath);
+
+        // Static loader shim: links into our binary; no extra DLL to deploy.
+        // The shim locates the system Edge/WebView2 runtime at runtime.
+        PublicAdditionalLibraries.Add(StaticLib);
+
+        // System libraries required by WebView2LoaderStatic.lib
+        PublicSystemLibraries.AddRange(new string[]
+        {
+            "shlwapi.lib",      // Shell lightweight API (path, registry helpers)
+            "version.lib",      // Version info (used by the loader to find Edge)
+            "ole32.lib",        // COM (CoCreateInstance, CoInitialize...)
+        });
+
+        // Tell UBT we use Windows platform APIs directly
+        PublicDefinitions.Add("COBJMACROS");        // C-style COM macros (optional)
+    }
 }
