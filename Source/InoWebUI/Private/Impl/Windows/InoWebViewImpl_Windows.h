@@ -31,6 +31,7 @@ public:
     virtual void SetVisible(bool bVisible) override;
     virtual void SyncBounds(int32 X, int32 Y, int32 Width, int32 Height) override;
     virtual void Shutdown() override;
+    virtual void PostMessageJson(const FString& Json) override;
 
 private:
     /** Opaque state — defined in the .cpp so WebView2.h stays out of headers. */

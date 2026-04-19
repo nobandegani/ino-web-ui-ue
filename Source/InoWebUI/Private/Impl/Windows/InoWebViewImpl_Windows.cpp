@@ -45,6 +45,12 @@ struct FInoWebViewImpl_Windows::FInternal
     TOptional<FRect>   PendingBounds;
     bool               bPendingReload = false;
 
+    /** Messages queued before the WebView was ready; replayed on ready. */
+    TArray<FString>    PendingOutboundMessages;
+
+    /** Token for the add_WebMessageReceived registration. */
+    EventRegistrationToken MessageReceivedToken{};
+
     /**
      * Lifetime token. Async callbacks capture a TWeakPtr to this; if the
      * impl is destroyed before the callback fires, the weak ptr is invalid
@@ -222,6 +228,44 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
         return;
     }
 
+    // ── Hook JS -> UE messaging ─────────────────────────────────────────────
+    {
+        TWeakPtr<int> WeakLifetime = Internal->LifetimeToken;
+        const HRESULT HrMsg = Internal->WebView->add_WebMessageReceived(
+            Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                [this, WeakLifetime](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* Args) -> HRESULT
+                {
+                    if (!WeakLifetime.IsValid() || !Args) return S_OK;
+
+                    // Prefer string mode (our bridge uses postMessage with a JSON string),
+                    // fall back to JSON mode if the page sent a raw object.
+                    LPWSTR Raw = nullptr;
+                    HRESULT Hr = Args->TryGetWebMessageAsString(&Raw);
+                    if (FAILED(Hr) || !Raw)
+                    {
+                        if (Raw) { CoTaskMemFree(Raw); Raw = nullptr; }
+                        Hr = Args->get_WebMessageAsJson(&Raw);
+                    }
+                    if (SUCCEEDED(Hr) && Raw)
+                    {
+                        const FString Msg(Raw);
+                        CoTaskMemFree(Raw);
+                        if (OnMessageReceivedJson)
+                        {
+                            OnMessageReceivedJson(Msg);
+                        }
+                    }
+                    return S_OK;
+                }).Get(),
+            &Internal->MessageReceivedToken);
+
+        if (FAILED(HrMsg))
+        {
+            UE_LOG(LogInoWebUI, Warning,
+                TEXT("add_WebMessageReceived failed: 0x%08X"), static_cast<uint32>(HrMsg));
+        }
+    }
+
     // Transparent background (ICoreWebView2Controller2 was added in Runtime 90+).
     if (Internal->Config.bTransparentBackground)
     {
@@ -281,6 +325,24 @@ void FInoWebViewImpl_Windows::ApplyPendingOperations()
         Reload();
         Internal->bPendingReload = false;
     }
+
+    // Replay outbound messages queued before the WebView was ready. Iterate
+    // locally + empty first so that any side-effects that post back during
+    // replay don't re-enter the array (safety, rare but free).
+    if (Internal->PendingOutboundMessages.Num() > 0)
+    {
+        TArray<FString> Replay = MoveTemp(Internal->PendingOutboundMessages);
+        for (const FString& Msg : Replay)
+        {
+            const HRESULT Hr = Internal->WebView->PostWebMessageAsString(*Msg);
+            if (FAILED(Hr))
+            {
+                UE_LOG(LogInoWebUI, Warning,
+                    TEXT("Queued PostWebMessageAsString failed: 0x%08X"),
+                    static_cast<uint32>(Hr));
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -330,6 +392,26 @@ void FInoWebViewImpl_Windows::SetVisible(bool bVisible)
     // Use 1/0 rather than TRUE/FALSE — those macros were un-#defined by
     // HideWindowsPlatformTypes.h above. put_IsVisible takes BOOL (typedef int).
     Internal->Controller->put_IsVisible(bVisible ? 1 : 0);
+}
+
+void FInoWebViewImpl_Windows::PostMessageJson(const FString& Json)
+{
+    check(IsInGameThread());
+
+    if (!bReady)
+    {
+        // Queue for replay from ApplyPendingOperations once the WebView finishes
+        // async construction. Consistent with Navigate/SetVisible/SyncBounds.
+        Internal->PendingOutboundMessages.Add(Json);
+        return;
+    }
+
+    const HRESULT Hr = Internal->WebView->PostWebMessageAsString(*Json);
+    if (FAILED(Hr))
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("PostWebMessageAsString failed: 0x%08X"), static_cast<uint32>(Hr));
+    }
 }
 
 void FInoWebViewImpl_Windows::SyncBounds(int32 X, int32 Y, int32 Width, int32 Height)
