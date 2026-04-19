@@ -110,6 +110,14 @@ public:
      */
     TFunction<void(const FString&)> OnMessageReceivedJson;
 
+    // ── Navigation events (Phase 5) ─────────────────────────────────────────
+    // Owner-settable, fired on the game thread. Observation only — lockdown
+    // decisions are made inside the implementation using FInoWebViewConfig.
+
+    TFunction<void(const FString& URI)>                  OnNavigationStartingCallback;
+    TFunction<void(bool bSuccess, const FString& URI)>   OnNavigationCompletedCallback;
+    TFunction<void(const FString& Title)>                OnDocumentTitleChangedCallback;
+
     // ── Phase 3 — runtime polish ────────────────────────────────────────────
 
     /**

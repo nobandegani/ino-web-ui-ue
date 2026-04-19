@@ -123,4 +123,34 @@ struct INOWEBUI_API FInoWebViewConfig
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
     FString VirtualHostFolder;
+
+    // ── Phase 5 — hardening / lockdown ──────────────────────────────────────
+
+    /**
+     * If true (default), the WebView refuses to navigate anywhere except:
+     *   • the configured VirtualHostName (whole host),
+     *   • internal schemes  (about:, data:, blob:),
+     *   • any entry in AllowedURIPatterns (UE wildcard match).
+     * Everything else is cancelled and logged.
+     *
+     * Turn off only for debug/dev flows — it's the primary defense against
+     * accidental navigation away from your game UI (bad links, injected
+     * content, third-party JS redirects).
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    bool bLockToVirtualHost = true;
+
+    /**
+     * Additional URIs allowed past the lockdown. Each entry is a UE wildcard
+     * pattern (`*` = any chars, `?` = single char) matched against the full
+     * navigation URI. Examples:
+     *
+     *   "https://*.api.company.com/*"    — any subdomain of api.company.com
+     *   "http://localhost:*\/*"           — any localhost port (dev)
+     *   "https://cdn.example.com/*"      — specific CDN
+     *
+     * Empty list + bLockToVirtualHost=true = only VirtualHostName is allowed.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    TArray<FString> AllowedURIPatterns;
 };

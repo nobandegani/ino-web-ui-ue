@@ -25,6 +25,21 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInoWebMessage,
     FName,                      Channel,
     const FJsonObjectWrapper&,  Payload);
 
+/** Fired just before a navigation starts. Observation only — lockdown
+ *  (FInoWebViewConfig::bLockToVirtualHost) handles cancellation internally. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInoWebNavigationStarting,
+    const FString&, URI);
+
+/** Fired when navigation completes (successfully or not). bSuccess=false
+ *  on broken links, network failures, navigation cancelled by lockdown. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInoWebNavigationCompleted,
+    bool,            bSuccess,
+    const FString&,  URI);
+
+/** Fired when the page's document.title changes. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInoWebTitleChanged,
+    const FString&, Title);
+
 /**
  * UInoWebView — Blueprint-visible handle to a single native WebView overlay.
  *
@@ -104,6 +119,20 @@ public:
      */
     UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
     FOnInoWebMessage OnMessageReceived;
+
+    // ── Navigation events (Phase 5) ─────────────────────────────────────────
+
+    /** Fires before each navigation. Observation only. */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebNavigationStarting OnNavigationStarting;
+
+    /** Fires when a navigation finishes (success or failure). */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebNavigationCompleted OnNavigationCompleted;
+
+    /** Fires when document.title changes. */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebTitleChanged OnDocumentTitleChanged;
 
     // ── Runtime polish (Phase 3) ────────────────────────────────────────────
 

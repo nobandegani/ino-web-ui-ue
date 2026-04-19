@@ -81,12 +81,28 @@ void UInoWebView::Init(FName InName, TUniquePtr<IInoWebViewImpl>&& InImpl,
         return;
     }
 
-    // Wire the JS -> UE pipe before Initialize so we don't miss any message
-    // the impl produces during startup. `this` capture is safe: the impl is
-    // our own member, destroyed with us, so the lambda can never outlive us.
+    // Wire callbacks BEFORE Initialize — the impl may fire events synchronously
+    // during startup (e.g., fast-path env creation). `this` capture is safe:
+    // the impl is our own member, destroyed with us, so lambdas can never
+    // outlive us.
     Impl->OnMessageReceivedJson = [this](const FString& EnvelopeJson)
     {
         DispatchIncomingEnvelope(EnvelopeJson);
+    };
+
+    Impl->OnNavigationStartingCallback = [this](const FString& URI)
+    {
+        OnNavigationStarting.Broadcast(URI);
+    };
+
+    Impl->OnNavigationCompletedCallback = [this](bool bSuccess, const FString& URI)
+    {
+        OnNavigationCompleted.Broadcast(bSuccess, URI);
+    };
+
+    Impl->OnDocumentTitleChangedCallback = [this](const FString& Title)
+    {
+        OnDocumentTitleChanged.Broadcast(Title);
     };
 
     const bool bOk = Impl->Initialize(ParentNativeHandle, Config);

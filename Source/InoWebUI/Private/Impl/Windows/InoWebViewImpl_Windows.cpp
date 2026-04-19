@@ -26,6 +26,86 @@ using Microsoft::WRL::ComPtr;
 using Microsoft::WRL::Callback;
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  URI helpers (lockdown)
+// ─────────────────────────────────────────────────────────────────────────────
+namespace
+{
+    /** Extract the host component of a URI. Returns empty for non-URL inputs. */
+    FString ExtractHost(const FString& URI)
+    {
+        // Find "://"
+        int32 SchemeEnd;
+        if (!URI.FindChar(TEXT(':'), SchemeEnd) || URI.Mid(SchemeEnd, 3) != TEXT("://"))
+        {
+            return FString();
+        }
+        FString AfterScheme = URI.Mid(SchemeEnd + 3);
+
+        // Strip userinfo "user:pass@"
+        int32 AtIdx;
+        if (AfterScheme.FindChar(TEXT('@'), AtIdx))
+        {
+            AfterScheme = AfterScheme.Mid(AtIdx + 1);
+        }
+
+        // Find end of host (first of '/', '?', '#', ':')
+        int32 HostEnd = AfterScheme.Len();
+        for (TCHAR Ch : { TEXT('/'), TEXT('?'), TEXT('#'), TEXT(':') })
+        {
+            int32 Idx;
+            if (AfterScheme.FindChar(Ch, Idx) && Idx < HostEnd)
+            {
+                HostEnd = Idx;
+            }
+        }
+        return AfterScheme.Left(HostEnd);
+    }
+
+    /**
+     * Decide whether a URI is allowed under the current lockdown config.
+     * Returns true if navigation should proceed; false if it should be cancelled.
+     */
+    bool IsURIAllowed(const FString& URI, const FInoWebViewConfig& Config)
+    {
+        // Internal browser schemes always pass.
+        if (URI.IsEmpty()
+            || URI.StartsWith(TEXT("about:"))
+            || URI.StartsWith(TEXT("data:"))
+            || URI.StartsWith(TEXT("blob:")))
+        {
+            return true;
+        }
+
+        // Lockdown off → everything goes.
+        if (!Config.bLockToVirtualHost)
+        {
+            return true;
+        }
+
+        // Virtual host whole-host match (case-insensitive).
+        if (!Config.VirtualHostName.IsEmpty())
+        {
+            const FString Host = ExtractHost(URI);
+            if (Host.Equals(Config.VirtualHostName, ESearchCase::IgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        // User wildcard allowlist. MatchesWildcard supports * and ?.
+        for (const FString& Pattern : Config.AllowedURIPatterns)
+        {
+            if (URI.MatchesWildcard(Pattern))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+} // namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  GInoWebUIBridgeScript
 //
 //  Injected into every page via ICoreWebView2::AddScriptToExecuteOnDocumentCreated,
@@ -117,8 +197,11 @@ struct FInoWebViewImpl_Windows::FInternal
     /** Last SetMuted() call before the WebView was ready; applied on ready. */
     TOptional<bool>    PendingMute;
 
-    /** Token for the add_WebMessageReceived registration. */
+    /** Tokens for event registrations. */
     EventRegistrationToken MessageReceivedToken{};
+    EventRegistrationToken NavigationStartingToken{};
+    EventRegistrationToken NavigationCompletedToken{};
+    EventRegistrationToken DocumentTitleChangedToken{};
 
     /**
      * Lifetime token. Async callbacks capture a TWeakPtr to this; if the
@@ -311,6 +394,91 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
                      "window.InoWebUI bridge will not be available."),
                 static_cast<uint32>(HrScript));
         }
+    }
+
+    // ── Hook navigation events (Phase 5) ────────────────────────────────────
+    // NavigationStarting is where lockdown lives: we cancel if the target
+    // URI isn't whitelisted. The BP-visible delegate always fires for
+    // observation, regardless of whether we cancel.
+    {
+        TWeakPtr<int> WeakLifetime = Internal->LifetimeToken;
+
+        Internal->WebView->add_NavigationStarting(
+            Callback<ICoreWebView2NavigationStartingEventHandler>(
+                [this, WeakLifetime](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* Args) -> HRESULT
+                {
+                    if (!WeakLifetime.IsValid() || !Args) return S_OK;
+
+                    LPWSTR UriRaw = nullptr;
+                    if (FAILED(Args->get_Uri(&UriRaw)) || !UriRaw) return S_OK;
+                    const FString URI(UriRaw);
+                    CoTaskMemFree(UriRaw);
+
+                    // Lockdown check.
+                    if (!IsURIAllowed(URI, Internal->Config))
+                    {
+                        Args->put_Cancel(1);
+                        UE_LOG(LogInoWebUI, Warning,
+                            TEXT("Navigation blocked by lockdown: %s"), *URI);
+                    }
+
+                    // Always fire the BP delegate for observability.
+                    if (OnNavigationStartingCallback)
+                    {
+                        OnNavigationStartingCallback(URI);
+                    }
+                    return S_OK;
+                }).Get(),
+            &Internal->NavigationStartingToken);
+
+        Internal->WebView->add_NavigationCompleted(
+            Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                [this, WeakLifetime](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* Args) -> HRESULT
+                {
+                    if (!WeakLifetime.IsValid() || !Args) return S_OK;
+
+                    BOOL bSuccess = 0;
+                    Args->get_IsSuccess(&bSuccess);
+
+                    // Pull the current Source as the "landed" URI — the args
+                    // don't carry it, and we want something meaningful for BP.
+                    FString URI;
+                    LPWSTR SourceRaw = nullptr;
+                    if (SUCCEEDED(Internal->WebView->get_Source(&SourceRaw)) && SourceRaw)
+                    {
+                        URI = SourceRaw;
+                        CoTaskMemFree(SourceRaw);
+                    }
+
+                    if (OnNavigationCompletedCallback)
+                    {
+                        OnNavigationCompletedCallback(bSuccess != 0, URI);
+                    }
+                    return S_OK;
+                }).Get(),
+            &Internal->NavigationCompletedToken);
+
+        Internal->WebView->add_DocumentTitleChanged(
+            Callback<ICoreWebView2DocumentTitleChangedEventHandler>(
+                [this, WeakLifetime](ICoreWebView2*, IUnknown*) -> HRESULT
+                {
+                    if (!WeakLifetime.IsValid()) return S_OK;
+
+                    LPWSTR TitleRaw = nullptr;
+                    if (FAILED(Internal->WebView->get_DocumentTitle(&TitleRaw)) || !TitleRaw)
+                    {
+                        return S_OK;
+                    }
+                    const FString Title(TitleRaw);
+                    CoTaskMemFree(TitleRaw);
+
+                    if (OnDocumentTitleChangedCallback)
+                    {
+                        OnDocumentTitleChangedCallback(Title);
+                    }
+                    return S_OK;
+                }).Get(),
+            &Internal->DocumentTitleChangedToken);
     }
 
     // ── Hook JS -> UE messaging ─────────────────────────────────────────────
