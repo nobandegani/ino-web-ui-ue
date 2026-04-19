@@ -45,7 +45,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInoWebMessage,
  * underlying WebView has asynchronously initialized. Operations issued before
  * ready are queued and replayed once ready.
  */
-UCLASS(BlueprintType, Transient, NotBlueprintable)
+UCLASS(BlueprintType)
 class INOWEBUI_API UInoWebView : public UObject
 {
     GENERATED_BODY()
