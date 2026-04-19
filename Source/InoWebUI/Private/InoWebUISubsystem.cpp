@@ -10,6 +10,7 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
+#include "UnrealClient.h"            // FViewport
 #include "Widgets/SWindow.h"
 #include "GenericPlatform/GenericWindow.h"
 
@@ -19,6 +20,13 @@
 void UInoWebUISubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
     Super::Initialize(Collection);
+
+    // Global event — fires on any viewport resize, including fullscreen
+    // toggle, DPI change, and standard window drag-resize. We filter to our
+    // own viewport inside the handler.
+    ViewportResizedHandle = FViewport::ViewportResizedEvent.AddUObject(
+        this, &UInoWebUISubsystem::OnViewportResized);
+
     UE_LOG(LogInoWebUI, Log, TEXT("UInoWebUISubsystem initialized."));
 }
 
@@ -26,6 +34,12 @@ void UInoWebUISubsystem::Deinitialize()
 {
     UE_LOG(LogInoWebUI, Log,
         TEXT("UInoWebUISubsystem deinitializing (%d WebView(s) live)."), WebViews.Num());
+
+    if (ViewportResizedHandle.IsValid())
+    {
+        FViewport::ViewportResizedEvent.Remove(ViewportResizedHandle);
+        ViewportResizedHandle.Reset();
+    }
 
     DestroyAllWebViews();
 
@@ -83,6 +97,12 @@ UInoWebView* UInoWebUISubsystem::CreateWebView(FName Name, const FInoWebViewConf
 
     WebViews.Add(Name, View);
     UE_LOG(LogInoWebUI, Log, TEXT("CreateWebView('%s') succeeded."), *Name.ToString());
+
+    // The impl seeds its own initial bounds from GetClientRect during async
+    // construction, but we push an extra broadcast here to cover the case
+    // where the window resizes while the WebView is still initializing —
+    // SyncBounds pre-ready is queued and replayed when the controller arrives.
+    BroadcastClientRectToAll();
 
     return View;
 }
@@ -174,4 +194,61 @@ void* UInoWebUISubsystem::AcquireParentNativeHandle() const
     }
 
     return NativeWindow->GetOSWindowHandle();
+}
+
+TSharedPtr<SWindow> UInoWebUISubsystem::GetParentWindow() const
+{
+    const UGameInstance* GI = GetGameInstance();
+    if (!GI) return nullptr;
+
+    const UWorld* World = GI->GetWorld();
+    if (!World) return nullptr;
+
+    const UGameViewportClient* VC = World->GetGameViewport();
+    if (!VC) return nullptr;
+
+    return VC->GetWindow();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Resize pipeline
+// ─────────────────────────────────────────────────────────────────────────────
+void UInoWebUISubsystem::OnViewportResized(FViewport* InViewport, uint32 /*Unused*/)
+{
+    // Filter: only react to resizes of OUR GameInstance's viewport. Other
+    // viewports (a second PIE window, an editor preview viewport, the
+    // thumbnail renderer...) pass through this same global event.
+    const UGameInstance* GI = GetGameInstance();
+    if (!GI) return;
+
+    const UWorld* World = GI->GetWorld();
+    if (!World) return;
+
+    const UGameViewportClient* VC = World->GetGameViewport();
+    if (!VC || VC->Viewport != InViewport) return;
+
+    BroadcastClientRectToAll();
+}
+
+void UInoWebUISubsystem::BroadcastClientRectToAll()
+{
+    if (WebViews.Num() == 0) return;
+
+    TSharedPtr<SWindow> Window = GetParentWindow();
+    if (!Window.IsValid()) return;
+
+    // GetClientSizeInScreen returns physical pixels on Windows, which is
+    // what WebView2's put_Bounds expects — no DPI conversion needed.
+    const FVector2D  ClientSize = Window->GetClientSizeInScreen();
+    const int32      Width  = FMath::Max(0, FMath::CeilToInt(ClientSize.X));
+    const int32      Height = FMath::Max(0, FMath::CeilToInt(ClientSize.Y));
+
+    // Origin is always (0,0) because put_Bounds is in parent-client coords.
+    for (const auto& Pair : WebViews)
+    {
+        if (UInoWebView* View = Pair.Value)
+        {
+            View->OnParentResized(0, 0, Width, Height);
+        }
+    }
 }
