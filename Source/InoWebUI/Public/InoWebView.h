@@ -37,6 +37,17 @@ class INOWEBUI_API UInoWebView : public UObject
 public:
     UInoWebView();
 
+    /**
+     * Destructor is declared here but DEFINED in the .cpp file. This is the
+     * classic pimpl trick: TUniquePtr<IInoWebViewImpl> needs a complete type
+     * at destruction time, but including Impl/IInoWebViewImpl.h from this
+     * public header would leak the internal interface into every translation
+     * unit that consumes InoWebView.h. Defining the dtor in the .cpp (which
+     * does include the impl header) resolves the incomplete-type error
+     * without widening the public surface.
+     */
+    virtual ~UInoWebView();
+
     // ── Navigation ──────────────────────────────────────────────────────────
 
     /** Navigate to an absolute URL (http, https, file, about, etc.). */

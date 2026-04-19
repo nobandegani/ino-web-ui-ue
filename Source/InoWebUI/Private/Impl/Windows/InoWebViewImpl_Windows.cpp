@@ -323,7 +323,9 @@ void FInoWebViewImpl_Windows::SetVisible(bool bVisible)
         return;
     }
 
-    Internal->Controller->put_IsVisible(bVisible ? TRUE : FALSE);
+    // Use 1/0 rather than TRUE/FALSE — those macros were un-#defined by
+    // HideWindowsPlatformTypes.h above. put_IsVisible takes BOOL (typedef int).
+    Internal->Controller->put_IsVisible(bVisible ? 1 : 0);
 }
 
 void FInoWebViewImpl_Windows::SyncBounds(int32 X, int32 Y, int32 Width, int32 Height)

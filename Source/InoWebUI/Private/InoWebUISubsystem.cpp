@@ -161,21 +161,21 @@ void UInoWebUISubsystem::DestroyAllWebViews()
 //  Works for both PIE (child editor window) and standalone (main game window)
 //  because we go through this GameInstance's own viewport.
 // ─────────────────────────────────────────────────────────────────────────────
-void* UInoWebUISubsystem::AcquireParentNativeHandle() const
+void* UInoWebUISubsystem::AcquireParentNativeHandle()
 {
-    const UGameInstance* GI = GetGameInstance();
+    UGameInstance* GI = GetGameInstance();
     if (!GI)
     {
         return nullptr;
     }
 
-    const UWorld* World = GI->GetWorld();
+    UWorld* World = GI->GetWorld();
     if (!World)
     {
         return nullptr;
     }
 
-    const UGameViewportClient* ViewportClient = World->GetGameViewport();
+    UGameViewportClient* ViewportClient = World->GetGameViewport();
     if (!ViewportClient)
     {
         return nullptr;
@@ -196,15 +196,15 @@ void* UInoWebUISubsystem::AcquireParentNativeHandle() const
     return NativeWindow->GetOSWindowHandle();
 }
 
-TSharedPtr<SWindow> UInoWebUISubsystem::GetParentWindow() const
+TSharedPtr<SWindow> UInoWebUISubsystem::GetParentWindow()
 {
-    const UGameInstance* GI = GetGameInstance();
+    UGameInstance* GI = GetGameInstance();
     if (!GI) return nullptr;
 
-    const UWorld* World = GI->GetWorld();
+    UWorld* World = GI->GetWorld();
     if (!World) return nullptr;
 
-    const UGameViewportClient* VC = World->GetGameViewport();
+    UGameViewportClient* VC = World->GetGameViewport();
     if (!VC) return nullptr;
 
     return VC->GetWindow();

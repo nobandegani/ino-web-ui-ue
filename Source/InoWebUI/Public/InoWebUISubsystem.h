@@ -79,15 +79,17 @@ private:
      * Walks GameInstance → World → GameViewport → SWindow → GenericWindow
      * to resolve the OS-level window handle (HWND on Windows). Returns
      * nullptr if any step fails (e.g., viewport not created yet).
+     *
+     * Not const because UGameViewportClient::GetWindow() is itself non-const.
      */
-    void* AcquireParentNativeHandle() const;
+    void* AcquireParentNativeHandle();
 
     /**
      * Returns the parent SWindow for this GameInstance's viewport, or an
      * invalid TSharedPtr if none is currently available. Used by the resize
      * handler to compute client-area size in physical pixels.
      */
-    TSharedPtr<class SWindow> GetParentWindow() const;
+    TSharedPtr<class SWindow> GetParentWindow();
 
     /** Called by FViewport::ViewportResizedEvent — pushes new bounds to every WebView. */
     void OnViewportResized(class FViewport* InViewport, uint32 Unused);
