@@ -16,7 +16,7 @@ pixels in the HTML reveal the 3D scene underneath.
 This is fundamentally different from UE's built-in `WebBrowser` plugin, which
 textures the browser output — we skip all of that, zero copy, zero stall.
 
-**Current status: Phase 4 (Win64 only — overlay + messaging + runtime polish + local content serving).**
+**Current status: Phase 5 (Win64 only — overlay + messaging + runtime polish + local content serving + game-UI hardening).**
 
 ---
 
@@ -324,6 +324,67 @@ All defaults are "locked down for game UI." A dev build typically wants
 
 ---
 
+## Game-UI hardening (Phase 5)
+
+Every setting here is default-ON for "locked-down game UI" behavior. Flip
+off individually for dev ergonomics.
+
+### Navigation lockdown
+
+```
+bLockToVirtualHost      bool             = true          (locked by default)
+AllowedURIPatterns      TArray<FString>  = []            (UE wildcard list)
+```
+
+A URI is allowed iff any of:
+1. Internal scheme — `about:`, `data:`, `blob:` (always)
+2. `bLockToVirtualHost == false`
+3. Host matches `VirtualHostName` (case-insensitive whole-host)
+4. Full URI matches any entry in `AllowedURIPatterns` via `FString::MatchesWildcard`
+
+Otherwise the navigation is cancelled with a warning log. Use for defense
+against accidental navigation away from your UI (bad links, injected third-
+party scripts, auth redirects).
+
+Common pattern examples:
+```
+"https://*.api.company.com/*"    # subdomains of your API
+"http://localhost:*\/*"          # any localhost port (dev only)
+"https://cdn.jsdelivr.net/*"     # specific CDN
+```
+
+### Other hardening toggles
+
+| Field | Default | Behavior when off (default) |
+|---|---|---|
+| `bAllowScriptDialogs`  | `false` | JS `alert()` / `confirm()` / `prompt()` / `onbeforeunload` are suppressed — `confirm` returns false, `prompt` returns null, `alert` fires no dialog. `OnScriptDialog` still broadcasts for logging. |
+| `bAllowNewWindows`     | `false` | `window.open()` and `target="_blank"` are blocked — no popup Chromium window ever appears over the game. `OnNewWindowRequested` fires so BP can `LoadURL(URI)` to redirect into the same frame. |
+| (from Phase 3) `bEnableContextMenus`    | `false` | Right-click is a no-op inside the WebView. |
+| (from Phase 3) `bEnableAcceleratorKeys` | `false` | F5/F12/Ctrl+F/Ctrl+P/etc. pass through to the game. |
+
+### Navigation events (BP delegates on `UInoWebView`)
+
+| Delegate | Signature | When |
+|---|---|---|
+| `OnNavigationStarting`     | `(URI: String)`                   | Before every navigation (observation only — lockdown handles cancellation internally). |
+| `OnNavigationCompleted`    | `(bSuccess: bool, URI: String)`   | Page finished loading or failed. Use for splash dismissal / loading indicators. |
+| `OnDocumentTitleChanged`   | `(Title: String)`                 | Page called `document.title = …`. |
+| `OnScriptDialog`           | `(Kind: EInoScriptDialogKind, Message: String)` | Any alert/confirm/prompt/beforeunload. |
+| `OnNewWindowRequested`     | `(URI: String)`                   | `window.open`/`_blank` (blocked by default). |
+| `OnGotFocus` / `OnLostFocus` | (no params) | WebView gained/lost keyboard focus. |
+| `OnProcessFailed`          | `(Description: String)`           | Chromium subprocess crashed. Consider `Reload()` or recreate. |
+
+### Runtime methods (BP-callable on `UInoWebView`)
+
+| Method | Purpose |
+|---|---|
+| `FocusWebView()`         | Move keyboard focus into the WebView (for HTML input fields). |
+| `SetZoomFactor(Factor)`  | 1.0 = 100%, 1.5 = 150%. |
+| `GetZoomFactor()`        | Current zoom (returns 1.0 if not ready). |
+| `ClearAllCookies()`      | Delete all cookies in this WebView's isolated profile. Useful for logout. |
+
+---
+
 ## Adding features
 
 ### A new simple option (user agent, context menus, etc.)
@@ -353,9 +414,10 @@ All defaults are "locked down for game UI." A dev build typically wants
 | 2 | Two-way messaging (`PostMessage`, `OnMessageReceived`, `window.InoWebUI`) | ✔ done |
 | 3 | DevTools / ExecuteJS / mute / context-menu & accelerator toggles / UA override | ✔ done |
 | 4 | Virtual-host mapping (serve local content as `https://`) | ✔ done |
-| 5 | DirectComposition-based hosting (fixes PIE transparency) | — |
-| 6 | macOS implementation (`WKWebView`) | — |
-| 7 | Android implementation (`android.webkit.WebView`) | — |
+| 5 | Game-UI hardening: lockdown + dialog/popup blocking + nav events + zoom/focus/cookies/crash | ✔ done |
+| 6 | DirectComposition-based hosting (fixes PIE transparency) | — |
+| 7 | macOS implementation (`WKWebView`) | — |
+| 8 | Android implementation (`android.webkit.WebView`) | — |
 
 Don't stub future phases — add them when they're needed.
 
