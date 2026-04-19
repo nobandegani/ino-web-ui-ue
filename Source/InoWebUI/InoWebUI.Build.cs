@@ -59,8 +59,5 @@ public class InoWebUI : ModuleRules
             "version.lib",      // Version info (used by the loader to find Edge)
             "ole32.lib",        // COM (CoCreateInstance, CoInitialize...)
         });
-
-        // Tell UBT we use Windows platform APIs directly
-        PublicDefinitions.Add("COBJMACROS");        // C-style COM macros (optional)
     }
 }
