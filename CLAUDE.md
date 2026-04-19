@@ -16,7 +16,7 @@ pixels in the HTML reveal the 3D scene underneath.
 This is fundamentally different from UE's built-in `WebBrowser` plugin, which
 textures the browser output — we skip all of that, zero copy, zero stall.
 
-**Current status: Phase 2 (Win64 only — overlay + two-way messaging).**
+**Current status: Phase 3 (Win64 only — overlay + two-way messaging + runtime polish).**
 
 ---
 
@@ -266,6 +266,46 @@ single-threaded — no `AsyncTask(ENamedThreads::GameThread, ...)` needed.
 
 ---
 
+## Runtime polish (Phase 3)
+
+### Config toggles
+
+All opt-in on `FInoWebViewConfig`, applied once at `CreateWebView` time:
+
+| Field | Default | What it does |
+|---|---|---|
+| `bEnableDevTools` | `false` | Enables the Chromium DevTools window. F12 opens it if `bEnableAcceleratorKeys` is also true; otherwise open programmatically with `UInoWebView::OpenDevTools()`. |
+| `bEnableContextMenus` | `false` | When true, right-clicking the WebView shows the browser context menu. Usually off for game UI. |
+| `bEnableAcceleratorKeys` | `false` | When true, browser shortcuts (F5, F12, Ctrl+F, Ctrl+P, …) are active. Usually off for game UI so those keys go to the game. |
+| `bStartMuted` | `false` | Audio is muted on creation. Call `SetMuted(false)` later to unmute. |
+| `UserAgentOverride` | empty | Overrides `navigator.userAgent` inside the WebView. |
+
+All defaults are "locked down for game UI." A dev build typically wants
+`bEnableDevTools=true` and leaves the rest false.
+
+### Runtime methods on `UInoWebView`
+
+| Method | Purpose |
+|---|---|
+| `OpenDevTools()` | Open the DevTools panel. No-op if `bEnableDevTools` wasn't set at construction (logs a warning). There's no `CloseDevTools` — WebView2 has no such API; the user closes it themselves. |
+| `ExecuteJavaScript(Code)` | Run arbitrary JS in the page. Fire-and-forget — if you need a result back to UE, have the JS side `window.InoWebUI.send(...)` instead. Queued if pre-ready. |
+| `SetMuted(bool)` | Mute/unmute audio. Queued if pre-ready. |
+
+### Implementation notes
+
+- Config is applied in `FInoWebViewImpl_Windows::OnControllerReady` right
+  after the transparent-background setup. Each non-base COM interface
+  (`ICoreWebView2Settings2`, `Settings3`, `ICoreWebView2_8`) is obtained via
+  `QueryInterface` and silently skipped if unavailable (tolerates older Edge).
+- `ExecuteJavaScript` takes a required handler callback per the WebView2 API;
+  we pass a no-op handler (returns `S_OK`) since UE gets any response back
+  via the messaging channel, not a script return value.
+- Pre-ready queue semantics mirror Phase 1/2: `PendingScripts` array,
+  `PendingMute` `TOptional<bool>`. Replayed from `ApplyPendingOperations()`
+  on controller-ready.
+
+---
+
 ## Adding features
 
 ### A new simple option (user agent, context menus, etc.)
@@ -293,7 +333,7 @@ single-threaded — no `AsyncTask(ENamedThreads::GameThread, ...)` needed.
 |---|---|---|
 | 1 | Overlay: create, load URL, show/hide, resize tracking | ✔ done |
 | 2 | Two-way messaging (`PostMessage`, `OnMessageReceived`, `window.InoWebUI`) | ✔ done |
-| 3 | DevTools toggle, UserAgent override, context-menu & accelerator toggles | — |
+| 3 | DevTools / ExecuteJS / mute / context-menu & accelerator toggles / UA override | ✔ done |
 | 4 | Pluggable local-content server (so shipped builds don't need `file://`) | — |
 | 5 | DirectComposition-based hosting (fixes PIE transparency) | — |
 | 6 | macOS implementation (`WKWebView`) | — |
