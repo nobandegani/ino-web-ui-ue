@@ -123,6 +123,11 @@ bool FInoWebViewImpl_Windows::Initialize(void* ParentNativeHandle, const FInoWeb
     IFileManager::Get().MakeDirectory(*UserDataPath, /*Tree=*/true);
 
     // ── Async step 1: create environment ────────────────────────────────────
+    // Log BEFORE the call — WebView2 sometimes fires the completion callback
+    // synchronously inside this call (when the environment is already warm),
+    // so logging after would make the "ready" log appear before "started".
+    UE_LOG(LogInoWebUI, Log, TEXT("WebView2 async initialization started."));
+
     TWeakPtr<int> WeakLifetime = Internal->LifetimeToken;
 
     const HRESULT Hr = CreateCoreWebView2EnvironmentWithOptions(
@@ -149,7 +154,6 @@ bool FInoWebViewImpl_Windows::Initialize(void* ParentNativeHandle, const FInoWeb
     }
 
     bInitStarted = true;
-    UE_LOG(LogInoWebUI, Log, TEXT("WebView2 async initialization started."));
     return true;
 }
 
@@ -348,11 +352,23 @@ void FInoWebViewImpl_Windows::SyncBounds(int32 X, int32 Y, int32 Width, int32 He
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Shutdown — MUST be called before the parent HWND dies.
+//
+//  Idempotent: safe to call multiple times. Typically called twice in normal
+//  teardown (once from UInoWebView::ShutdownImpl, once from the impl's own
+//  destructor as a safety net). Only the first call does work or logs.
 // ─────────────────────────────────────────────────────────────────────────────
 void FInoWebViewImpl_Windows::Shutdown()
 {
     check(IsInGameThread());
     if (!Internal) return;
+
+    // Use LifetimeToken as our "already shut down" sentinel — it's set by
+    // FInternal's ctor and we reset it here. Second call sees invalid token
+    // and silently returns.
+    if (!Internal->LifetimeToken.IsValid())
+    {
+        return;
+    }
 
     // Invalidate the lifetime token first — any stray async callback fires
     // into a dead TWeakPtr and safely returns without touching our state.
