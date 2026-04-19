@@ -1,0 +1,16 @@
+Binaries/Win64
+Intermediate
+
+# Local model files (gigabytes; never committed). The plugin locates models
+# relative to its install directory via IPluginManager::FindPlugin("InoAgents")
+# + "Models/<filename>". Developers download models here manually; they are
+# not redistributed with the plugin.
+Models/
+
+# Bazel build workspace (defensive; real bazel-* symlinks live inside the submodule)
+#LiteRtLm/bazel-*
+#LiteRtLm/user.bazelrc
+
+# Staged LiteRT-LM artifacts (produced by LiteRtLm/scripts/build-win64.ps1, not tracked)
+#Source/ThirdParty/InoAgentsLibrary/Public/litert/
+#Source/ThirdParty/InoAgentsLibrary/Win64/LiteRtLm.lib
