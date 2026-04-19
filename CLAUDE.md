@@ -295,8 +295,9 @@ single-threaded — no `AsyncTask(ENamedThreads::GameThread, ...)` needed.
 | 2 | Two-way messaging (`PostMessage`, `OnMessageReceived`, `window.InoWebUI`) | ✔ done |
 | 3 | DevTools toggle, UserAgent override, context-menu & accelerator toggles | — |
 | 4 | Pluggable local-content server (so shipped builds don't need `file://`) | — |
-| 5 | macOS implementation (`WKWebView`) | — |
-| 6 | Android implementation (`android.webkit.WebView`) | — |
+| 5 | DirectComposition-based hosting (fixes PIE transparency) | — |
+| 6 | macOS implementation (`WKWebView`) | — |
+| 7 | Android implementation (`android.webkit.WebView`) | — |
 
 Don't stub future phases — add them when they're needed.
 
@@ -317,6 +318,20 @@ Don't stub future phases — add them when they're needed.
 - **Pre-ready calls seem to "disappear"** → they didn't; they're queued.
   Check `FInternal::PendingNavigate/Visible/Bounds` if you suspect replay
   isn't happening.
+- **Transparent WebView shows DESKTOP through "empty" areas in PIE (but
+  works fine in standalone)** → known composition limitation. PIE uses
+  Slate-chromed windows with `DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED`
+  plus a rounded-rect `SetWindowRgn`. Under that combination, DWM
+  composites transparent child-HWND pixels against the desktop instead of
+  the parent's swap chain. Standalone Game and shipped builds use OS chrome
+  and work correctly. Workarounds:
+    1. Use **Standalone Game** play mode when visually testing the overlay.
+    2. Set `bTransparentBackground = false` during PIE iteration (opaque
+       WebView; messaging/bounds pipeline still fully testable).
+  A proper fix would require switching from `CreateCoreWebView2Controller`
+  (child HWND) to `CreateCoreWebView2CompositionController` with
+  DirectComposition visual hosting — a meaningful chunk of new code; left
+  as a future phase unless needed.
 
 ---
 
