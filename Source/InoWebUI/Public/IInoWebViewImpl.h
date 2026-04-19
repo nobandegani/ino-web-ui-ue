@@ -149,6 +149,15 @@ public:
 
     /** Move keyboard focus to the WebView (COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC). */
     virtual void FocusWebView() = 0;
+
+    /** Set page zoom factor. 1.0 = 100%. No-op if not ready. */
+    virtual void SetZoomFactor(float Factor) = 0;
+
+    /** Returns the current zoom factor, or 1.0 if not ready / unavailable. */
+    virtual float GetZoomFactor() const = 0;
+
+    /** Delete all cookies from this WebView's isolated profile. */
+    virtual void ClearAllCookies() = 0;
 };
 
 /**

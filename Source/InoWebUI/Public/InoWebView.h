@@ -205,6 +205,21 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
     void FocusWebView();
 
+    /** Set page zoom factor. 1.0 = 100%, 1.5 = 150%, etc. */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void SetZoomFactor(float Factor);
+
+    /** Current zoom factor. Returns 1.0 if unavailable. */
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Ino|WebUI")
+    float GetZoomFactor() const;
+
+    /**
+     * Clear every cookie in this WebView's isolated profile. Useful for
+     * "log out" flows. Async internally — no completion event is surfaced.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void ClearAllCookies();
+
     // ── State queries ───────────────────────────────────────────────────────
 
     /** True once the native WebView has finished its async construction. */

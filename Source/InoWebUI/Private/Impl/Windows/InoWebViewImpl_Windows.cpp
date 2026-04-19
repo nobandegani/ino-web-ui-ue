@@ -977,6 +977,47 @@ void FInoWebViewImpl_Windows::FocusWebView()
     Internal->Controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
 }
 
+void FInoWebViewImpl_Windows::SetZoomFactor(float Factor)
+{
+    check(IsInGameThread());
+    if (!bReady || !Internal->Controller) return;
+
+    Internal->Controller->put_ZoomFactor(static_cast<double>(Factor));
+}
+
+float FInoWebViewImpl_Windows::GetZoomFactor() const
+{
+    if (!bReady || !Internal->Controller) return 1.0f;
+
+    double Current = 1.0;
+    if (FAILED(Internal->Controller->get_ZoomFactor(&Current))) return 1.0f;
+    return static_cast<float>(Current);
+}
+
+void FInoWebViewImpl_Windows::ClearAllCookies()
+{
+    check(IsInGameThread());
+    if (!bReady) return;
+
+    // CookieManager lives on ICoreWebView2_2 (Runtime 85+). Fall through gracefully.
+    ComPtr<ICoreWebView2_2> WebView2;
+    if (FAILED(Internal->WebView.As(&WebView2)))
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("ClearAllCookies: ICoreWebView2_2 unavailable."));
+        return;
+    }
+    ComPtr<ICoreWebView2CookieManager> CookieMgr;
+    if (FAILED(WebView2->get_CookieManager(&CookieMgr)) || !CookieMgr)
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("ClearAllCookies: could not obtain CookieManager."));
+        return;
+    }
+    CookieMgr->DeleteAllCookies();
+    UE_LOG(LogInoWebUI, Log, TEXT("All cookies cleared for this WebView's profile."));
+}
+
 void FInoWebViewImpl_Windows::PostMessageJson(const FString& Json)
 {
     check(IsInGameThread());

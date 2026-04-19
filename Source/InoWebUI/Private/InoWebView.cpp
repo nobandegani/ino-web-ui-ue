@@ -284,6 +284,21 @@ void UInoWebView::FocusWebView()
     if (Impl.IsValid()) Impl->FocusWebView();
 }
 
+void UInoWebView::SetZoomFactor(float Factor)
+{
+    if (Impl.IsValid()) Impl->SetZoomFactor(Factor);
+}
+
+float UInoWebView::GetZoomFactor() const
+{
+    return Impl.IsValid() ? Impl->GetZoomFactor() : 1.0f;
+}
+
+void UInoWebView::ClearAllCookies()
+{
+    if (Impl.IsValid()) Impl->ClearAllCookies();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Queries
 // ─────────────────────────────────────────────────────────────────────────────
