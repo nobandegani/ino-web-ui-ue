@@ -52,9 +52,43 @@ struct INOWEBUI_API FInoWebViewConfig
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
     FString UserDataSubfolder = TEXT("WebViewData");
 
-    // ── Room to grow in later phases (do NOT add here yet — placeholders): ──
-    //   FString InitialUserAgent;
-    //   bool    bEnableDevTools;
-    //   bool    bEnableDefaultContextMenus;
-    //   bool    bAreBrowserAcceleratorKeysEnabled;
+    // ── Phase 3 — runtime polish & debugging ────────────────────────────────
+
+    /**
+     * Enable the Chromium DevTools panel. Open programmatically with
+     * UInoWebView::OpenDevTools(), or with F12 if bEnableAcceleratorKeys
+     * is also true. Usually enabled in dev builds, disabled in shipping.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    bool bEnableDevTools = false;
+
+    /**
+     * If false, right-clicking inside the WebView does nothing (the browser
+     * "Save image as…/Inspect element" menu is suppressed). Recommended
+     * for game UI. Default false.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    bool bEnableContextMenus = false;
+
+    /**
+     * If false, browser-level accelerator keys like F5 (reload), F12
+     * (devtools), Ctrl+F (find in page), Ctrl+P (print) are suppressed.
+     * Recommended for game UI so those keys remain available to the game.
+     * Default false. NOTE: disabling accelerators also disables F12 as a
+     * way to open DevTools — use OpenDevTools() programmatically instead.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    bool bEnableAcceleratorKeys = false;
+
+    /** Audio output from the page is muted on creation when true. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    bool bStartMuted = false;
+
+    /**
+     * When non-empty, overrides navigator.userAgent inside the WebView.
+     * Useful for Unreal-specific page branches, e.g.:
+     *   if (navigator.userAgent.includes('Unreal')) { ... }
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    FString UserAgentOverride;
 };

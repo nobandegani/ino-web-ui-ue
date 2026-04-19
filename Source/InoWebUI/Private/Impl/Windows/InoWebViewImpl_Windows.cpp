@@ -363,6 +363,46 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
         }
     }
 
+    // ── Phase 3: apply runtime settings from the config ─────────────────────
+    {
+        ComPtr<ICoreWebView2Settings> Settings;
+        if (SUCCEEDED(Internal->WebView->get_Settings(&Settings)))
+        {
+            Settings->put_AreDefaultContextMenusEnabled(Internal->Config.bEnableContextMenus   ? 1 : 0);
+            Settings->put_AreDevToolsEnabled          (Internal->Config.bEnableDevTools         ? 1 : 0);
+
+            // Settings3 — browser accelerator keys (F5/F12/Ctrl+F/…). Runtime 89+.
+            ComPtr<ICoreWebView2Settings3> Settings3;
+            if (SUCCEEDED(Settings.As(&Settings3)))
+            {
+                Settings3->put_AreBrowserAcceleratorKeysEnabled(
+                    Internal->Config.bEnableAcceleratorKeys ? 1 : 0);
+            }
+
+            // Settings2 — UserAgent override. Runtime 86+.
+            if (!Internal->Config.UserAgentOverride.IsEmpty())
+            {
+                ComPtr<ICoreWebView2Settings2> Settings2;
+                if (SUCCEEDED(Settings.As(&Settings2)))
+                {
+                    Settings2->put_UserAgent(*Internal->Config.UserAgentOverride);
+                    UE_LOG(LogInoWebUI, Verbose, TEXT("UserAgent override applied: %s"),
+                        *Internal->Config.UserAgentOverride);
+                }
+            }
+        }
+
+        // Mute at startup if requested. ICoreWebView2_8 — Runtime 88+.
+        if (Internal->Config.bStartMuted)
+        {
+            ComPtr<ICoreWebView2_8> WebView8;
+            if (SUCCEEDED(Internal->WebView.As(&WebView8)))
+            {
+                WebView8->put_IsMuted(1);
+            }
+        }
+    }
+
     // Initial bounds: the subsystem's BroadcastClientRectToAll runs right
     // after CreateWebView, so pending bounds are almost always queued by the
     // time we get here. If nothing was queued (edge case, e.g., viewport not
