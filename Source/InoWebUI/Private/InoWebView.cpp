@@ -229,6 +229,24 @@ void UInoWebView::DispatchIncomingEnvelope(const FString& EnvelopeJson)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Runtime polish (Phase 3)
+// ─────────────────────────────────────────────────────────────────────────────
+void UInoWebView::OpenDevTools()
+{
+    if (Impl.IsValid()) Impl->OpenDevTools();
+}
+
+void UInoWebView::ExecuteJavaScript(const FString& Code)
+{
+    if (Impl.IsValid()) Impl->ExecuteJavaScript(Code);
+}
+
+void UInoWebView::SetMuted(bool bMuted)
+{
+    if (Impl.IsValid()) Impl->SetMuted(bMuted);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  Queries
 // ─────────────────────────────────────────────────────────────────────────────
 bool UInoWebView::IsReady() const

@@ -109,6 +109,30 @@ public:
      * no per-platform behavior — it's just a callback slot.
      */
     TFunction<void(const FString&)> OnMessageReceivedJson;
+
+    // ── Phase 3 — runtime polish ────────────────────────────────────────────
+
+    /**
+     * Open the Chromium DevTools window. The underlying native API has no
+     * corresponding "close" call — the user closes DevTools themselves.
+     * bEnableDevTools in FInoWebViewConfig must be true for this to work.
+     */
+    virtual void OpenDevTools() = 0;
+
+    /**
+     * Execute arbitrary JavaScript inside the WebView. Fire-and-forget —
+     * use the messaging API (PostMessage / OnMessageReceived) if you need
+     * to get a result back to UE. Safe to call before IsReady() — scripts
+     * are queued and replayed once ready.
+     */
+    virtual void ExecuteJavaScript(const FString& Code) = 0;
+
+    /**
+     * Mute/unmute audio output from the page. Safe to call before IsReady();
+     * the requested state is queued and applied once ready. FInoWebViewConfig::
+     * bStartMuted handles the one-shot "mute at startup" case.
+     */
+    virtual void SetMuted(bool bMuted) = 0;
 };
 
 /**

@@ -105,6 +105,29 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
     FOnInoWebMessage OnMessageReceived;
 
+    // ── Runtime polish (Phase 3) ────────────────────────────────────────────
+
+    /**
+     * Open the Chromium DevTools window. Requires bEnableDevTools=true on
+     * the config passed to CreateWebView. No-op otherwise (with a warning).
+     * The user closes DevTools themselves — there's no programmatic close
+     * in the WebView2 API.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void OpenDevTools();
+
+    /**
+     * Execute arbitrary JavaScript. Fire-and-forget — use the messaging
+     * API (PostMessage / OnMessageReceived) if you need the result back.
+     * Safe to call before IsReady(); scripts are queued.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void ExecuteJavaScript(const FString& Code);
+
+    /** Mute / unmute audio output from the page. */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void SetMuted(bool bMuted);
+
     // ── State queries ───────────────────────────────────────────────────────
 
     /** True once the native WebView has finished its async construction. */

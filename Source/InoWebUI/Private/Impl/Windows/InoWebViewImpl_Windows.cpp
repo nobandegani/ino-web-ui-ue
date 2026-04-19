@@ -111,6 +111,12 @@ struct FInoWebViewImpl_Windows::FInternal
     /** Messages queued before the WebView was ready; replayed on ready. */
     TArray<FString>    PendingOutboundMessages;
 
+    /** JS scripts queued before the WebView was ready; replayed on ready. */
+    TArray<FString>    PendingScripts;
+
+    /** Last SetMuted() call before the WebView was ready; applied on ready. */
+    TOptional<bool>    PendingMute;
+
     /** Token for the add_WebMessageReceived registration. */
     EventRegistrationToken MessageReceivedToken{};
 
@@ -469,6 +475,23 @@ void FInoWebViewImpl_Windows::ApplyPendingOperations()
             }
         }
     }
+
+    // Replay JS snippets queued before ready.
+    if (Internal->PendingScripts.Num() > 0)
+    {
+        TArray<FString> Replay = MoveTemp(Internal->PendingScripts);
+        for (const FString& Code : Replay)
+        {
+            ExecuteJavaScript(Code);
+        }
+    }
+
+    // Apply a queued mute request.
+    if (Internal->PendingMute.IsSet())
+    {
+        SetMuted(Internal->PendingMute.GetValue());
+        Internal->PendingMute.Reset();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -518,6 +541,79 @@ void FInoWebViewImpl_Windows::SetVisible(bool bVisible)
     // Use 1/0 rather than TRUE/FALSE — those macros were un-#defined by
     // HideWindowsPlatformTypes.h above. put_IsVisible takes BOOL (typedef int).
     Internal->Controller->put_IsVisible(bVisible ? 1 : 0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Phase 3 — runtime polish
+// ─────────────────────────────────────────────────────────────────────────────
+void FInoWebViewImpl_Windows::OpenDevTools()
+{
+    check(IsInGameThread());
+
+    if (!bReady)
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("OpenDevTools called before WebView is ready; ignored."));
+        return;
+    }
+    if (!Internal->Config.bEnableDevTools)
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("OpenDevTools called but bEnableDevTools was false at construction. "
+                 "Set FInoWebViewConfig::bEnableDevTools = true to allow this."));
+        return;
+    }
+
+    const HRESULT Hr = Internal->WebView->OpenDevToolsWindow();
+    if (FAILED(Hr))
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("OpenDevToolsWindow failed: 0x%08X"), static_cast<uint32>(Hr));
+    }
+}
+
+void FInoWebViewImpl_Windows::ExecuteJavaScript(const FString& Code)
+{
+    check(IsInGameThread());
+
+    if (!bReady)
+    {
+        Internal->PendingScripts.Add(Code);
+        return;
+    }
+
+    // Fire-and-forget — pass a no-op handler rather than nullptr, since
+    // some WebView2 runtime versions don't tolerate a null handler.
+    const HRESULT Hr = Internal->WebView->ExecuteScript(
+        *Code,
+        Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+            [](HRESULT, PCWSTR) -> HRESULT { return S_OK; }).Get());
+
+    if (FAILED(Hr))
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("ExecuteScript failed: 0x%08X"), static_cast<uint32>(Hr));
+    }
+}
+
+void FInoWebViewImpl_Windows::SetMuted(bool bMuted)
+{
+    check(IsInGameThread());
+
+    if (!bReady)
+    {
+        Internal->PendingMute = bMuted;
+        return;
+    }
+
+    ComPtr<ICoreWebView2_8> WebView8;
+    if (FAILED(Internal->WebView.As(&WebView8)))
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("SetMuted: ICoreWebView2_8 unavailable (Runtime < 88)."));
+        return;
+    }
+    WebView8->put_IsMuted(bMuted ? 1 : 0);
 }
 
 void FInoWebViewImpl_Windows::PostMessageJson(const FString& Json)
