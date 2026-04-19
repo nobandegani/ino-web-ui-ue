@@ -6,7 +6,8 @@
 #   .\Scripts\AcquireWebView2SDK.ps1              # auto-detect latest stable
 #   .\Scripts\AcquireWebView2SDK.ps1 -Version 1.0.2849.39
 #
-# Run from the InoWebUI plugin root (or anywhere — the script finds its own location).
+# Compatible with Windows PowerShell 5.1 and PowerShell 7+.
+# Run from the InoWebUI plugin root (or anywhere — script resolves its own location).
 
 param(
     [string]$Version = ""
@@ -15,10 +16,17 @@ param(
 $ErrorActionPreference = "Stop"
 $PackageName = "Microsoft.Web.WebView2"
 
+# Helper: chain Join-Path calls so it works on PS 5.1 (two-arg) and PS 7+ alike.
+function JP {
+    $r = $args[0]
+    for ($i = 1; $i -lt $args.Count; $i++) { $r = Join-Path $r $args[$i] }
+    return $r
+}
+
 # Resolve paths relative to this script's location
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PluginRoot = Split-Path -Parent $ScriptDir
-$DestDir    = Join-Path $PluginRoot "Source" "ThirdParty" "WebView2"
+$DestDir    = JP $PluginRoot "Source" "ThirdParty" "WebView2"
 
 # ── 1. Resolve version ────────────────────────────────────────────────────────
 if (-not $Version) {
@@ -65,33 +73,36 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 # ── 4. Copy into plugin ThirdParty tree ──────────────────────────────────────
 $IncDst = Join-Path $DestDir "include"
-$LibDst = Join-Path $DestDir "lib" "Win64"
+$LibDst = JP $DestDir "lib" "Win64"
 
 New-Item -ItemType Directory -Force -Path $IncDst | Out-Null
 New-Item -ItemType Directory -Force -Path $LibDst | Out-Null
 
 # Headers
 foreach ($h in @("WebView2.h", "WebView2EnvironmentOptions.h")) {
-    $src = Join-Path $TempExtract "build" "native" "include" $h
+    $src = JP $TempExtract "build" "native" "include" $h
     if (Test-Path $src) {
         Copy-Item $src $IncDst -Force
+        Write-Host "  Copied: $h"
     } else {
-        Write-Warning "Header not found in package: $h"
+        Write-Warning "Header not found in package: $h (path: $src)"
     }
 }
 
-# Static loader lib (links into our binary — no extra DLL to ship at runtime)
-$StaticLib = Join-Path $TempExtract "build" "native" "x64" "WebView2LoaderStatic.lib"
+# Static loader lib  (links into our binary — no extra DLL to ship at runtime)
+$StaticLib = JP $TempExtract "build" "native" "x64" "WebView2LoaderStatic.lib"
 if (Test-Path $StaticLib) {
     Copy-Item $StaticLib $LibDst -Force
+    Write-Host "  Copied: WebView2LoaderStatic.lib"
 } else {
-    throw "WebView2LoaderStatic.lib not found in package. Package structure may have changed."
+    throw "WebView2LoaderStatic.lib not found at: $StaticLib"
 }
 
-# Runtime DLL (optional — only needed if you want to redistribute a fixed version)
-$RuntimeDll = Join-Path $TempExtract "runtimes" "win-x64" "native" "WebView2Loader.dll"
+# Runtime DLL (optional — for local redistribution/testing without system Edge)
+$RuntimeDll = JP $TempExtract "runtimes" "win-x64" "native" "WebView2Loader.dll"
 if (Test-Path $RuntimeDll) {
     Copy-Item $RuntimeDll $LibDst -Force
+    Write-Host "  Copied: WebView2Loader.dll (runtime)"
 }
 
 # Stamp the version so we skip re-download next time
