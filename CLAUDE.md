@@ -16,7 +16,7 @@ pixels in the HTML reveal the 3D scene underneath.
 This is fundamentally different from UE's built-in `WebBrowser` plugin, which
 textures the browser output — we skip all of that, zero copy, zero stall.
 
-**Current status: Phase 1 (Win64 only, no messaging).**
+**Current status: Phase 2 (Win64 only — overlay + two-way messaging).**
 
 ---
 
@@ -176,6 +176,84 @@ View->LoadLocalFile(TEXT("WebUI/dist/index.html"));
 
 ---
 
+## Two-way messaging (Phase 2)
+
+### Wire format
+
+All messages — both directions — are a fixed JSON envelope:
+
+```
+{ "channel": "<string>", "payload": <any JSON value> }
+```
+
+The JS bridge (`window.InoWebUI`) and the C++ `UInoWebView` both produce
+and consume that shape. The channel is a logical dispatch key; the payload
+is whatever JSON your message needs.
+
+### UE -> JS
+
+```cpp
+View->PostMessage(TEXT("playerState"), TEXT("{\"hp\":80,\"ammo\":24}"));
+```
+
+`PayloadJson` must be valid JSON. Empty string becomes `null`. Safe to call
+before `IsReady()` — messages are queued and replayed once the WebView's
+async construction finishes.
+
+### JS -> UE
+
+```cpp
+// C++
+View->OnMessageReceived.AddDynamic(this, &AMyActor::HandleWebMessage);
+
+void AMyActor::HandleWebMessage(FName Channel, const FString& PayloadJson)
+{
+    if (Channel == TEXT("startMission"))
+    {
+        TSharedPtr<FJsonObject> Obj;
+        FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(PayloadJson), Obj);
+        const FString Id = Obj->GetStringField(TEXT("id"));
+        // ...
+    }
+}
+```
+
+In Blueprint the delegate appears as a red event pin on the `UInoWebView`
+with `Channel` (FName) and `PayloadJson` (String) outputs. Use the built-in
+"Parse JSON" / "Get Field" nodes to read the payload.
+
+### JS-side API
+
+A `window.InoWebUI` object is auto-injected on every page load via
+`ICoreWebView2::AddScriptToExecuteOnDocumentCreated`, so it's always
+available before any page script runs.
+
+```js
+// Send UE -> receive in C++ OnMessageReceived
+window.InoWebUI.send('startMission', { id: 'tutorial', difficulty: 'hard' });
+
+// Subscribe to C++ PostMessage
+window.InoWebUI.on('playerState', (data) => {
+  hpBar.setWidth(data.hp);
+  ammoLabel.textContent = data.ammo;
+});
+
+// Unsubscribe
+window.InoWebUI.off('playerState', handlerRef);
+```
+
+The bridge is ES5-compatible (no `const`, no `Map`, no arrow functions) so
+it works on arbitrary pages regardless of transpile target.
+
+### Threading
+
+All messaging runs on the game thread. WebView2 fires callbacks on the
+thread that created the environment (us: game thread). Blueprint dynamic
+multicast broadcasts also happen on the calling thread. End-to-end
+single-threaded — no `AsyncTask(ENamedThreads::GameThread, ...)` needed.
+
+---
+
 ## Adding features
 
 ### A new simple option (user agent, context menus, etc.)
@@ -197,17 +275,18 @@ View->LoadLocalFile(TEXT("WebUI/dist/index.html"));
 
 ---
 
-## Roadmap (not in Phase 1)
+## Roadmap
 
-| Phase | Scope |
-|---|---|
-| 2 | Two-way messaging (`PostMessage`, `OnMessageReceived` delegate, JS bridge injection) |
-| 3 | DevTools toggle, UserAgent override, context-menu & accelerator toggles |
-| 4 | Pluggable local-content server (so shipped builds don't need `file://`) |
-| 5 | macOS implementation (`WKWebView`) |
-| 6 | Android implementation (`android.webkit.WebView`) |
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | Overlay: create, load URL, show/hide, resize tracking | ✔ done |
+| 2 | Two-way messaging (`PostMessage`, `OnMessageReceived`, `window.InoWebUI`) | ✔ done |
+| 3 | DevTools toggle, UserAgent override, context-menu & accelerator toggles | — |
+| 4 | Pluggable local-content server (so shipped builds don't need `file://`) | — |
+| 5 | macOS implementation (`WKWebView`) | — |
+| 6 | Android implementation (`android.webkit.WebView`) | — |
 
-None of these exist yet. Don't stub them in — add them when they're needed.
+Don't stub future phases — add them when they're needed.
 
 ---
 
