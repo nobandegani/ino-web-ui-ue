@@ -2,14 +2,11 @@
 
 #include "InoWebView.h"
 #include "InoWebUILog.h"
-#include "Impl/IInoWebViewImpl.h"
 #include "Misc/Paths.h"
 
-UInoWebView::UInoWebView()  = default;
+// IInoWebViewImpl is already pulled in via InoWebView.h — no extra include here.
 
-// Defined here (not in the header) so that IInoWebViewImpl is a complete
-// type when TUniquePtr<IInoWebViewImpl> unwinds during UInoWebView teardown.
-UInoWebView::~UInoWebView() = default;
+UInoWebView::UInoWebView() = default;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Initialization (called by the subsystem only)

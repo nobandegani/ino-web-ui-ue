@@ -1,6 +1,6 @@
 // Copyright Inoksan. All Rights Reserved.
 
-#include "IInoWebViewImpl.h"
+#include "IInoWebViewImpl.h"      // now a public header
 #include "InoWebUILog.h"
 
 #if PLATFORM_WINDOWS

@@ -51,6 +51,14 @@ pimpl pattern keeps them inside exactly **one** .cpp file
 cost, and adding macOS/Android later doesn't leak platform types into the
 UObject headers.
 
+`IInoWebViewImpl.h` itself is **public** (not private) even though it's the
+"internal" interface. It has to be public because `UInoWebView` holds a
+`TUniquePtr<IInoWebViewImpl>`, and UHT-generated code (`UInoWebView.gen.cpp`,
+specifically the FVTableHelper constructor) needs the complete type at
+compile time to emit the TUniquePtr exception-unwinding path. IInoWebViewImpl.h
+contains zero platform-specific code, so publishing it costs nothing —
+`Private/Impl/Windows/` is still where the actual COM code hides.
+
 ### Key design rules
 
 1. **Game thread only.** All public methods `check(IsInGameThread())`.
@@ -94,13 +102,13 @@ Plugins/InoWebUI/
 │       │   ├── InoWebUILog.h                     LogInoWebUI category
 │       │   ├── InoWebUITypes.h                   FInoWebViewConfig
 │       │   ├── InoWebUISubsystem.h               UGameInstanceSubsystem API
-│       │   └── InoWebView.h                      UObject handle API
+│       │   ├── InoWebView.h                      UObject handle API
+│       │   └── IInoWebViewImpl.h                 pimpl contract (no platform headers)
 │       └── Private/
 │           ├── InoWebUI.cpp
 │           ├── InoWebUISubsystem.cpp
 │           ├── InoWebView.cpp
 │           └── Impl/
-│               ├── IInoWebViewImpl.h
 │               ├── InoWebViewFactory.cpp         platform-dispatches
 │               └── Windows/
 │                   ├── InoWebViewImpl_Windows.h

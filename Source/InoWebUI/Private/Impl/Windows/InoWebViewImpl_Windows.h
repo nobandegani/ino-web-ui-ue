@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "../IInoWebViewImpl.h"
+#include "IInoWebViewImpl.h"
 
 #if PLATFORM_WINDOWS
 
