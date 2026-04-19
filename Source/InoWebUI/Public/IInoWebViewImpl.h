@@ -8,9 +8,15 @@
 /**
  * IInoWebViewImpl — platform-agnostic contract for a single native WebView.
  *
- * This header is PRIVATE. It is never included by UObject-layer code
- * (UInoWebView, UInoWebUISubsystem) to keep platform headers (Windows.h,
- * WebView2.h) out of the public API surface.
+ * This header is public, but only because UInoWebView holds a
+ * TUniquePtr<IInoWebViewImpl> member and UHT-generated code needs the
+ * complete type at compile time (FVTableHelper ctor, exception unwinding
+ * paths). It contains NO platform-specific includes — just CoreMinimal and
+ * FInoWebViewConfig — so publishing it leaks nothing. Concrete implementations
+ * (e.g., FInoWebViewImpl_Windows) stay in Private/Impl/<Platform>/.
+ *
+ * Normal consumer code should never need to touch this interface — the
+ * UObject layer (UInoWebView / UInoWebUISubsystem) is the intended API.
  *
  * Implementations (one per platform):
  *   • Windows → FInoWebViewImpl_Windows  (WebView2)

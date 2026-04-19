@@ -4,7 +4,7 @@
 
 #include "InoWebUILog.h"
 #include "InoWebView.h"
-#include "Impl/IInoWebViewImpl.h"
+#include "IInoWebViewImpl.h"    // now a public header (see commit 16140a0)
 
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
@@ -237,11 +237,16 @@ void UInoWebUISubsystem::BroadcastClientRectToAll()
     TSharedPtr<SWindow> Window = GetParentWindow();
     if (!Window.IsValid()) return;
 
-    // GetClientSizeInScreen returns physical pixels on Windows, which is
-    // what WebView2's put_Bounds expects — no DPI conversion needed.
-    const FVector2D  ClientSize = Window->GetClientSizeInScreen();
-    const int32      Width  = FMath::Max(0, FMath::CeilToInt(ClientSize.X));
-    const int32      Height = FMath::Max(0, FMath::CeilToInt(ClientSize.Y));
+    // SWindow::GetClientSizeInScreen returns UE::Slate::FDeprecateVector2DResult
+    // (FVector2f-based in UE 5.7). Physical pixels on Windows — matches what
+    // WebView2::put_Bounds expects, so no DPI conversion is needed.
+    // Using 'auto' avoids FVector2f↔FVector2D deprecation warnings.
+    const auto ClientSize = Window->GetClientSizeInScreen();
+
+    // CeilToInt32 (explicit int32) — plain CeilToInt overloads to int64 for
+    // double input, which would narrow when assigned to int32.
+    const int32 Width  = FMath::Max(0, FMath::CeilToInt32(ClientSize.X));
+    const int32 Height = FMath::Max(0, FMath::CeilToInt32(ClientSize.Y));
 
     // Origin is always (0,0) because put_Bounds is in parent-client coords.
     for (const auto& Pair : WebViews)
