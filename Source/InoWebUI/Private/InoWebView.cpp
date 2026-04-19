@@ -105,6 +105,16 @@ void UInoWebView::Init(FName InName, TUniquePtr<IInoWebViewImpl>&& InImpl,
         OnDocumentTitleChanged.Broadcast(Title);
     };
 
+    Impl->OnScriptDialogCallback = [this](EInoScriptDialogKind Kind, const FString& Message)
+    {
+        OnScriptDialog.Broadcast(Kind, Message);
+    };
+
+    Impl->OnNewWindowRequestedCallback = [this](const FString& URI)
+    {
+        OnNewWindowRequested.Broadcast(URI);
+    };
+
     const bool bOk = Impl->Initialize(ParentNativeHandle, Config);
     if (!bOk)
     {

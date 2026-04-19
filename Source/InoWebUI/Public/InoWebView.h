@@ -40,6 +40,17 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInoWebNavigationCompleted,
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInoWebTitleChanged,
     const FString&, Title);
 
+/** Fired when JS calls alert/confirm/prompt. Observation only — suppression
+ *  happens when bAllowScriptDialogs is false. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInoWebScriptDialog,
+    EInoScriptDialogKind, Kind,
+    const FString&,       Message);
+
+/** Fired when JS calls window.open or clicks target="_blank". Observation only —
+ *  the popup is blocked by default. BP can call LoadURL(URI) to redirect. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInoWebNewWindowRequested,
+    const FString&, URI);
+
 /**
  * UInoWebView — Blueprint-visible handle to a single native WebView overlay.
  *
@@ -133,6 +144,14 @@ public:
     /** Fires when document.title changes. */
     UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
     FOnInoWebTitleChanged OnDocumentTitleChanged;
+
+    /** Fires when a JS dialog opens (alert/confirm/prompt). Observation only. */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebScriptDialog OnScriptDialog;
+
+    /** Fires when JS requests a new window (window.open/_blank). Observation only. */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebNewWindowRequested OnNewWindowRequested;
 
     // ── Runtime polish (Phase 3) ────────────────────────────────────────────
 

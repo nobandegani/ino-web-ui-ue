@@ -202,6 +202,8 @@ struct FInoWebViewImpl_Windows::FInternal
     EventRegistrationToken NavigationStartingToken{};
     EventRegistrationToken NavigationCompletedToken{};
     EventRegistrationToken DocumentTitleChangedToken{};
+    EventRegistrationToken ScriptDialogOpeningToken{};
+    EventRegistrationToken NewWindowRequestedToken{};
 
     /**
      * Lifetime token. Async callbacks capture a TWeakPtr to this; if the
@@ -479,6 +481,93 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
                     return S_OK;
                 }).Get(),
             &Internal->DocumentTitleChangedToken);
+
+        // ── JS dialog suppression ───────────────────────────────────────────
+        // Default: silently suppress all alert/confirm/prompt/beforeunload.
+        // Subscribing but NOT calling Accept() on the args means the dialog
+        // is cancelled — JS sees false for confirm, null for prompt, etc.
+        Internal->WebView->add_ScriptDialogOpening(
+            Callback<ICoreWebView2ScriptDialogOpeningEventHandler>(
+                [this, WeakLifetime](ICoreWebView2*, ICoreWebView2ScriptDialogOpeningEventArgs* Args) -> HRESULT
+                {
+                    if (!WeakLifetime.IsValid() || !Args) return S_OK;
+
+                    COREWEBVIEW2_SCRIPT_DIALOG_KIND KindRaw = COREWEBVIEW2_SCRIPT_DIALOG_KIND_ALERT;
+                    Args->get_Kind(&KindRaw);
+
+                    LPWSTR MsgRaw = nullptr;
+                    FString Message;
+                    if (SUCCEEDED(Args->get_Message(&MsgRaw)) && MsgRaw)
+                    {
+                        Message = MsgRaw;
+                        CoTaskMemFree(MsgRaw);
+                    }
+
+                    const EInoScriptDialogKind Kind = [&]
+                    {
+                        switch (KindRaw)
+                        {
+                            case COREWEBVIEW2_SCRIPT_DIALOG_KIND_CONFIRM:      return EInoScriptDialogKind::Confirm;
+                            case COREWEBVIEW2_SCRIPT_DIALOG_KIND_PROMPT:       return EInoScriptDialogKind::Prompt;
+                            case COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD: return EInoScriptDialogKind::BeforeUnload;
+                            default:                                          return EInoScriptDialogKind::Alert;
+                        }
+                    }();
+
+                    // Config-gated behavior: if the user explicitly allowed
+                    // dialogs, Accept() lets the native dialog proceed. Default
+                    // is to suppress (never call Accept), which cancels it.
+                    if (Internal->Config.bAllowScriptDialogs)
+                    {
+                        Args->Accept();
+                    }
+                    else
+                    {
+                        UE_LOG(LogInoWebUI, Verbose,
+                            TEXT("Suppressed JS dialog (%d): %s"),
+                            static_cast<int32>(Kind), *Message);
+                    }
+
+                    if (OnScriptDialogCallback)
+                    {
+                        OnScriptDialogCallback(Kind, Message);
+                    }
+                    return S_OK;
+                }).Get(),
+            &Internal->ScriptDialogOpeningToken);
+
+        // ── window.open / target="_blank" ───────────────────────────────────
+        // Default: block popups. put_Handled(TRUE) tells WebView2 we've taken
+        // responsibility for the request; not setting a NewWindow means JS
+        // window.open() returns null.
+        Internal->WebView->add_NewWindowRequested(
+            Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+                [this, WeakLifetime](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* Args) -> HRESULT
+                {
+                    if (!WeakLifetime.IsValid() || !Args) return S_OK;
+
+                    FString URI;
+                    LPWSTR UriRaw = nullptr;
+                    if (SUCCEEDED(Args->get_Uri(&UriRaw)) && UriRaw)
+                    {
+                        URI = UriRaw;
+                        CoTaskMemFree(UriRaw);
+                    }
+
+                    if (!Internal->Config.bAllowNewWindows)
+                    {
+                        Args->put_Handled(1);
+                        UE_LOG(LogInoWebUI, Verbose,
+                            TEXT("Blocked window.open / new window request: %s"), *URI);
+                    }
+
+                    if (OnNewWindowRequestedCallback)
+                    {
+                        OnNewWindowRequestedCallback(URI);
+                    }
+                    return S_OK;
+                }).Get(),
+            &Internal->NewWindowRequestedToken);
     }
 
     // ── Hook JS -> UE messaging ─────────────────────────────────────────────

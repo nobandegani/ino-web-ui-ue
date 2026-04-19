@@ -117,6 +117,8 @@ public:
     TFunction<void(const FString& URI)>                  OnNavigationStartingCallback;
     TFunction<void(bool bSuccess, const FString& URI)>   OnNavigationCompletedCallback;
     TFunction<void(const FString& Title)>                OnDocumentTitleChangedCallback;
+    TFunction<void(EInoScriptDialogKind, const FString& Message)>  OnScriptDialogCallback;
+    TFunction<void(const FString& URI)>                  OnNewWindowRequestedCallback;
 
     // ── Phase 3 — runtime polish ────────────────────────────────────────────
 

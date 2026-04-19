@@ -6,6 +6,19 @@
 #include "UObject/ObjectMacros.h"
 #include "InoWebUITypes.generated.h"
 
+/**
+ * Which flavor of JS dialog fired (alert/confirm/prompt/beforeunload).
+ * Maps 1:1 to COREWEBVIEW2_SCRIPT_DIALOG_KIND.
+ */
+UENUM(BlueprintType)
+enum class EInoScriptDialogKind : uint8
+{
+    Alert         UMETA(DisplayName = "alert()"),
+    Confirm       UMETA(DisplayName = "confirm()"),
+    Prompt        UMETA(DisplayName = "prompt()"),
+    BeforeUnload  UMETA(DisplayName = "onbeforeunload"),
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  FInoWebViewConfig
 //
@@ -153,4 +166,24 @@ struct INOWEBUI_API FInoWebViewConfig
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
     TArray<FString> AllowedURIPatterns;
+
+    /**
+     * If false (default), JS alert() / confirm() / prompt() / onbeforeunload
+     * dialogs are SUPPRESSED — alert() returns normally, confirm()/prompt()
+     * see "cancelled", beforeunload is skipped. The OnScriptDialog delegate
+     * still fires so you can observe and/or present your own in-game UI.
+     *
+     * Turn on only for debug/dev when you actually want the native dialogs.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    bool bAllowScriptDialogs = false;
+
+    /**
+     * If false (default), JavaScript window.open() / target="_blank" links
+     * are BLOCKED — no popup Chromium window pops up over your game. The
+     * OnNewWindowRequested delegate fires so BP can listen and, e.g., call
+     * LoadURL() to redirect to the same frame instead.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    bool bAllowNewWindows = false;
 };
