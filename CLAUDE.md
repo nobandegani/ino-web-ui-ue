@@ -193,12 +193,22 @@ is whatever JSON your message needs.
 ### UE -> JS
 
 ```cpp
-View->PostMessage(TEXT("playerState"), TEXT("{\"hp\":80,\"ammo\":24}"));
+// C++
+FJsonObjectWrapper Payload;
+Payload.JsonObject->SetNumberField(TEXT("hp"), 80);
+Payload.JsonObject->SetNumberField(TEXT("ammo"), 24);
+View->PostMessage(TEXT("playerState"), Payload);
 ```
 
-`PayloadJson` must be valid JSON. Empty string becomes `null`. Safe to call
-before `IsReady()` — messages are queued and replayed once the WebView's
-async construction finishes.
+In Blueprint, construct a JsonObject using the **JsonBlueprintUtilities**
+nodes (auto-enabled by this plugin):
+  - `Load Json from String` — parse `{"hp":80,"ammo":24}` into a wrapper
+  - `Set Field` — add/replace individual fields (typed: int/float/string/...)
+  - `Post Message` — send it
+
+Empty / invalid wrappers send the literal `null`. Safe to call before
+`IsReady()` — messages are queued and replayed once the WebView's async
+construction finishes.
 
 ### JS -> UE
 
@@ -206,21 +216,23 @@ async construction finishes.
 // C++
 View->OnMessageReceived.AddDynamic(this, &AMyActor::HandleWebMessage);
 
-void AMyActor::HandleWebMessage(FName Channel, const FString& PayloadJson)
+void AMyActor::HandleWebMessage(FName Channel, const FJsonObjectWrapper& Payload)
 {
-    if (Channel == TEXT("startMission"))
+    if (Channel == TEXT("startMission") && Payload.JsonObject.IsValid())
     {
-        TSharedPtr<FJsonObject> Obj;
-        FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(PayloadJson), Obj);
-        const FString Id = Obj->GetStringField(TEXT("id"));
+        const FString Id = Payload.JsonObject->GetStringField(TEXT("id"));
         // ...
     }
 }
 ```
 
 In Blueprint the delegate appears as a red event pin on the `UInoWebView`
-with `Channel` (FName) and `PayloadJson` (String) outputs. Use the built-in
-"Parse JSON" / "Get Field" nodes to read the payload.
+with `Channel` (FName) and `Payload` (JsonObject) outputs. Use the
+JsonBlueprintUtilities nodes — `Get Field`, `Has Field`, `Get Field Names`,
+`Get Json String` — to read fields.
+
+Non-object JS payloads (scalars, arrays, null) are auto-wrapped in
+`{"value": <payload>}` so the BP side always receives a usable JsonObject.
 
 ### JS-side API
 
