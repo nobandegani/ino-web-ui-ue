@@ -9,6 +9,19 @@
 #include "InoWebView.generated.h"
 
 /**
+ * Fired when the loaded page posts a message via window.InoWebUI.send(...).
+ *   Channel     — the channel name the page passed to send()
+ *   PayloadJson — the payload re-serialized back to a JSON string (parse it
+ *                 with BP "Parse JSON" nodes or C++ FJsonSerializer)
+ *
+ * Always broadcast on the game thread. Bind it as a Blueprint event pin or
+ * via OnMessageReceived.AddDynamic() in C++.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInoWebMessage,
+    FName,          Channel,
+    const FString&, PayloadJson);
+
+/**
  * UInoWebView — Blueprint-visible handle to a single native WebView overlay.
  *
  * You never construct this directly. Ask UInoWebUISubsystem::CreateWebView()
@@ -62,6 +75,33 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
     void Hide();
 
+    // ── Messaging (Phase 2) ─────────────────────────────────────────────────
+
+    /**
+     * Push a message to the loaded page. On the JS side, handlers subscribed
+     * via window.InoWebUI.on(Channel, ...) will fire with the parsed Payload.
+     *
+     * @param Channel      Short identifier the JS side listens on.
+     * @param PayloadJson  Valid JSON string. Any JSON value is allowed:
+     *                       '{"hp":80,"max":100}'   // object
+     *                       '[1,2,3]'               // array
+     *                       '"ready"'               // string (note the quotes)
+     *                       '42'                    // number
+     *                     Empty string is treated as JSON null.
+     *
+     * Safe to call before the WebView finishes loading; messages are queued
+     * and delivered once the underlying native WebView is ready.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void PostMessage(FName Channel, const FString& PayloadJson);
+
+    /**
+     * Fires whenever the page calls window.InoWebUI.send(Channel, payload).
+     * Bind as a Blueprint event pin or with AddDynamic() in C++.
+     */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebMessage OnMessageReceived;
+
     // ── State queries ───────────────────────────────────────────────────────
 
     /** True once the native WebView has finished its async construction. */
@@ -104,4 +144,11 @@ private:
 
     /** Platform implementation. Null on unsupported platforms / after shutdown. */
     TUniquePtr<IInoWebViewImpl> Impl;
+
+    /**
+     * Parse the raw envelope JSON pushed by the impl's OnMessageReceivedJson
+     * callback and broadcast OnMessageReceived to Blueprint subscribers.
+     * Always runs on the game thread.
+     */
+    void DispatchIncomingEnvelope(const FString& EnvelopeJson);
 };
