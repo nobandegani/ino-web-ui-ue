@@ -26,6 +26,69 @@ using Microsoft::WRL::ComPtr;
 using Microsoft::WRL::Callback;
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  GInoWebUIBridgeScript
+//
+//  Injected into every page via ICoreWebView2::AddScriptToExecuteOnDocumentCreated,
+//  which runs the script *before* any page script. This gives every page a
+//  consistent `window.InoWebUI` API:
+//
+//    window.InoWebUI.send(channel, payload)   — push a message to UE
+//    window.InoWebUI.on(channel, handler)     — subscribe to UE messages
+//    window.InoWebUI.off(channel, handler)    — unsubscribe
+//
+//  Wire format is a fixed envelope { channel: string, payload: any }
+//  serialized as JSON, carried by window.chrome.webview.postMessage /
+//  window.chrome.webview onmessage. The UE side (UInoWebView) parses the
+//  same envelope, so both directions stay symmetric.
+//
+//  Kept as a raw string literal — no build-time asset dependency, no file
+//  I/O at runtime, script gets folded into the DLL.
+// ─────────────────────────────────────────────────────────────────────────────
+static const TCHAR* GInoWebUIBridgeScript = TEXT(R"JS(
+(function() {
+  if (typeof window === 'undefined' || window.InoWebUI) return;
+  if (!window.chrome || !window.chrome.webview) return;
+
+  var listeners = {};
+
+  window.InoWebUI = {
+    version: '1.0',
+    send: function(channel, payload) {
+      try {
+        var envelope = { channel: String(channel), payload: payload };
+        window.chrome.webview.postMessage(JSON.stringify(envelope));
+      } catch (e) { console.error('InoWebUI.send failed:', e); }
+    },
+    on: function(channel, handler) {
+      if (typeof handler !== 'function') return;
+      if (!listeners[channel]) listeners[channel] = [];
+      listeners[channel].push(handler);
+    },
+    off: function(channel, handler) {
+      var arr = listeners[channel];
+      if (!arr) return;
+      var i = arr.indexOf(handler);
+      if (i >= 0) arr.splice(i, 1);
+    }
+  };
+
+  window.chrome.webview.addEventListener('message', function(evt) {
+    try {
+      var data = evt.data;
+      var envelope = (typeof data === 'string') ? JSON.parse(data) : data;
+      if (!envelope || typeof envelope.channel !== 'string') return;
+      var arr = listeners[envelope.channel];
+      if (!arr) return;
+      for (var i = 0; i < arr.length; i++) {
+        try { arr[i](envelope.payload); }
+        catch (e) { console.error('InoWebUI handler error:', e); }
+      }
+    } catch (e) { console.error('InoWebUI receive error:', e); }
+  });
+})();
+)JS");
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  FInternal — all WebView2 COM state lives here.
 // ─────────────────────────────────────────────────────────────────────────────
 struct FInoWebViewImpl_Windows::FInternal
@@ -226,6 +289,22 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
     {
         UE_LOG(LogInoWebUI, Error, TEXT("get_CoreWebView2 failed."));
         return;
+    }
+
+    // ── Inject the JS-side bridge (window.InoWebUI) on every page load ──────
+    // AddScriptToExecuteOnDocumentCreated runs BEFORE any page script, so
+    // by the time the page's own JS runs, window.InoWebUI is already available.
+    {
+        const HRESULT HrScript = Internal->WebView->AddScriptToExecuteOnDocumentCreated(
+            GInoWebUIBridgeScript,
+            /*completed handler=*/ nullptr);
+        if (FAILED(HrScript))
+        {
+            UE_LOG(LogInoWebUI, Warning,
+                TEXT("AddScriptToExecuteOnDocumentCreated failed: 0x%08X; "
+                     "window.InoWebUI bridge will not be available."),
+                static_cast<uint32>(HrScript));
+        }
     }
 
     // ── Hook JS -> UE messaging ─────────────────────────────────────────────
