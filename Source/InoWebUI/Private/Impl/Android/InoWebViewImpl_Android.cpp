@@ -46,6 +46,10 @@ namespace InoWebUIJNI
     static jmethodID MFocusWebView       = nullptr;
     static jmethodID MSetZoomFactor      = nullptr;
     static jmethodID MClearAllCookies    = nullptr;
+    static jmethodID MSetDevToolsEnabled = nullptr;
+    static jmethodID MExecuteJavaScript  = nullptr;
+    static jmethodID MSetUserAgent       = nullptr;
+    static jmethodID MSetContextMenusEnabled = nullptr;
 
     /**
      * Look up the Java helper class and all the static methods we call.
@@ -88,14 +92,20 @@ namespace InoWebUIJNI
         MPostMessage       = Env->GetStaticMethodID(JavaClass, "postMessageJson",    "(ILjava/lang/String;)V");
         MConfigureLockdown = Env->GetStaticMethodID(JavaClass, "configureLockdown",  "(IZ[Ljava/lang/String;)V");
         MConfigureDialogs  = Env->GetStaticMethodID(JavaClass, "configureDialogs",   "(IZZ)V");
-        MFocusWebView      = Env->GetStaticMethodID(JavaClass, "focusWebView",       "(I)V");
-        MSetZoomFactor     = Env->GetStaticMethodID(JavaClass, "setZoomFactor",      "(IF)V");
-        MClearAllCookies   = Env->GetStaticMethodID(JavaClass, "clearAllCookies",    "(I)V");
+        MFocusWebView           = Env->GetStaticMethodID(JavaClass, "focusWebView",          "(I)V");
+        MSetZoomFactor          = Env->GetStaticMethodID(JavaClass, "setZoomFactor",         "(IF)V");
+        MClearAllCookies        = Env->GetStaticMethodID(JavaClass, "clearAllCookies",       "(I)V");
+        MSetDevToolsEnabled     = Env->GetStaticMethodID(JavaClass, "setDevToolsEnabled",    "(IZ)V");
+        MExecuteJavaScript      = Env->GetStaticMethodID(JavaClass, "executeJavaScript",     "(ILjava/lang/String;)V");
+        MSetUserAgent           = Env->GetStaticMethodID(JavaClass, "setUserAgent",          "(ILjava/lang/String;)V");
+        MSetContextMenusEnabled = Env->GetStaticMethodID(JavaClass, "setContextMenusEnabled","(IZ)V");
 
         if (!MCreate || !MDestroy || !MLoadURL || !MSetVisible || !MReload
             || !MSyncBounds || !MSetVirtualHost || !MSetupMessaging || !MPostMessage
             || !MConfigureLockdown || !MConfigureDialogs
-            || !MFocusWebView || !MSetZoomFactor || !MClearAllCookies)
+            || !MFocusWebView || !MSetZoomFactor || !MClearAllCookies
+            || !MSetDevToolsEnabled || !MExecuteJavaScript || !MSetUserAgent
+            || !MSetContextMenusEnabled)
         {
             UE_LOG(LogInoWebUI, Error,
                 TEXT("One or more InoWebViewAndroid methods not found — Java helper "
@@ -206,6 +216,27 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
         static_cast<jint>(InstanceId),
         static_cast<jboolean>(Config.bAllowScriptDialogs ? JNI_TRUE : JNI_FALSE),
         static_cast<jboolean>(Config.bAllowNewWindows     ? JNI_TRUE : JNI_FALSE));
+
+    // Step 2e: Phase 3 polish — dev tools, context menus, user agent.
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetDevToolsEnabled,
+        static_cast<jint>(InstanceId),
+        static_cast<jboolean>(Config.bEnableDevTools ? JNI_TRUE : JNI_FALSE));
+
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetContextMenusEnabled,
+        static_cast<jint>(InstanceId),
+        static_cast<jboolean>(Config.bEnableContextMenus ? JNI_TRUE : JNI_FALSE));
+
+    if (!Config.UserAgentOverride.IsEmpty())
+    {
+        jstring JUA = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.UserAgentOverride));
+        Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetUserAgent,
+            static_cast<jint>(InstanceId), JUA);
+        Env->DeleteLocalRef(JUA);
+    }
+
+    // bStartMuted, bEnableAcceleratorKeys: no direct Android equivalents.
+    //  • Accelerator keys (F5 etc.) don't exist on a touch device.
+    //  • WebView has no mute API — SetMuted below is a no-op with a warning.
 
     // Step 3: navigate, if requested.
     if (!Config.InitialURL.IsEmpty())
@@ -475,21 +506,40 @@ Java_com_inoksan_webui_InoWebViewAndroid_nativeOnProcessFailed(
 
 void FInoWebViewImpl_Android::OpenDevTools()
 {
-    UE_LOG(LogInoWebUI, Warning,
-        TEXT("OpenDevTools not implemented on Android — use chrome://inspect from a "
-             "connected desktop Chrome instead."));
+    // Android WebView has no programmatic DevTools window. Remote debugging
+    // is the equivalent: set WebContentsDebuggingEnabled (done at Initialize
+    // via Config.bEnableDevTools) and connect chrome://inspect from a
+    // desktop Chrome on the same machine via adb.
+    UE_LOG(LogInoWebUI, Log,
+        TEXT("OpenDevTools on Android: connect this device to a desktop via USB, "
+             "open chrome://inspect/#devices in desktop Chrome, and pick this "
+             "WebView. (bEnableDevTools must be true on the config.)"));
 }
 
-void FInoWebViewImpl_Android::ExecuteJavaScript(const FString& /*Code*/)
+void FInoWebViewImpl_Android::ExecuteJavaScript(const FString& Code)
 {
-    UE_LOG(LogInoWebUI, Warning,
-        TEXT("ExecuteJavaScript not implemented on Android MVP (Phase 6)."));
+    check(IsInGameThread());
+    if (bDestroyed || Code.IsEmpty()) return;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+
+    jstring JCode = Env->NewStringUTF(TCHAR_TO_UTF8(*Code));
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MExecuteJavaScript,
+        static_cast<jint>(InstanceId), JCode);
+    Env->DeleteLocalRef(JCode);
 }
 
 void FInoWebViewImpl_Android::SetMuted(bool /*bMuted*/)
 {
+    // android.webkit.WebView has no audio-mute API. Options are:
+    //   • Inject JS that mutes every <audio>/<video> element
+    //   • Route the whole app through AudioManager.setStreamMute
+    // Both are more surgery than "toggle a property" and affect scope beyond
+    // the WebView. Leaving as a diagnostic no-op until a concrete use case
+    // comes up.
     UE_LOG(LogInoWebUI, Warning,
-        TEXT("SetMuted not implemented on Android MVP (Phase 6)."));
+        TEXT("SetMuted: not supported on android.webkit.WebView. "
+             "Mute individual media elements via ExecuteJavaScript instead."));
 }
 
 void FInoWebViewImpl_Android::FocusWebView()

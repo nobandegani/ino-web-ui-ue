@@ -703,6 +703,79 @@ public class InoWebViewAndroid
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    //  Phase 3 polish — DevTools / ExecuteJS / UserAgent / context menus
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** Enable remote Chromium DevTools inspection for every WebView in the
+     *  process. Connect Android via USB, open chrome://inspect/#devices in
+     *  desktop Chrome, and you'll see this WebView listed. The "id" arg is
+     *  unused (the setting is process-wide) but kept for API symmetry. */
+    public static void setDevToolsEnabled(final int id, final boolean enabled)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView.setWebContentsDebuggingEnabled(enabled);
+                if (enabled) {
+                    Log.debug("DevTools enabled — open chrome://inspect on a connected "
+                            + "desktop Chrome to inspect this WebView");
+                }
+            }
+        });
+    }
+
+    public static void executeJavaScript(final int id, final String code)
+    {
+        final Activity activity = getActivity();
+        if (activity == null || code == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv != null) wv.evaluateJavascript(code, null);
+            }
+        });
+    }
+
+    public static void setUserAgent(final int id, final String userAgent)
+    {
+        final Activity activity = getActivity();
+        if (activity == null || userAgent == null || userAgent.isEmpty()) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv != null) wv.getSettings().setUserAgentString(userAgent);
+            }
+        });
+    }
+
+    /** Suppress the browser's built-in long-press context menu (text-select,
+     *  "save image", etc.). Text fields still show the system copy/paste
+     *  toolbar via the standard IME — we only kill the BROWSER menu. */
+    public static void setContextMenusEnabled(final int id, final boolean enabled)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv == null) return;
+                if (enabled) {
+                    wv.setOnLongClickListener(null);     // back to default
+                    wv.setLongClickable(true);
+                } else {
+                    wv.setOnLongClickListener(new android.view.View.OnLongClickListener() {
+                        @Override public boolean onLongClick(android.view.View v) {
+                            return true; // consume — no menu
+                        }
+                    });
+                    wv.setLongClickable(false);
+                }
+            }
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     //  Layout / bounds
     // ─────────────────────────────────────────────────────────────────────
     public static void syncBounds(final int id,
