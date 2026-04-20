@@ -345,9 +345,17 @@ FString UInoWebUISubsystem::ResolveBundleContentFolder(UInoWebBundle* Bundle)
         return FString();
     }
 
-    const FString ExtractRoot = FPaths::ProjectSavedDir() / TEXT("InoWebBundles");
-    const FString ExtractDir  = ExtractRoot / Bundle->GetName();
-    const FString HashFile    = ExtractDir / TEXT(".inowebbundle.hash");
+    // CRUCIAL: make this absolute up front. FPaths::ProjectSavedDir() returns
+    // a relative-to-CWD path in packaged builds (e.g. "../../../InoAgentDemo/
+    // Saved/"). Extraction via IFileManager resolves that against CWD and
+    // writes files correctly — but WebView2's SetVirtualHostNameToFolderMapping
+    // is platform-native, has no notion of UE's CWD, and (via our impl's
+    // FPaths::IsRelative branch) would re-anchor the '..' segments against
+    // ProjectContentDir, landing in a path that doesn't exist.
+    // Collapsing to absolute here keeps the extraction and the mapping in sync.
+    const FString ExtractDir = FPaths::ConvertRelativePathToFull(
+        FPaths::ProjectSavedDir() / TEXT("InoWebBundles") / Bundle->GetName());
+    const FString HashFile   = ExtractDir / TEXT(".inowebbundle.hash");
 
     // Fast path: we've already extracted this exact content hash — reuse it.
     FString OnDiskHash;
