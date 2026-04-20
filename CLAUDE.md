@@ -16,7 +16,7 @@ pixels in the HTML reveal the 3D scene underneath.
 This is fundamentally different from UE's built-in `WebBrowser` plugin, which
 textures the browser output — we skip all of that, zero copy, zero stall.
 
-**Current status: Phase 8 — Win64 (full) + Android (full parity) + Web Bundle asset type.**
+**Current status: Phase 8 — Win64 (full) + Android (full parity) + Web Bundle asset type + dev-tools overlay.**
 
 ---
 
@@ -493,6 +493,45 @@ Common pattern examples:
 | `GetZoomFactor()`        | Current zoom (returns 1.0 if not ready). |
 | `ClearAllCookies()`      | Delete all cookies in this WebView's isolated profile. Useful for logout. |
 
+### Ready signal
+
+`UInoWebView::OnReady` (BP-assignable, no params) fires exactly once,
+on the game thread, on a tick AFTER `CreateWebView` returned — regardless
+of whether the underlying native construction was async (Windows) or
+sync (Android). Bind it right after `CreateWebView` to run code as soon
+as the WebView is ready for operations. If you bind after ready has
+already fired, use `IsReady()` as a fallback.
+
+### Dev-tools floating overlay
+
+Gated by `FInoWebViewConfig::bEnableDevTools`. When enabled, a circular
+**⚙** button appears in the WebView's bottom-right corner. Clicking it
+expands seven action buttons on a quarter-circle arc:
+
+| Button | Action | Routing |
+|---|---|---|
+| ↻ Refresh | Reload the page | JS → `_devtools.refresh` → `Impl->Reload` |
+| ⌥ DevTools | Open Chromium DevTools (Windows native panel / Android `chrome://inspect` hint) | JS → `_devtools.openDevTools` → `Impl->OpenDevTools` |
+| ⌫ Clear Data | `ClearAllCookies` | JS → `_devtools.clearData` → `Impl->ClearAllCookies` |
+| ⓘ Info | Show a modal with URL, platform, viewport, UA, bridge status, etc. | JS-only, no UE hop |
+| ◉ Transparency | Flip between transparent and opaque white; plugin tracks state | JS → `_devtools.toggleTransparency` → `Impl->SetBackgroundOpaque` |
+| ⊘ Hide WebUI | `Hide()` the WebView (you need your own re-show trigger) | JS → `_devtools.hideWebUI` → `UInoWebView::Hide` |
+| ◆ Dev Callback | Fire the `OnDevCallback` BP delegate (your project-specific hook) | JS → `_devtools.devCallback` → `FOnInoWebDevCallback` broadcast |
+
+`_devtools.*` channels are intercepted inside
+`UInoWebView::DispatchIncomingEnvelope` before the user's
+`OnMessageReceived` delegate runs. User code never sees them.
+
+Overlay is injected on every page load (Windows:
+`AddScriptToExecuteOnDocumentCreated`, Android:
+`WebViewClient.onPageStarted`). The JS lives as a raw string literal
+duplicated in `InoWebViewImpl_Windows.cpp`'s
+`GInoWebUIDevToolsOverlayScript` and `InoWebViewAndroid.java`'s
+`DEVTOOLS_OVERLAY_JS` constant — a comment at each copy tells you to
+update both if you modify it. MSVC's 16380-char string-literal limit
+means the Windows copy is split into two adjacent `TEXT(R"JS(...)JS")`
+chunks (the preprocessor concatenates them).
+
 ---
 
 ## Web Bundle assets (Phase 7)
@@ -614,6 +653,24 @@ Don't stub future phases — add them when they're needed.
 - **Pre-ready calls seem to "disappear"** → they didn't; they're queued.
   Check `FInternal::PendingNavigate/Visible/Bounds` if you suspect replay
   isn't happening.
+- **Bundle extracts but page fails to load with `ERR_INVALID_RESPONSE`
+  (Android) or `0x80070003` / path-not-found (Windows, packaged)** →
+  path resolution mismatch between UE's virtual "`../../../Project/...`"
+  form and what native code (JNI / WebView2) can open.
+  `FPaths::ConvertRelativePathToFull` does NOT fully resolve these on
+  Android. Use
+  `IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(...)`
+  whenever you hand a path to a non-UE loader. Already done for the
+  bundle extract dir in `UInoWebUISubsystem::ResolveBundleContentFolder`.
+
+- **Android WebView covers ~1/3 of the screen instead of fullscreen** →
+  UE's `SWindow::GetClientRectInScreen` reports in a coord system that
+  doesn't match Android `FrameLayout.LayoutParams`' physical-pixel
+  contract. Fix is in `InoWebViewAndroid.syncBounds`: it ignores the
+  incoming values and forces `MATCH_PARENT`. Sub-region sizing on Android
+  would need explicit DP → px conversion; add it when there's a real
+  use case.
+
 - **Transparent WebView shows DESKTOP through "empty" areas in PIE (but
   works fine in standalone)** → known composition limitation. PIE uses
   Slate-chromed windows with `DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED`
