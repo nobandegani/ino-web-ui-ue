@@ -29,6 +29,27 @@ public class InoWebUI : ModuleRules
         {
             SetupWebView2(Target);
         }
+        else if (Target.Platform == UnrealTargetPlatform.Android)
+        {
+            SetupAndroid(Target);
+        }
+    }
+
+    // ── Android (MVP) ─────────────────────────────────────────────────────────
+    void SetupAndroid(ReadOnlyTargetRules Target)
+    {
+        // Launch gives us FAndroidApplication::GetJavaEnv / FindJavaClass /
+        // GetGameActivityThis. ApplicationCore is already in the list above.
+        PrivateDependencyModuleNames.Add("Launch");
+
+        // Register the Unreal Plugin Language file. UBT reads this during the
+        // Android build to: copy our Java helper into the APK, add the
+        // INTERNET permission to AndroidManifest.xml, and inject lifecycle
+        // forwarders into GameActivity.java.
+        string RelativeModulePath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
+        AdditionalPropertiesForReceipt.Add(
+            "AndroidPlugin",
+            Path.Combine(RelativeModulePath, "InoWebUI_UPL.xml"));
     }
 
     // ── WebView2 (Windows only) ───────────────────────────────────────────────

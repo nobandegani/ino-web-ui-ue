@@ -72,6 +72,10 @@ UInoWebView* UInoWebUISubsystem::CreateWebView(FName Name, const FInoWebViewConf
 
     // Resolve the OS-level parent window handle.
     void* NativeHandle = AcquireParentNativeHandle();
+#if !PLATFORM_ANDROID
+    // Android doesn't need a handle — the Java helper locates the current
+    // GameActivity itself. On every other platform, failing to resolve a
+    // parent window is a fatal precondition for CreateWebView.
     if (!NativeHandle)
     {
         UE_LOG(LogInoWebUI, Error,
@@ -80,6 +84,7 @@ UInoWebView* UInoWebUISubsystem::CreateWebView(FName Name, const FInoWebViewConf
             *Name.ToString());
         return nullptr;
     }
+#endif
 
     // Build the platform implementation. Null on unsupported platforms.
     TUniquePtr<IInoWebViewImpl> Impl = CreateInoWebViewImpl();

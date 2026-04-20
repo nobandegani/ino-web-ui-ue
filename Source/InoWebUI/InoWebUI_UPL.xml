@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  InoWebUI plugin — Android build additions.
+
+  Copies the Java helper into the APK build, adds the INTERNET permission
+  (needed for https:// loads), and wires GameActivity's lifecycle callbacks
+  into the helper's onActivityPause / onActivityResume / onActivityDestroy.
+-->
+<root xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <init>
+        <log text="InoWebUI: UPL init (Android)"/>
+    </init>
+
+    <!-- Network access for https:// content -->
+    <androidManifestUpdates>
+        <addPermission android:name="android.permission.INTERNET"/>
+    </androidManifestUpdates>
+
+    <!-- Copy the Java helper into the APK build tree -->
+    <resourceCopies>
+        <copyDir src="$S(PluginDir)/Java" dst="$S(BuildDir)" />
+    </resourceCopies>
+
+    <!-- Import the helper class into GameActivity so our lifecycle hooks resolve -->
+    <gameActivityImportAdditions>
+        <insert>
+import com.inoksan.webui.InoWebViewAndroid;
+        </insert>
+    </gameActivityImportAdditions>
+
+    <!-- Forward Android Activity lifecycle into the helper -->
+    <gameActivityOnPauseAdditions>
+        <insert>
+        InoWebViewAndroid.onActivityPause();
+        </insert>
+    </gameActivityOnPauseAdditions>
+
+    <gameActivityOnResumeAdditions>
+        <insert>
+        InoWebViewAndroid.onActivityResume();
+        </insert>
+    </gameActivityOnResumeAdditions>
+
+    <gameActivityOnDestroyAdditions>
+        <insert>
+        InoWebViewAndroid.onActivityDestroy();
+        </insert>
+    </gameActivityOnDestroyAdditions>
+
+    <!-- Keep ProGuard / R8 from stripping our helper; it's called via JNI -->
+    <proguardAdditions>
+        <insert>
+-keep class com.inoksan.webui.InoWebViewAndroid {
+    public *;
+}
+        </insert>
+    </proguardAdditions>
+
+</root>
