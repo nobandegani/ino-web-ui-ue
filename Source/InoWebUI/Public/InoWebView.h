@@ -71,6 +71,16 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInoWebProcessFailed,
  *  and won't fire again. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebReady);
 
+/** Fired when the Info button on the dev overlay is clicked. Bind this to
+ *  show whatever dev-relevant info you want (bundle version, build ID,
+ *  player state, etc.). The overlay itself doesn't display anything for
+ *  you — it just sends the event to UE. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebDevInfo);
+
+/** Fired when the "Custom" (last) button on the dev overlay is clicked.
+ *  Project-specific dev action — bind to do whatever you want in-game. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebDevCallback);
+
 /**
  * UInoWebView — Blueprint-visible handle to a single native WebView overlay.
  *
@@ -190,6 +200,17 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
     FOnInoWebReady OnReady;
 
+    /** Fires when the Info button on the dev overlay is clicked (the dev
+     *  overlay only shows if bEnableDevTools=true in the WebView's config). */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI|DevTools")
+    FOnInoWebDevInfo OnDevInfo;
+
+    /** Fires when the "Custom" button on the dev overlay is clicked. Use
+     *  this as a project-specific dev hook — bind to do whatever you
+     *  need (dump game state, trigger a debug menu, etc.). */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI|DevTools")
+    FOnInoWebDevCallback OnDevCallback;
+
     // ── Runtime polish (Phase 3) ────────────────────────────────────────────
 
     /**
@@ -279,10 +300,20 @@ private:
     /** Platform implementation. Null on unsupported platforms / after shutdown. */
     TUniquePtr<IInoWebViewImpl> Impl;
 
+    /** Tracks the "Toggle transparency" state driven by the dev overlay. */
+    bool bBackgroundCurrentlyOpaque = false;
+
     /**
      * Parse the raw envelope JSON pushed by the impl's OnMessageReceivedJson
      * callback and broadcast OnMessageReceived to Blueprint subscribers.
      * Always runs on the game thread.
      */
     void DispatchIncomingEnvelope(const FString& EnvelopeJson);
+
+    /**
+     * Handle a "_devtools.*" channel from the injected dev overlay. Returns
+     * true if the channel was consumed (and should NOT be forwarded to the
+     * user's OnMessageReceived delegate); false otherwise.
+     */
+    bool HandleDevToolsAction(const FString& Channel);
 };

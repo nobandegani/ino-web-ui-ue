@@ -124,6 +124,154 @@ namespace
 //  Kept as a raw string literal — no build-time asset dependency, no file
 //  I/O at runtime, script gets folded into the DLL.
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+//  GInoWebUIDevToolsOverlayScript
+//
+//  Injected ONLY when FInoWebViewConfig::bEnableDevTools is true. Creates a
+//  floating circular button in the bottom-right corner of the page; clicking
+//  it expands seven action buttons on an arc. Each button fires a
+//  "_devtools.<action>" channel through window.InoWebUI.send; UInoWebView
+//  intercepts that prefix in DispatchIncomingEnvelope and handles it
+//  internally (never forwarded to the user's OnMessageReceived).
+//
+//  If you modify this JS, also update the identical copy in the Android
+//  helper's DEVTOOLS_OVERLAY_JS constant (InoWebViewAndroid.java).
+// ─────────────────────────────────────────────────────────────────────────────
+static const TCHAR* GInoWebUIDevToolsOverlayScript = TEXT(R"JS(
+(function() {
+  if (window.__inoDevOverlayLoaded) return;
+  window.__inoDevOverlayLoaded = true;
+
+  var ACTIONS = [
+    { id: 'refresh',            icon: '\u21BB', title: 'Refresh' },
+    { id: 'openDevTools',       icon: '\u2325', title: 'Open DevTools' },
+    { id: 'clearData',          icon: '\u232B', title: 'Clear Data' },
+    { id: 'info',               icon: '\u24D8', title: 'Info' },
+    { id: 'toggleTransparency', icon: '\u25C9', title: 'Toggle Transparency' },
+    { id: 'hideWebUI',          icon: '\u2298', title: 'Hide WebUI' },
+    { id: 'devCallback',        icon: '\u25C6', title: 'Dev Callback' }
+  ];
+
+  // 90-degree arc from 0 (up) to 90 (left), 15-degree step, radius 140.
+  var POSITIONS = [
+    { tx: 0,    ty: -140 }, { tx: -36,  ty: -135 },
+    { tx: -70,  ty: -121 }, { tx: -99,  ty: -99  },
+    { tx: -121, ty: -70  }, { tx: -135, ty: -36  },
+    { tx: -140, ty: 0    }
+  ];
+
+  function S(extras) {
+    return 'all:initial;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",'
+         + 'Roboto,sans-serif;line-height:1;color:#fff;' + extras;
+  }
+
+  function build() {
+    var root = document.createElement('div');
+    root.id = '__ino-dev-overlay';
+    root.style.cssText = 'position:fixed;bottom:16px;right:16px;'
+                      + 'width:180px;height:180px;pointer-events:none;'
+                      + 'z-index:2147483647;';
+
+    var main = document.createElement('button');
+    main.textContent = '\u2699';
+    main.style.cssText = S('position:absolute;bottom:0;right:0;'
+      + 'width:52px;height:52px;border-radius:50%;'
+      + 'background:rgba(20,20,28,0.82);'
+      + 'border:1px solid rgba(255,255,255,0.18);'
+      + 'box-shadow:0 6px 24px rgba(0,0,0,0.4);'
+      + 'cursor:pointer;pointer-events:auto;'
+      + 'display:flex;align-items:center;justify-content:center;font-size:24px;'
+      + 'backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);'
+      + 'transition:transform 0.2s,background 0.2s;');
+    root.appendChild(main);
+
+    var children = [];
+    ACTIONS.forEach(function(a, i) {
+      var pos = POSITIONS[i];
+      var btn = document.createElement('button');
+      btn.textContent = a.icon;
+      btn.title = a.title;
+      btn.style.cssText = S('position:absolute;bottom:6px;right:6px;'
+        + 'width:40px;height:40px;border-radius:50%;'
+        + 'background:rgba(20,20,28,0.9);'
+        + 'border:1px solid rgba(255,255,255,0.12);'
+        + 'box-shadow:0 4px 12px rgba(0,0,0,0.4);'
+        + 'cursor:pointer;pointer-events:none;'
+        + 'display:flex;align-items:center;justify-content:center;font-size:18px;'
+        + 'opacity:0;transform:translate(0,0) scale(0.3);'
+        + 'transition:transform 0.25s cubic-bezier(0.175,0.885,0.32,1.275),'
+        + 'opacity 0.2s,background 0.15s;');
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (window.InoWebUI && typeof window.InoWebUI.send === 'function') {
+          try { window.InoWebUI.send('_devtools.' + a.id, {}); }
+          catch (err) { console.error('InoDevOverlay:', err); }
+        }
+        collapse();
+      });
+      btn.addEventListener('mouseenter', function() {
+        if (expanded) {
+          btn.style.transform = 'translate(' + pos.tx + 'px,' + pos.ty + 'px) scale(1.12)';
+          btn.style.background = 'rgba(60,60,80,0.95)';
+        }
+      });
+      btn.addEventListener('mouseleave', function() {
+        if (expanded) {
+          btn.style.transform = 'translate(' + pos.tx + 'px,' + pos.ty + 'px) scale(1)';
+          btn.style.background = 'rgba(20,20,28,0.9)';
+        }
+      });
+      root.appendChild(btn);
+      children.push({ btn: btn, pos: pos });
+    });
+
+    var expanded = false;
+    function expand() {
+      expanded = true;
+      main.style.transform = 'rotate(45deg)';
+      main.style.background = 'rgba(60,60,80,0.92)';
+      children.forEach(function(c) {
+        c.btn.style.opacity = '1';
+        c.btn.style.pointerEvents = 'auto';
+        c.btn.style.transform = 'translate(' + c.pos.tx + 'px,' + c.pos.ty + 'px) scale(1)';
+      });
+    }
+    function collapse() {
+      expanded = false;
+      main.style.transform = 'rotate(0deg)';
+      main.style.background = 'rgba(20,20,28,0.82)';
+      children.forEach(function(c) {
+        c.btn.style.opacity = '0';
+        c.btn.style.pointerEvents = 'none';
+        c.btn.style.transform = 'translate(0,0) scale(0.3)';
+      });
+    }
+
+    main.addEventListener('click', function(e) {
+      e.stopPropagation();
+      if (expanded) collapse(); else expand();
+    });
+    main.addEventListener('mouseenter', function() {
+      if (!expanded) main.style.transform = 'scale(1.08)';
+    });
+    main.addEventListener('mouseleave', function() {
+      if (!expanded) main.style.transform = 'scale(1)';
+    });
+    document.addEventListener('click', function(e) {
+      if (expanded && !root.contains(e.target)) collapse();
+    });
+
+    return root;
+  }
+
+  function mount() {
+    if (document.body) document.body.appendChild(build());
+    else document.addEventListener('DOMContentLoaded', mount);
+  }
+  mount();
+})();
+)JS");
+
 static const TCHAR* GInoWebUIBridgeScript = TEXT(R"JS(
 (function() {
   if (typeof window === 'undefined' || window.InoWebUI) return;
@@ -399,6 +547,14 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
                      "window.InoWebUI bridge will not be available."),
                 static_cast<uint32>(HrScript));
         }
+    }
+
+    // ── Dev overlay — only when the user opted in via config ────────────────
+    if (Internal->Config.bEnableDevTools)
+    {
+        Internal->WebView->AddScriptToExecuteOnDocumentCreated(
+            GInoWebUIDevToolsOverlayScript,
+            /*completed handler=*/ nullptr);
     }
 
     // ── Hook navigation events (Phase 5) ────────────────────────────────────

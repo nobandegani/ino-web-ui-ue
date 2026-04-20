@@ -223,6 +223,57 @@ void UInoWebView::PostMessage(FName Channel, const FJsonObjectWrapper& Payload)
     Impl->PostMessageJson(Envelope);
 }
 
+bool UInoWebView::HandleDevToolsAction(const FString& Channel)
+{
+    check(IsInGameThread());
+
+    if (Channel == TEXT("_devtools.refresh"))
+    {
+        Reload();
+        return true;
+    }
+    if (Channel == TEXT("_devtools.openDevTools"))
+    {
+        if (Impl.IsValid()) Impl->OpenDevTools();
+        return true;
+    }
+    if (Channel == TEXT("_devtools.clearData"))
+    {
+        if (Impl.IsValid()) Impl->ClearAllCookies();
+        return true;
+    }
+    if (Channel == TEXT("_devtools.hideWebUI"))
+    {
+        Hide();
+        return true;
+    }
+    if (Channel == TEXT("_devtools.toggleTransparency"))
+    {
+        bBackgroundCurrentlyOpaque = !bBackgroundCurrentlyOpaque;
+        if (Impl.IsValid()) Impl->SetBackgroundOpaque(bBackgroundCurrentlyOpaque);
+        UE_LOG(LogInoWebUI, Log,
+            TEXT("UInoWebView[%s]: background is now %s"),
+            *WebViewName.ToString(),
+            bBackgroundCurrentlyOpaque ? TEXT("OPAQUE (white)") : TEXT("TRANSPARENT"));
+        return true;
+    }
+    if (Channel == TEXT("_devtools.info"))
+    {
+        OnDevInfo.Broadcast();
+        return true;
+    }
+    if (Channel == TEXT("_devtools.devCallback"))
+    {
+        OnDevCallback.Broadcast();
+        return true;
+    }
+
+    UE_LOG(LogInoWebUI, Warning,
+        TEXT("UInoWebView[%s]: unknown dev-tools channel: %s"),
+        *WebViewName.ToString(), *Channel);
+    return false;
+}
+
 void UInoWebView::DispatchIncomingEnvelope(const FString& EnvelopeJson)
 {
     check(IsInGameThread());
@@ -245,6 +296,14 @@ void UInoWebView::DispatchIncomingEnvelope(const FString& EnvelopeJson)
         UE_LOG(LogInoWebUI, Warning,
             TEXT("UInoWebView[%s]: dropped JS message with missing/empty 'channel'."),
             *WebViewName.ToString());
+        return;
+    }
+
+    // Internal channels ("_devtools.*") are handled by the plugin, never
+    // forwarded to user code. Keeps the dev overlay's wiring invisible.
+    if (ChannelStr.StartsWith(TEXT("_devtools.")))
+    {
+        HandleDevToolsAction(ChannelStr);
         return;
     }
 
