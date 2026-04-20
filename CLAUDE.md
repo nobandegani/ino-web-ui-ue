@@ -16,7 +16,7 @@ pixels in the HTML reveal the 3D scene underneath.
 This is fundamentally different from UE's built-in `WebBrowser` plugin, which
 textures the browser output — we skip all of that, zero copy, zero stall.
 
-**Current status: Phase 6 — Win64 (full) + Android MVP (overlay + lifecycle + URL/show/hide/reload only).**
+**Current status: Phase 7 — Win64 (full) + Android MVP + Web Bundle asset type.**
 
 ---
 
@@ -466,6 +466,70 @@ Common pattern examples:
 
 ---
 
+## Web Bundle assets (Phase 7)
+
+Shipping a `Content/web/` folder as loose files works but has two problems:
+it clutters the packaging settings (`Additional Non-Asset Directories to
+Copy`), and those files sit on the user's disk in plain sight.
+
+`UInoWebBundle` is an alternative: a standard UE asset that holds the
+built web content inside itself and extracts on demand at runtime. Ships
+inside the `.pak` (encrypted if pak encryption is enabled), shows up in
+the Content Browser under a custom "Ino" category, re-bundles with a
+right-click Reimport.
+
+### Create one
+
+```
+Right-click in Content Browser → Ino → Web Bundle
+  → name it, e.g., "MainUI"
+  → set fields in the details panel:
+       Source Folder       = Content/WebUI/dist      (relative to Content/)
+       Initial URL         = https://ui.local/index.html
+       Virtual Host Name   = ui.local
+  → right-click the asset → Reimport Source Folder
+       Files[] populated, ContentHash set, asset marked dirty
+  → Ctrl+S to save
+```
+
+### Use it from C++/BP
+
+```cpp
+UInoWebUISubsystem* Subsystem = GI->GetSubsystem<UInoWebUISubsystem>();
+UInoWebView* View = Subsystem->CreateWebViewFromAsset(TEXT("MainUI"), MyBundle);
+```
+
+In Blueprint: the node is "Create Web View From Bundle" off the subsystem.
+
+### What happens at runtime
+
+| Build | Behavior |
+|---|---|
+| Editor / non-cooked | Serves loose files directly from `SourceFolder` — hot-iteration friendly, no extraction latency |
+| Packaged / cooked | Extracts `Files[]` to `<ProjectSavedDir>/InoWebBundles/<AssetName>/` on first use. Hash-sidecar (`.inowebbundle.hash`) prevents re-extraction unless the asset's `ContentHash` changes across patches |
+
+### Layout in the plugin
+
+```
+Source/
+├── InoWebUI/                          (runtime — Win64 + Android)
+│   ├── Public/InoWebBundle.h         the UObject + FInoWebBundleFile USTRUCT
+│   └── Private/InoWebBundle.cpp      BundleFromFolder / ExtractToDirectory / ComputeHash
+└── InoWebUIEditor/                    (new editor-only module)
+    └── Private/
+        ├── InoWebBundleFactory.cpp   UFactory → "New Asset → Ino → Web Bundle"
+        └── InoWebBundleActions.cpp   Content Browser integration + Reimport menu
+```
+
+### Storage model
+
+`Files[]` is `TArray<FInoWebBundleFile>`. Each entry holds
+`RelativePath` (POSIX-style) and `Bytes` (uncompressed — the `.pak` layer
+compresses). `ContentHash` is MD5 hex over the sorted `(path, bytes)`
+tuples. No compression inside the asset itself.
+
+---
+
 ## Adding features
 
 ### A new simple option (user agent, context menus, etc.)
@@ -497,9 +561,10 @@ Common pattern examples:
 | 4 | Virtual-host mapping (serve local content as `https://`) | ✔ done |
 | 5 | Game-UI hardening: lockdown + dialog/popup blocking + nav events + zoom/focus/cookies/crash | ✔ done |
 | 6 | Android MVP — overlay + lifecycle + URL/show/hide/reload | ✔ done |
-| 7 | Android parity pass — messaging, hardening, virtual host, runtime polish | — |
-| 8 | DirectComposition hosting (fixes PIE transparency on Windows) | — |
-| 9 | macOS implementation (`WKWebView`) | — |
+| 7 | UInoWebBundle asset — bundle web content into a UE asset, extract on demand | ✔ done |
+| 8 | Android parity pass — messaging, hardening, virtual host, runtime polish | — |
+| 9 | DirectComposition hosting (fixes PIE transparency on Windows) | — |
+| 10 | macOS implementation (`WKWebView`) | — |
 
 Don't stub future phases — add them when they're needed.
 
