@@ -123,6 +123,12 @@ public:
     TFunction<void()>                                    OnLostFocusCallback;
     TFunction<void(const FString& Description)>          OnProcessFailedCallback;
 
+    /** One-shot: fires when the native WebView transitions to ready. Called
+     *  exactly once per impl lifetime. Owner (UInoWebView) defers the BP
+     *  delegate broadcast to the next game tick so sync-ready platforms
+     *  (Android) don't fire before the caller can bind. */
+    TFunction<void()>                                    OnReadyCallback;
+
     // ── Phase 3 — runtime polish ────────────────────────────────────────────
 
     /**

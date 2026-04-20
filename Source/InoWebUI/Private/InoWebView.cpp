@@ -3,6 +3,7 @@
 #include "InoWebView.h"
 #include "InoWebUILog.h"
 #include "Misc/Paths.h"
+#include "Async/Async.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Serialization/JsonReader.h"
@@ -120,6 +121,22 @@ void UInoWebView::Init(FName InName, TUniquePtr<IInoWebViewImpl>&& InImpl,
     Impl->OnProcessFailedCallback = [this](const FString& Description)
     {
         OnProcessFailed.Broadcast(Description);
+    };
+
+    // OnReady deferral: impls may fire this callback synchronously (Android)
+    // or asynchronously (Windows). Either way we queue the BP broadcast to
+    // the next game tick so CreateWebView's caller has time to bind before
+    // it fires. Weak self keeps the task safe across unexpected teardown.
+    TWeakObjectPtr<UInoWebView> WeakSelf(this);
+    Impl->OnReadyCallback = [WeakSelf]()
+    {
+        AsyncTask(ENamedThreads::GameThread, [WeakSelf]()
+        {
+            if (UInoWebView* Self = WeakSelf.Get())
+            {
+                Self->OnReady.Broadcast();
+            }
+        });
     };
 
     const bool bOk = Impl->Initialize(ParentNativeHandle, Config);

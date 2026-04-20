@@ -257,6 +257,15 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
         TEXT("FInoWebViewImpl_Android[%d] Initialize  url='%s'  transparent=%d  visible=%d"),
         InstanceId, *Config.InitialURL,
         Config.bTransparentBackground ? 1 : 0, Config.bVisibleOnCreate ? 1 : 0);
+
+    // Fire the one-shot ready signal. The owner (UInoWebView) wraps this
+    // in AsyncTask(GameThread), so even though we're calling synchronously
+    // during Initialize, the BP OnReady delegate will broadcast on the NEXT
+    // game tick — giving the CreateWebView caller time to bind.
+    if (OnReadyCallback)
+    {
+        OnReadyCallback();
+    }
     return true;
 }
 

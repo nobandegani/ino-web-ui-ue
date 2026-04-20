@@ -60,6 +60,17 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebFocusChanged);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInoWebProcessFailed,
     const FString&, Description);
 
+/** One-shot signal: the native WebView has finished async construction and
+ *  can safely accept operations. Fires exactly once on the game thread, on
+ *  a tick AFTER CreateWebView returned — so BP bind order like
+ *      View = CreateWebView(...);
+ *      View.OnReady.AddDynamic(...);
+ *  works reliably on every platform (even platforms where native
+ *  construction is synchronous, like Android). If you bind AFTER the
+ *  WebView is already ready, use IsReady() to check — OnReady has fired
+ *  and won't fire again. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebReady);
+
 /**
  * UInoWebView — Blueprint-visible handle to a single native WebView overlay.
  *
@@ -173,6 +184,11 @@ public:
     /** Fires when a Chromium subprocess fails (renderer crash, OOM, …). */
     UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
     FOnInoWebProcessFailed OnProcessFailed;
+
+    /** Fires once when the underlying native WebView has finished async
+     *  construction and is ready for operations. See FOnInoWebReady docs. */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebReady OnReady;
 
     // ── Runtime polish (Phase 3) ────────────────────────────────────────────
 

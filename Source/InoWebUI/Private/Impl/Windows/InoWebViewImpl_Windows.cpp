@@ -779,6 +779,14 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
     UE_LOG(LogInoWebUI, Log, TEXT("WebView2 controller ready."));
 
     ApplyPendingOperations();
+
+    // One-shot "native WebView is live" signal. Fires AFTER the pending
+    // queue replays so the initial Navigate / bounds / visibility are
+    // already applied by the time the BP OnReady handler runs.
+    if (OnReadyCallback)
+    {
+        OnReadyCallback();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
