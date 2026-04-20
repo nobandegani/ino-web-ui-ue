@@ -16,7 +16,7 @@ pixels in the HTML reveal the 3D scene underneath.
 This is fundamentally different from UE's built-in `WebBrowser` plugin, which
 textures the browser output — we skip all of that, zero copy, zero stall.
 
-**Current status: Phase 5 (Win64 only — overlay + messaging + runtime polish + local content serving + game-UI hardening).**
+**Current status: Phase 6 — Win64 (full) + Android MVP (overlay + lifecycle + URL/show/hide/reload only).**
 
 ---
 
@@ -76,6 +76,87 @@ contains zero platform-specific code, so publishing it costs nothing —
 4. **Shutdown order is fixed.** Controller must be `Close()`'d **while the
    parent HWND still exists**. Order: reset lifetime token → `Controller->Close()`
    → release ComPtrs. Changing this order leaks COM objects.
+
+---
+
+---
+
+## Android MVP (Phase 6)
+
+First Android implementation — scoped to Phase 1 equivalent. Everything
+beyond overlay + URL / show / hide / reload / bounds is a logged no-op;
+filled in by later phases.
+
+### Architecture
+
+```
+UE game thread (C++)
+     │   JNI static-void calls (one per operation)
+     ▼
+Android UI thread (Java)                    via Activity.runOnUiThread
+     ▼
+android.webkit.WebView
+     • sibling of UE's SurfaceView inside GameActivity's content FrameLayout
+     • transparent background optional → UE scene shows through
+```
+
+### Files
+
+```
+Plugins/InoWebUI/Source/InoWebUI/
+├── InoWebUI_UPL.xml                  Unreal Plugin Language config:
+│                                       • copies Java into APK
+│                                       • adds INTERNET permission
+│                                       • hooks GameActivity lifecycle →
+│                                         InoWebViewAndroid.onActivity{Pause,Resume,Destroy}
+│                                       • ProGuard keep rule for R8
+├── Java/src/com/inoksan/webui/
+│   └── InoWebViewAndroid.java        UI-thread-only helper, owns
+│                                       SparseArray<WebView> keyed by
+│                                       primitive int IDs
+└── Private/Impl/Android/
+    ├── InoWebViewImpl_Android.h
+    └── InoWebViewImpl_Android.cpp    Cached jmethodIDs via
+                                        FAndroidApplication::FindJavaClass
+```
+
+### Threading rule
+
+Same as Windows: all C++ entry points asserted `IsInGameThread()`. The C++
+methods call Java static methods synchronously (fire-and-forget) and Java
+marshals onto the UI thread via `Activity.runOnUiThread`. Since all
+dispatches share one run loop, ordering is preserved end-to-end.
+
+### What's implemented
+
+| API | Android MVP |
+|---|---|
+| Create / Destroy | ✔ |
+| Navigate (LoadURL) | ✔ |
+| Reload | ✔ |
+| Show / Hide / SetVisible | ✔ |
+| SyncBounds (margins + size) | ✔ |
+| Transparent background | ✔ (`bTransparentBackground`) |
+| Activity lifecycle hooks | ✔ (Pause / Resume / Destroy) |
+
+### What's NOT implemented yet on Android
+
+Logged warning, return. Land in future Android phases:
+
+- Messaging (`PostMessage`, `OnMessageReceived`, `window.InoWebUI` JS bridge)
+- Navigation events / lockdown
+- Dialog / popup blocking
+- Focus / zoom / cookies / DevTools / ExecuteJavaScript / mute
+- Virtual-host mapping (Android has `WebViewAssetLoader` — similar API)
+
+### Debugging an Android build
+
+- `adb logcat | findstr /I "InoWebUI"` — filters to our LogInoWebUI + Java `Logger` output
+- Chromium DevTools for the WebView content: `chrome://inspect/#devices` in desktop Chrome with the device connected via adb. The Android WebView exposes its own devtools remotely — no API call needed, no Phase 3 DevTools plumbing.
+- If the Java helper isn't found ("InoWebViewAndroid Java class not found"), check:
+  1. UPL was registered (look for "InoWebUI: UPL init (Android)" in build log)
+  2. Java file got copied — check `Intermediate/Android/APK/src/com/inoksan/webui/`
+  3. ProGuard isn't stripping the class (our `-keep` rule should prevent this)
 
 ---
 
@@ -415,9 +496,10 @@ Common pattern examples:
 | 3 | DevTools / ExecuteJS / mute / context-menu & accelerator toggles / UA override | ✔ done |
 | 4 | Virtual-host mapping (serve local content as `https://`) | ✔ done |
 | 5 | Game-UI hardening: lockdown + dialog/popup blocking + nav events + zoom/focus/cookies/crash | ✔ done |
-| 6 | DirectComposition-based hosting (fixes PIE transparency) | — |
-| 7 | macOS implementation (`WKWebView`) | — |
-| 8 | Android implementation (`android.webkit.WebView`) | — |
+| 6 | Android MVP — overlay + lifecycle + URL/show/hide/reload | ✔ done |
+| 7 | Android parity pass — messaging, hardening, virtual host, runtime polish | — |
+| 8 | DirectComposition hosting (fixes PIE transparency on Windows) | — |
+| 9 | macOS implementation (`WKWebView`) | — |
 
 Don't stub future phases — add them when they're needed.
 
