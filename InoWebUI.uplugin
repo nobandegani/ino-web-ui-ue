@@ -25,6 +25,11 @@
 			"Name": "InoWebUI",
 			"Type": "Runtime",
 			"LoadingPhase": "PreLoadingScreen"
+		},
+		{
+			"Name": "InoWebUIEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
 		}
 	]
 }
