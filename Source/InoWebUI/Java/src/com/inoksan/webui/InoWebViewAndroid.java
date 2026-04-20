@@ -32,8 +32,10 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 
 import com.epicgames.unreal.GameActivity;
@@ -287,17 +289,27 @@ public class InoWebViewAndroid
             String path = url.substring(c.virtualHostPrefix.length());
             int q = path.indexOf('?'); if (q >= 0) path = path.substring(0, q);
             int h = path.indexOf('#'); if (h >= 0) path = path.substring(0, h);
-            if (path.contains("..")) return notFound();
+            if (path.contains("..")) { Log.warn("vhost: rejected traversal in " + url); return notFound(); }
             if (path.isEmpty()) path = "index.html";
 
             File file = new File(c.virtualHostFolder, path);
-            if (!file.isFile()) return notFound();
+            if (!file.isFile()) {
+                Log.warn("vhost: file not found: " + file.getAbsolutePath()
+                        + "  (root=" + c.virtualHostFolder + ", path=" + path + ")");
+                return notFound();
+            }
 
             try {
                 FileInputStream fis = new FileInputStream(file);
-                return new WebResourceResponse(guessMimeType(file.getName()), null, fis);
+                String mime = guessMimeType(file.getName());
+                Log.debug("vhost: serving " + file.getAbsolutePath() + " as " + mime);
+                // Explicit 200 status + non-null headers map — some Android WebView
+                // versions react to null fields with ERR_INVALID_RESPONSE.
+                return new WebResourceResponse(mime, "UTF-8", 200, "OK",
+                        Collections.<String, String>emptyMap(), fis);
             } catch (Exception e) {
-                Log.error("shouldInterceptRequest: " + e.getMessage());
+                Log.error("vhost: open failed for " + file.getAbsolutePath()
+                        + ": " + e.getMessage());
                 return notFound();
             }
         }
@@ -1041,8 +1053,13 @@ public class InoWebViewAndroid
 
     private static WebResourceResponse notFound()
     {
+        // Non-null body: WebResourceResponse with a null data stream can trigger
+        // net::ERR_INVALID_RESPONSE on some Android WebView versions, which
+        // looks nothing like a regular 404 to the user.
+        byte[] body = "404 Not Found".getBytes(StandardCharsets.UTF_8);
         return new WebResourceResponse("text/plain", "UTF-8", 404, "Not Found",
-                Collections.<String, String>emptyMap(), null);
+                Collections.<String, String>emptyMap(),
+                new ByteArrayInputStream(body));
     }
 
     private static String guessMimeType(String filename)
