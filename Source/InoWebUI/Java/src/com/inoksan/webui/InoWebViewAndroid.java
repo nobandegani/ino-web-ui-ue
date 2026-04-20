@@ -946,9 +946,26 @@ public class InoWebViewAndroid
     // ─────────────────────────────────────────────────────────────────────
     //  Layout / bounds
     // ─────────────────────────────────────────────────────────────────────
+    /**
+     * On Android we deliberately ignore the size values the UE subsystem
+     * sends and keep MATCH_PARENT sizing.
+     *
+     * Why: UE's SWindow::GetClientRectInScreen reports a coordinate system
+     * that doesn't line up with Android FrameLayout's physical-pixel layout
+     * params (density scaling mismatch + UE's "virtual window" concept
+     * doesn't map to Android's full-screen activity model). Blindly using
+     * those values leaves the WebView covering only ~1/3 of the screen on
+     * a typical ~3x-density phone.
+     *
+     * Android games are always fullscreen; the activity's content
+     * FrameLayout fills the screen; the WebView as a child of that root
+     * with MATCH_PARENT is exactly what we want. Custom sub-region sizing
+     * can be added later with explicit DP → px conversion when there's a
+     * concrete use case.
+     */
     public static void syncBounds(final int id,
-                                  final int x, final int y,
-                                  final int width, final int height)
+                                  final int /*x*/ ignoredX, final int /*y*/ ignoredY,
+                                  final int /*width*/ ignoredW, final int /*height*/ ignoredH)
     {
         final Activity activity = getActivity();
         if (activity == null) return;
@@ -958,17 +975,18 @@ public class InoWebViewAndroid
                 WebView wv = sWebViews.get(id);
                 if (wv == null) return;
 
-                FrameLayout.LayoutParams lp;
-                if (width <= 0 || height <= 0) {
-                    lp = new FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT);
-                } else {
-                    lp = new FrameLayout.LayoutParams(width, height);
-                    lp.leftMargin = x;
-                    lp.topMargin  = y;
+                // Only set MATCH_PARENT if it's not already MATCH_PARENT —
+                // avoids a layout pass every resize event for no reason.
+                ViewGroup.LayoutParams cur = wv.getLayoutParams();
+                if (cur != null
+                    && cur.width  == ViewGroup.LayoutParams.MATCH_PARENT
+                    && cur.height == ViewGroup.LayoutParams.MATCH_PARENT)
+                {
+                    return;
                 }
-                wv.setLayoutParams(lp);
+                wv.setLayoutParams(new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
             }
         });
     }
