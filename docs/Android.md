@@ -1,0 +1,165 @@
+# Android
+
+InoWebUI on Android is full feature parity with Windows, with a couple
+of platform quirks called out below.
+
+## How it works
+
+```
+UE game thread (C++)
+     |
+     |   JNI static-void calls (one per operation)
+     v
+Android UI thread (Java)                       via Activity.runOnUiThread
+     v
+android.webkit.WebView
+     - sibling of UE's SurfaceView inside GameActivity's content FrameLayout
+     - transparent background optional -> UE scene shows through
+```
+
+The C++ methods assert `IsInGameThread()`, then call Java static
+methods fire-and-forget. Java marshals onto the UI thread via
+`Activity.runOnUiThread`. Because all dispatches share one run loop,
+ordering is preserved end-to-end.
+
+## Files
+
+```
+Plugins/InoWebUI/Source/InoWebUI/
+|-- InoWebUI_UPL.xml                     Unreal Plugin Language config:
+|                                          - copies Java into the APK
+|                                          - adds INTERNET permission
+|                                          - hooks GameActivity lifecycle
+|                                            (onPause / onResume / onDestroy)
+|                                          - ProGuard -keep rule for R8
+|-- Java/src/com/inoksan/webui/
+|   `-- InoWebViewAndroid.java           UI-thread-only helper, owns
+|                                          SparseArray<WebView> keyed by
+|                                          primitive int IDs
+`-- Private/Impl/Android/
+    |-- InoWebViewImpl_Android.h
+    `-- InoWebViewImpl_Android.cpp       Cached jmethodIDs via
+                                           FAndroidApplication::FindJavaClass
+```
+
+## Runtime architecture
+
+A single `InoWebViewClient` subclass handles:
+
+- `shouldInterceptRequest` — serves `https://<host>/*` from the
+  mapped local folder (virtual-host mapping).
+- `shouldOverrideUrlLoading` — navigation lockdown; returns `true` for
+  non-whitelisted URIs.
+- `onPageStarted` — injects the `window.InoWebUI` bridge and
+  (if enabled) the dev-tools overlay.
+- `onPageFinished` / `onReceivedError` — drives
+  `OnNavigationCompleted`.
+- `onRenderProcessGone` — drives `OnProcessFailed` (API 26+).
+
+A single `InoWebChromeClient` handles:
+
+- `onReceivedTitle` — drives `OnDocumentTitleChanged`.
+- `onJsAlert` / `onJsConfirm` / `onJsPrompt` / `onJsBeforeUnload` —
+  dialog suppression.
+- `onCreateWindow` — `window.open` / `_blank` handling.
+
+Both clients are installed once per WebView inside `createWebView`. They
+read per-WebView state from a `sConfigs: SparseArray<Config>` that the
+various `configureXxx` JNI methods populate between `createWebView`
+and the first `loadURL`.
+
+## JS bridge
+
+The JS side is identical across platforms:
+`window.InoWebUI.send`, `.on`, `.off`.
+
+`window.chrome.webview.postMessage` does not exist on Android, so the
+bridge on Android routes through `addJavascriptInterface` instead. User
+JavaScript does not have to care — the injected shim abstracts it.
+
+## Java -> C++ events
+
+Six `nativeOn*` JNI exports carry Java events back to C++. They all
+route through a single `DispatchOnGameThread<Lambda>` helper that:
+
+1. Marshals onto the game thread via `AsyncTask`.
+2. Re-acquires the impl registry lock.
+3. Invokes the lambda with the live impl pointer.
+
+The lock is held through the callback so `Shutdown` — which removes
+the impl from the registry — serialises correctly.
+
+## Feature matrix
+
+| API | Status | Notes |
+|---|:-:|---|
+| Create / Destroy | yes | |
+| Navigate / Reload / Show / Hide | yes | |
+| SyncBounds (margins + size) | yes | but see the MATCH_PARENT note below |
+| Transparent background | yes | `bTransparentBackground` |
+| Activity lifecycle hooks | yes | Pause / Resume / Destroy via UPL |
+| Virtual-host mapping | yes | `WebViewClient.shouldInterceptRequest` serves `https://<host>/*` from a local folder |
+| Web Bundle assets | yes | cross-platform runtime logic |
+| Two-way messaging | yes | `addJavascriptInterface` + `evaluateJavascript` |
+| Navigation events | yes | `OnNavigationStarting` / `OnNavigationCompleted` / `OnDocumentTitleChanged` |
+| Lockdown | yes | `shouldOverrideUrlLoading` + wildcard rules |
+| JS dialog suppression | yes | `WebChromeClient.onJs*` |
+| `window.open` blocking | yes | `onCreateWindow` with transport-WebView trick to capture the URL |
+| Focus events + `FocusWebView` | yes | `setOnFocusChangeListener` + `requestFocus` |
+| `SetZoomFactor` | yes | `setInitialScale(percent)` |
+| `ClearAllCookies` | yes | `CookieManager.removeAllCookies` |
+| `OnProcessFailed` | yes | `WebViewClient.onRenderProcessGone` (API 26+) |
+| DevTools (remote) | yes | `setWebContentsDebuggingEnabled` — see below |
+| `ExecuteJavaScript` | yes | `webView.evaluateJavascript` |
+| `UserAgentOverride` | yes | `WebSettings.setUserAgentString` |
+| `bEnableContextMenus` | yes | `setOnLongClickListener` suppresses the browser context menu |
+| `OpenDevTools` (programmatic) | no | Android has no in-process API; remote inspect only |
+| `SetMuted` / `bStartMuted` | no | Android `WebView` has no audio-mute API; a warning is logged |
+| `bEnableAcceleratorKeys` | N/A | F5 / F12 / Ctrl+F are desktop-only concepts |
+
+## Remote DevTools
+
+Android's `WebView` exposes Chromium DevTools **remotely** — no extra
+plumbing required. With the device connected via adb:
+
+1. Open `chrome://inspect/#devices` in desktop Chrome.
+2. Select your app's WebView from the device list.
+3. Click **inspect**.
+
+This gives you the full Chromium DevTools panel against the live
+WebView running on the phone. No build flags beyond
+`setWebContentsDebuggingEnabled(true)`, which the plugin calls when
+`bEnableDevTools == true`.
+
+## Logcat filter
+
+```
+adb logcat | findstr /I "InoWebUI"
+```
+
+Catches both the native `LogInoWebUI` category and the Java-side
+`Logger` output (both tagged `InoWebUI`).
+
+## If the Java helper is not found
+
+Error: `"InoWebViewAndroid Java class not found"`. Check, in order:
+
+1. **UPL registered** — build log should contain
+   `"InoWebUI: UPL init (Android)"`.
+2. **Java file copied** — inspect
+   `Intermediate/Android/APK/src/com/inoksan/webui/InoWebViewAndroid.java`.
+3. **ProGuard / R8** — our `-keep` rule in the UPL should stop
+   stripping; check the mapping output if suspicious.
+
+## Android-specific quirk: MATCH_PARENT sizing
+
+UE's `SWindow::GetClientRectInScreen` reports in a coordinate system
+that does not match `FrameLayout.LayoutParams`' physical-pixel
+contract. When you pass the incoming rect straight through on Android,
+the WebView ends up covering roughly one-third of the screen.
+
+`InoWebViewAndroid.syncBounds` therefore **ignores** the incoming
+values and forces `MATCH_PARENT` for both width and height. This is
+correct for the common "full-screen overlay" case and was shipped as
+the MVP default. Sub-region sizing on Android would need explicit
+DP -> px conversion; add it when there is a concrete use case.
