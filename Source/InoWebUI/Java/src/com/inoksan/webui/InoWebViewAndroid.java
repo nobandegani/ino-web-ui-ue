@@ -45,7 +45,6 @@ public class InoWebViewAndroid
     // ─────────────────────────────────────────────────────────────────────
 
     public static void createWebView(final int id,
-                                     final String initialUrl,
                                      final boolean transparent,
                                      final boolean visible)
     {
@@ -84,12 +83,12 @@ public class InoWebViewAndroid
                         ViewGroup.LayoutParams.MATCH_PARENT);
                 root.addView(wv, lp);
 
-                if (initialUrl != null && !initialUrl.isEmpty()) {
-                    wv.loadUrl(initialUrl);
-                }
-
                 sWebViews.put(id, wv);
-                Log.debug("createWebView(" + id + ") -> " + initialUrl);
+                Log.debug("createWebView(" + id + ")");
+
+                // Navigation is a separate step (loadURL) so C++ can apply
+                // virtual-host / messaging / lockdown configuration between
+                // construction and the first page load.
             }
         });
     }

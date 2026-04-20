@@ -58,7 +58,7 @@ namespace InoWebUIJNI
         JavaClass = (jclass)Env->NewGlobalRef(Local);
         Env->DeleteLocalRef(Local);
 
-        MCreate     = Env->GetStaticMethodID(JavaClass, "createWebView",  "(ILjava/lang/String;ZZ)V");
+        MCreate     = Env->GetStaticMethodID(JavaClass, "createWebView",  "(IZZ)V");
         MDestroy    = Env->GetStaticMethodID(JavaClass, "destroyWebView", "(I)V");
         MLoadURL    = Env->GetStaticMethodID(JavaClass, "loadURL",        "(ILjava/lang/String;)V");
         MSetVisible = Env->GetStaticMethodID(JavaClass, "setVisible",     "(IZ)V");
@@ -107,20 +107,26 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
     JNIEnv* Env = FAndroidApplication::GetJavaEnv();
     if (!Env) return false;
 
-    jstring JUrl = nullptr;
-    if (!Config.InitialURL.IsEmpty())
-    {
-        JUrl = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.InitialURL));
-    }
-
+    // Step 1: create the WebView without navigating. Later phases (virtual
+    // host, messaging bridge, lockdown) insert configuration calls between
+    // creation and the first loadURL — all queued on the Android UI thread
+    // in submission order, so they apply before the page actually loads.
     Env->CallStaticVoidMethod(
         InoWebUIJNI::JavaClass, InoWebUIJNI::MCreate,
         static_cast<jint>(InstanceId),
-        JUrl,
         static_cast<jboolean>(Config.bTransparentBackground ? JNI_TRUE : JNI_FALSE),
         static_cast<jboolean>(Config.bVisibleOnCreate        ? JNI_TRUE : JNI_FALSE));
 
-    if (JUrl) Env->DeleteLocalRef(JUrl);
+    // Step 2: navigate, if requested. (Configuration insertion points for
+    // virtual host / messaging / hardening go BETWEEN step 1 and step 2 in
+    // subsequent Android-parity commits.)
+    if (!Config.InitialURL.IsEmpty())
+    {
+        jstring JUrl = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.InitialURL));
+        Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MLoadURL,
+            static_cast<jint>(InstanceId), JUrl);
+        Env->DeleteLocalRef(JUrl);
+    }
 
     // Android WebView construction itself runs on the UI thread (the Java
     // helper uses Activity.runOnUiThread). We mark ourselves ready immediately
