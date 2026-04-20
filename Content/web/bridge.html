@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bridge — InoWebUI</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg-0: #0a0e14;
+    --bg-2: rgba(21, 27, 38, 0.72);
+    --border: rgba(255, 255, 255, 0.08);
+    --text:  #e7ecf3;
+    --dim:   #9aa3b2;
+    --muted: #6b7688;
+    --accent: #6ea8ff;
+    --ok:    #4ade80;
+    --warn:  #fbbf24;
+    --err:   #f87171;
+  }
+
+  html, body { min-height: 100%; background: var(--bg-0); color: var(--text); }
+  body {
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    min-height: 100vh;
+    background: radial-gradient(circle at 20% 0%,
+      rgba(110, 168, 255, 0.15) 0%, transparent 50%);
+  }
+
+  .back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--dim);
+    text-decoration: none;
+    font-size: 13px;
+    width: fit-content;
+    transition: color .15s;
+  }
+  .back:hover { color: var(--text); }
+
+  header { display: flex; flex-direction: column; gap: 4px; }
+  h1 {
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .subtitle { color: var(--dim); font-size: 14px; }
+
+  .cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    flex: 1;
+    min-height: 0;
+  }
+  @media (max-width: 720px) { .cols { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 320px;
+  }
+  .panel h2 {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+  }
+
+  label { font-size: 12px; color: var(--dim); }
+  input, textarea, select {
+    font: inherit;
+    color: var(--text);
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+  textarea { resize: vertical; min-height: 70px; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+
+  button {
+    font: inherit;
+    font-weight: 600;
+    color: #0a0e14;
+    background: var(--accent);
+    border: none;
+    border-radius: 8px;
+    padding: 9px 14px;
+    cursor: pointer;
+    transition: filter .15s, transform .1s;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:active { transform: translateY(1px); }
+  button.ghost {
+    background: rgba(255,255,255,0.05);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+
+  .log {
+    flex: 1;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.55;
+    overflow-y: auto;
+    max-height: 360px;
+    min-height: 180px;
+  }
+  .log .entry { padding: 3px 0; border-bottom: 1px dashed rgba(255,255,255,0.04); }
+  .log .entry:last-child { border-bottom: none; }
+  .log .t  { color: var(--muted); margin-right: 8px; }
+  .log .ch { color: var(--warn); }
+  .log .in  { color: var(--ok); }
+  .log .out { color: var(--accent); }
+  .log .sys { color: var(--muted); font-style: italic; }
+
+  .status {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+  .status.ok  { color: var(--ok); }
+  .status.err { color: var(--err); }
+</style>
+</head>
+<body>
+
+<a class="back" href="index.html">← Back to menu</a>
+
+<header>
+  <h1>Two-Way Communication</h1>
+  <p class="subtitle">
+    Every message in or out goes through <code>window.InoWebUI</code>. The
+    envelope is <code>{ channel, payload }</code>. Try it.
+  </p>
+</header>
+
+<div class="cols">
+
+  <!-- OUTGOING -->
+  <div class="panel">
+    <h2><span class="dot"></span> Send to Unreal</h2>
+
+    <label>Channel</label>
+    <input id="outCh" value="testChannel">
+
+    <label>Payload (JSON)</label>
+    <textarea id="outPayload">{"id":"tutorial","difficulty":"hard","score":42}</textarea>
+
+    <div class="row">
+      <button onclick="sendIt()">Send</button>
+      <button class="ghost" onclick="sendPreset('playerState')">playerState</button>
+      <button class="ghost" onclick="sendPreset('ping')">ping</button>
+    </div>
+
+    <div id="status" class="status">bridge: checking…</div>
+  </div>
+
+  <!-- INCOMING -->
+  <div class="panel">
+    <h2><span class="dot" style="background:var(--ok); box-shadow:0 0 8px var(--ok)"></span> Received from Unreal</h2>
+
+    <label>Subscribe to channel (or * for all)</label>
+    <div class="row">
+      <input id="subCh" value="*">
+      <button onclick="toggleSub()" id="subBtn" style="flex: 0 0 auto; padding-left: 14px; padding-right: 14px;">Subscribe</button>
+    </div>
+
+    <div id="log" class="log">
+      <div class="entry sys">Waiting for messages…</div>
+    </div>
+
+    <button class="ghost" onclick="clearLog()">Clear log</button>
+  </div>
+
+</div>
+
+<script>
+  var logEl = document.getElementById('log');
+  var firstEntry = true;
+
+  function stamp() {
+    var d = new Date();
+    function pad(n){ return n < 10 ? '0'+n : n; }
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+
+  function log(kind, channel, payload) {
+    if (firstEntry) { logEl.innerHTML = ''; firstEntry = false; }
+    var div = document.createElement('div');
+    div.className = 'entry';
+    var arrow = kind === 'in' ? '←' : (kind === 'out' ? '→' : '•');
+    var kindClass = kind;
+    var payloadStr = payload === undefined ? '' : JSON.stringify(payload);
+    div.innerHTML =
+      '<span class="t">' + stamp() + '</span>' +
+      '<span class="' + kindClass + '">' + arrow + ' <span class="ch">' + channel + '</span></span> ' +
+      payloadStr.replace(/[<>&]/g, function(c){ return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c]; });
+    logEl.appendChild(div);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function clearLog() {
+    logEl.innerHTML = '<div class="entry sys">Cleared.</div>';
+    firstEntry = true;
+  }
+
+  // Bridge detection
+  var statusEl = document.getElementById('status');
+  if (window.InoWebUI && typeof window.InoWebUI.send === 'function') {
+    statusEl.className = 'status ok';
+    statusEl.textContent = 'bridge: connected (window.InoWebUI ready)';
+  } else {
+    statusEl.className = 'status err';
+    statusEl.textContent = 'bridge: NOT FOUND — running outside UE?';
+  }
+
+  function sendIt() {
+    var ch = document.getElementById('outCh').value.trim();
+    var raw = document.getElementById('outPayload').value;
+    var payload;
+    try { payload = raw === '' ? null : JSON.parse(raw); }
+    catch (e) {
+      log('sys', 'parse-error', { error: e.message });
+      return;
+    }
+    if (window.InoWebUI) {
+      window.InoWebUI.send(ch, payload);
+      log('out', ch, payload);
+    } else {
+      log('sys', 'no-bridge', null);
+    }
+  }
+
+  function sendPreset(kind) {
+    if (kind === 'playerState') {
+      document.getElementById('outCh').value = 'playerState';
+      document.getElementById('outPayload').value = JSON.stringify({
+        hp: Math.floor(Math.random()*100),
+        ammo: Math.floor(Math.random()*30),
+        x: +(Math.random()*1000).toFixed(1),
+        y: +(Math.random()*1000).toFixed(1)
+      }, null, 2);
+    } else if (kind === 'ping') {
+      document.getElementById('outCh').value = 'ping';
+      document.getElementById('outPayload').value = JSON.stringify({ at: Date.now() });
+    }
+    sendIt();
+  }
+
+  // Subscriptions
+  var currentSub = null;
+  var currentHandler = null;
+  var subBtn = document.getElementById('subBtn');
+
+  function handler(ch) {
+    return function(payload) { log('in', ch, payload); };
+  }
+
+  function toggleSub() {
+    var ch = document.getElementById('subCh').value.trim() || '*';
+    if (!window.InoWebUI) {
+      log('sys', 'no-bridge', null);
+      return;
+    }
+    if (currentSub) {
+      window.InoWebUI.off(currentSub, currentHandler);
+      log('sys', 'unsubscribed from "' + currentSub + '"', null);
+      currentSub = null;
+      currentHandler = null;
+      subBtn.textContent = 'Subscribe';
+      return;
+    }
+    currentHandler = handler(ch);
+    window.InoWebUI.on(ch, currentHandler);
+    currentSub = ch;
+    log('sys', 'subscribed to "' + ch + '"', null);
+    subBtn.textContent = 'Unsubscribe';
+  }
+
+  // Auto-subscribe to everything on load
+  if (window.InoWebUI) {
+    setTimeout(toggleSub, 100);
+  }
+</script>
+
+</body>
+</html>

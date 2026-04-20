@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat — InoWebUI</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --text:  #e7ecf3;
+    --dim:   #9aa3b2;
+    --muted: #6b7688;
+    --accent: #4ade80;
+    --accent-2: #6ea8ff;
+    --bg-1: rgba(15, 21, 32, 0.85);
+    --bg-2: rgba(21, 27, 38, 0.72);
+    --border: rgba(255, 255, 255, 0.08);
+    --user-bubble: linear-gradient(135deg, #6ea8ff, #4ade80);
+  }
+
+  html, body { min-height: 100%; background: #0a0e14; color: var(--text); }
+  body {
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 24px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    background: radial-gradient(circle at 50% 120%,
+      rgba(74, 222, 128, 0.12) 0%, transparent 50%);
+  }
+
+  .back {
+    display: inline-flex; gap: 6px; align-items: center;
+    color: var(--dim); text-decoration: none; font-size: 13px;
+    width: fit-content;
+  }
+  .back:hover { color: var(--text); }
+
+  .chat {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .chat-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+    color: #0a0e14;
+    flex-shrink: 0;
+  }
+  .avatar.agent { background: linear-gradient(135deg, #a78bfa, #f472b6); }
+  .avatar.user  { background: linear-gradient(135deg, #6ea8ff, #4ade80); }
+  .avatar.sm { width: 28px; height: 28px; font-size: 12px; }
+
+  .chat-header .meta { flex: 1; }
+  .chat-header h1 { font-size: 15px; font-weight: 600; }
+  .chat-header .presence {
+    font-size: 11px;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .chat-header .presence::before {
+    content: "";
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+  }
+  .chat-header .actions button {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 6px;
+  }
+  .chat-header .actions button:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .messages::-webkit-scrollbar { width: 8px; }
+  .messages::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.1);
+    border-radius: 4px;
+  }
+
+  .msg {
+    display: flex;
+    gap: 10px;
+    max-width: 85%;
+    animation: msgIn .28s ease-out;
+  }
+  @keyframes msgIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+
+  .bubble {
+    padding: 9px 14px;
+    border-radius: 14px;
+    font-size: 14px;
+    line-height: 1.45;
+    word-wrap: break-word;
+  }
+  .msg.agent .bubble {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 4px;
+  }
+  .msg.user .bubble {
+    background: var(--user-bubble);
+    color: #0a0e14;
+    font-weight: 500;
+    border-bottom-right-radius: 4px;
+  }
+  .msg .time {
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 3px;
+    padding: 0 4px;
+  }
+  .msg.user .time { text-align: right; }
+
+  /* Typing indicator */
+  .typing-bubble {
+    padding: 12px 16px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    border-bottom-left-radius: 4px;
+    display: flex;
+    gap: 4px;
+  }
+  .typing-bubble span {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+    animation: typingDot 1s infinite;
+  }
+  .typing-bubble span:nth-child(2) { animation-delay: .15s; }
+  .typing-bubble span:nth-child(3) { animation-delay: .3s;  }
+  @keyframes typingDot {
+    0%, 60%, 100% { transform: translateY(0);   opacity: 0.4; }
+    30%           { transform: translateY(-5px); opacity: 1;   }
+  }
+
+  /* Input area */
+  .composer {
+    border-top: 1px solid var(--border);
+    padding: 14px 16px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+    background: rgba(0,0,0,0.15);
+  }
+  .composer textarea {
+    flex: 1;
+    resize: none;
+    font: inherit;
+    color: var(--text);
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    max-height: 120px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .composer textarea:focus { border-color: var(--accent-2); }
+  .composer button {
+    font: inherit;
+    font-weight: 600;
+    color: #0a0e14;
+    background: var(--accent-2);
+    border: none;
+    border-radius: 10px;
+    padding: 10px 18px;
+    cursor: pointer;
+    transition: filter .15s;
+    flex-shrink: 0;
+  }
+  .composer button:hover { filter: brightness(1.1); }
+  .composer button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .quick {
+    display: flex;
+    gap: 6px;
+    padding: 0 16px 10px;
+    flex-wrap: wrap;
+  }
+  .quick button {
+    font: inherit;
+    font-size: 12px;
+    color: var(--dim);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    padding: 6px 12px;
+    cursor: pointer;
+    transition: all .15s;
+  }
+  .quick button:hover {
+    color: var(--text);
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(255,255,255,0.15);
+  }
+</style>
+</head>
+<body>
+
+<a class="back" href="index.html">← Back to menu</a>
+
+<div class="chat">
+
+  <div class="chat-header">
+    <div class="avatar agent">IA</div>
+    <div class="meta">
+      <h1>InoAgent</h1>
+      <div class="presence">online</div>
+    </div>
+    <div class="actions">
+      <button title="Clear" onclick="clearChat()">⟲</button>
+    </div>
+  </div>
+
+  <div class="messages" id="msgs">
+    <!-- Pre-seeded -->
+  </div>
+
+  <div class="quick">
+    <button onclick="quick('What can you do?')">What can you do?</button>
+    <button onclick="quick('Show my stats')">Show my stats</button>
+    <button onclick="quick('Start a mission')">Start a mission</button>
+    <button onclick="quick('Tell me a joke')">Tell me a joke</button>
+  </div>
+
+  <form class="composer" onsubmit="sendMsg(event)">
+    <textarea id="input" rows="1" placeholder="Type a message…"
+      onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMsg(event);}"
+      oninput="autosize(this)"></textarea>
+    <button type="submit" id="sendBtn">Send</button>
+  </form>
+
+</div>
+
+<script>
+  var msgs = document.getElementById('msgs');
+  var input = document.getElementById('input');
+
+  function time() {
+    var d = new Date();
+    function pad(n){ return n < 10 ? '0'+n : n; }
+    return pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  function escape(s) {
+    return String(s).replace(/[<>&]/g, function(c){
+      return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];
+    });
+  }
+
+  function addMsg(role, text) {
+    var wrap = document.createElement('div');
+    wrap.className = 'msg ' + role;
+    var avatar = document.createElement('div');
+    avatar.className = 'avatar sm ' + role;
+    avatar.textContent = role === 'user' ? 'U' : 'IA';
+    var right = document.createElement('div');
+    var bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.innerHTML = escape(text);
+    var t = document.createElement('div');
+    t.className = 'time';
+    t.textContent = time();
+    right.appendChild(bubble);
+    right.appendChild(t);
+    wrap.appendChild(avatar);
+    wrap.appendChild(right);
+    msgs.appendChild(wrap);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  var typingEl = null;
+  function showTyping() {
+    hideTyping();
+    typingEl = document.createElement('div');
+    typingEl.className = 'msg agent';
+    typingEl.innerHTML =
+      '<div class="avatar sm agent">IA</div>' +
+      '<div><div class="typing-bubble"><span></span><span></span><span></span></div></div>';
+    msgs.appendChild(typingEl);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+  function hideTyping() {
+    if (typingEl) { typingEl.remove(); typingEl = null; }
+  }
+
+  // Offline canned responses so the demo "works" outside UE.
+  var canned = {
+    'what can you do':
+      "I can show HP, inventory, mission status — whatever the game exposes. " +
+      "Every message here rides the InoWebUI bridge as JSON, so a real backend " +
+      "plugs in easily.",
+    'show my stats':
+      "HP: 87/100 · MP: 43/50 · Lv 12 · Gold: 1,248 · Next level in 2,340 XP.",
+    'start a mission':
+      "Queued 'Tutorial: Awakening'. Head to the marker on your HUD.",
+    'tell me a joke':
+      "Why do Unreal devs love HTML overlays? Because they can ship UI faster " +
+      "than the 3D artist can texture a crate."
+  };
+  function fallback(t) {
+    var k = t.toLowerCase().trim();
+    for (var key in canned) {
+      if (k.indexOf(key) !== -1) return canned[key];
+    }
+    return "Got it: " + '"' + t + '". (This demo uses a canned replier when ' +
+           "no UE backend is connected — hook `chat.user` on the C++ side to " +
+           "drive real responses.)";
+  }
+
+  function sendMsg(ev) {
+    if (ev) ev.preventDefault();
+    var text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    autosize(input);
+    addMsg('user', text);
+
+    // Forward to UE
+    if (window.InoWebUI) {
+      window.InoWebUI.send('chat.user', { text: text, at: Date.now() });
+    }
+
+    // Fallback / stand-in reply if nothing is listening
+    showTyping();
+    setTimeout(function() {
+      hideTyping();
+      if (!ueResponded) {
+        addMsg('agent', fallback(text));
+      }
+      ueResponded = false;
+    }, 900 + Math.random()*600);
+  }
+
+  function quick(t) {
+    input.value = t;
+    sendMsg();
+  }
+
+  function autosize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  }
+
+  function clearChat() {
+    msgs.innerHTML = '';
+    seed();
+  }
+
+  function seed() {
+    addMsg('agent', "Hey — I'm InoAgent. Ask me anything, or pick a prompt below.");
+  }
+
+  // Listen for UE-driven replies
+  var ueResponded = false;
+  if (window.InoWebUI) {
+    window.InoWebUI.on('chat.agent', function(data) {
+      ueResponded = true;
+      hideTyping();
+      var text = (data && data.text) ? data.text : String(data);
+      addMsg('agent', text);
+    });
+  }
+
+  seed();
+</script>
+
+</body>
+</html>
