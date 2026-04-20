@@ -9,7 +9,9 @@
       "Bash(find \"C:/Inoland/Epic Games/UE_5.7/Engine/Source/Runtime/Core\" -name \"*.h\" -exec grep -l \"CeilToInt\" {} \\\\;)",
       "Bash(find \"C:/Inoland/Epic Games/UE_5.7/Engine/Source\" -name \"*.h\" -exec grep -l \"FDeprecateVector2DResult\" {} \\\\;)",
       "Bash(find \"C:/Inoland/Epic Games/UE_5.7/Engine/Source\" -name \"*.h\" -path \"*/SlateCore/*\" -exec grep -l \"class FDeprecateVector2DResult\\\\|struct FDeprecateVector2DResult\" {} \\\\;)",
-      "Bash(find \"C:/Inoland/Epic Games/UE_5.7/Engine/Source\" -name \"*.h\" -exec grep -l \"^struct .* FDeprecateVector2DResult\\\\|^class .* FDeprecateVector2DResult\\\\|UE_DEPRECATED_VECTOR\" {} \\\\;)"
+      "Bash(find \"C:/Inoland/Epic Games/UE_5.7/Engine/Source\" -name \"*.h\" -exec grep -l \"^struct .* FDeprecateVector2DResult\\\\|^class .* FDeprecateVector2DResult\\\\|UE_DEPRECATED_VECTOR\" {} \\\\;)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }
