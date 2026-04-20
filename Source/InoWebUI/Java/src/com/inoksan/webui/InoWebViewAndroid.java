@@ -17,7 +17,10 @@ import android.graphics.Color;
 import android.util.SparseArray;
 import android.view.View;
 import android.view.ViewGroup;
+import android.os.Message;
 import android.webkit.JavascriptInterface;
+import android.webkit.JsPromptResult;
+import android.webkit.JsResult;
 import android.webkit.MimeTypeMap;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -54,7 +57,18 @@ public class InoWebViewAndroid
         // Lockdown
         boolean  lockToVirtualHost;
         String[] allowedURIPatterns;
+
+        // Hardening
+        boolean allowScriptDialogs;
+        boolean allowNewWindows;
     }
+
+    /** Kind values match the C++ EInoScriptDialogKind enum in InoWebUITypes.h.
+     *  Pass one of these constants through nativeOnScriptDialog. */
+    private static final int DIALOG_KIND_ALERT         = 0;
+    private static final int DIALOG_KIND_CONFIRM       = 1;
+    private static final int DIALOG_KIND_PROMPT        = 2;
+    private static final int DIALOG_KIND_BEFORE_UNLOAD = 3;
 
     /** id → WebView */
     private static final SparseArray<WebView> sWebViews = new SparseArray<>();
@@ -211,6 +225,80 @@ public class InoWebViewAndroid
         {
             if (title != null) nativeOnDocumentTitleChanged(id, title);
         }
+
+        // ── JS dialog suppression ────────────────────────────────────────
+        // Default: cancel the dialog (alert returns, confirm→false, prompt→null).
+        // When allowScriptDialogs=true, accept() lets the native dialog show.
+        // Always fire OnScriptDialog for observation.
+
+        @Override
+        public boolean onJsAlert(WebView view, String url, String message, JsResult result)
+        {
+            nativeOnScriptDialog(id, DIALOG_KIND_ALERT, message);
+            Config c = sConfigs.get(id);
+            if (c != null && c.allowScriptDialogs) result.confirm();
+            else                                   result.cancel();
+            return true;
+        }
+
+        @Override
+        public boolean onJsConfirm(WebView view, String url, String message, JsResult result)
+        {
+            nativeOnScriptDialog(id, DIALOG_KIND_CONFIRM, message);
+            Config c = sConfigs.get(id);
+            if (c != null && c.allowScriptDialogs) result.confirm();
+            else                                   result.cancel();
+            return true;
+        }
+
+        @Override
+        public boolean onJsPrompt(WebView view, String url, String message,
+                                  String defaultValue, JsPromptResult result)
+        {
+            nativeOnScriptDialog(id, DIALOG_KIND_PROMPT, message);
+            Config c = sConfigs.get(id);
+            if (c != null && c.allowScriptDialogs) result.confirm(defaultValue != null ? defaultValue : "");
+            else                                   result.cancel();
+            return true;
+        }
+
+        @Override
+        public boolean onJsBeforeUnload(WebView view, String url, String message, JsResult result)
+        {
+            nativeOnScriptDialog(id, DIALOG_KIND_BEFORE_UNLOAD, message);
+            Config c = sConfigs.get(id);
+            if (c != null && c.allowScriptDialogs) result.confirm();
+            else                                   result.cancel();
+            return true;
+        }
+
+        // ── window.open / target="_blank" blocking ─────────────────────────
+        // Android's protocol for discovering the URL a JS window.open wants
+        // is the "transport WebView" trick: attach a throwaway WebView to
+        // the resultMsg so Android tells it what URL to load. We intercept
+        // in shouldOverrideUrlLoading, fire our callback, and cancel.
+        @Override
+        public boolean onCreateWindow(WebView view, boolean isDialog,
+                                      boolean isUserGesture, Message resultMsg)
+        {
+            final Config c = sConfigs.get(id);
+            // Ignore allowNewWindows — we always intercept to get the URL.
+            // A BP handler can LoadURL(uri) to redirect into the same frame
+            // if desired; opening a real popup would look terrible in-game.
+
+            WebView transport = new WebView(view.getContext());
+            transport.setWebViewClient(new WebViewClient() {
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req)
+                {
+                    if (req != null) nativeOnNewWindowRequested(id, req.getUrl().toString());
+                    return true; // don't actually navigate the throwaway
+                }
+            });
+            ((WebView.WebViewTransport) resultMsg.obj).setWebView(transport);
+            resultMsg.sendToTarget();
+            return true; // consumed
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -233,10 +321,12 @@ public class InoWebViewAndroid
     /** JNI functions implemented in InoWebViewImpl_Android.cpp. All are
      *  called on arbitrary threads; C++ marshals onto the game thread
      *  before firing the corresponding BP delegates. */
-    private static native void nativeOnMessageReceived    (int id, String envelopeJson);
-    private static native void nativeOnNavigationStarting (int id, String uri);
-    private static native void nativeOnNavigationCompleted(int id, boolean success, String uri);
+    private static native void nativeOnMessageReceived     (int id, String envelopeJson);
+    private static native void nativeOnNavigationStarting  (int id, String uri);
+    private static native void nativeOnNavigationCompleted (int id, boolean success, String uri);
     private static native void nativeOnDocumentTitleChanged(int id, String title);
+    private static native void nativeOnScriptDialog        (int id, int kind, String message);
+    private static native void nativeOnNewWindowRequested  (int id, String uri);
 
     // ─────────────────────────────────────────────────────────────────────
     //  Create / Destroy
@@ -261,6 +351,11 @@ public class InoWebViewAndroid
 
                 wv.getSettings().setJavaScriptEnabled(true);
                 wv.getSettings().setDomStorageEnabled(true);
+
+                // Required for WebChromeClient.onCreateWindow to fire;
+                // our handler intercepts and blocks the popup explicitly.
+                wv.getSettings().setSupportMultipleWindows(true);
+                wv.getSettings().setJavaScriptCanOpenWindowsAutomatically(true);
 
                 // Single unified client drives virtual-host + bridge injection
                 // + nav events + lockdown. Config flips flags on sConfigs.
@@ -420,6 +515,24 @@ public class InoWebViewAndroid
             }
         }
         return s.matches(re.toString());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Hardening — JS dialog suppression + window.open blocking.
+    // ─────────────────────────────────────────────────────────────────────
+    public static void configureDialogs(final int id,
+                                        final boolean allowScriptDialogs,
+                                        final boolean allowNewWindows)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                Config c = getOrCreateConfig(id);
+                c.allowScriptDialogs = allowScriptDialogs;
+                c.allowNewWindows    = allowNewWindows;
+            }
+        });
     }
 
     // ─────────────────────────────────────────────────────────────────────

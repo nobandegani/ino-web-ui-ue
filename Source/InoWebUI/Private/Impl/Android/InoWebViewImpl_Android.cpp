@@ -42,6 +42,7 @@ namespace InoWebUIJNI
     static jmethodID MSetupMessaging     = nullptr;
     static jmethodID MPostMessage        = nullptr;
     static jmethodID MConfigureLockdown  = nullptr;
+    static jmethodID MConfigureDialogs   = nullptr;
 
     /**
      * Look up the Java helper class and all the static methods we call.
@@ -83,10 +84,11 @@ namespace InoWebUIJNI
         MSetupMessaging    = Env->GetStaticMethodID(JavaClass, "setupMessaging",     "(I)V");
         MPostMessage       = Env->GetStaticMethodID(JavaClass, "postMessageJson",    "(ILjava/lang/String;)V");
         MConfigureLockdown = Env->GetStaticMethodID(JavaClass, "configureLockdown",  "(IZ[Ljava/lang/String;)V");
+        MConfigureDialogs  = Env->GetStaticMethodID(JavaClass, "configureDialogs",   "(IZZ)V");
 
         if (!MCreate || !MDestroy || !MLoadURL || !MSetVisible || !MReload
             || !MSyncBounds || !MSetVirtualHost || !MSetupMessaging || !MPostMessage
-            || !MConfigureLockdown)
+            || !MConfigureLockdown || !MConfigureDialogs)
         {
             UE_LOG(LogInoWebUI, Error,
                 TEXT("One or more InoWebViewAndroid methods not found — Java helper "
@@ -191,6 +193,12 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
         Env->DeleteLocalRef(JPatterns);
         Env->DeleteLocalRef(StringCls);
     }
+
+    // Step 2d: hardening — JS dialog suppression + window.open blocking.
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MConfigureDialogs,
+        static_cast<jint>(InstanceId),
+        static_cast<jboolean>(Config.bAllowScriptDialogs ? JNI_TRUE : JNI_FALSE),
+        static_cast<jboolean>(Config.bAllowNewWindows     ? JNI_TRUE : JNI_FALSE));
 
     // Step 3: navigate, if requested.
     if (!Config.InitialURL.IsEmpty())
@@ -399,6 +407,31 @@ Java_com_inoksan_webui_InoWebViewAndroid_nativeOnDocumentTitleChanged(
     DispatchOnGameThread(static_cast<int32>(Id), [Title](FInoWebViewImpl_Android* Impl)
     {
         if (Impl->OnDocumentTitleChangedCallback) Impl->OnDocumentTitleChangedCallback(Title);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_inoksan_webui_InoWebViewAndroid_nativeOnScriptDialog(
+    JNIEnv* Env, jclass /*Cls*/, jint Id, jint Kind, jstring JMessage)
+{
+    const FString Message = JStringToFString(Env, JMessage);
+    // Kind values match EInoScriptDialogKind (Alert/Confirm/Prompt/BeforeUnload
+    // = 0/1/2/3) — see InoWebUITypes.h and the constants in the Java helper.
+    const EInoScriptDialogKind K = static_cast<EInoScriptDialogKind>(Kind);
+    DispatchOnGameThread(static_cast<int32>(Id), [K, Message](FInoWebViewImpl_Android* Impl)
+    {
+        if (Impl->OnScriptDialogCallback) Impl->OnScriptDialogCallback(K, Message);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_inoksan_webui_InoWebViewAndroid_nativeOnNewWindowRequested(
+    JNIEnv* Env, jclass /*Cls*/, jint Id, jstring JUri)
+{
+    const FString URI = JStringToFString(Env, JUri);
+    DispatchOnGameThread(static_cast<int32>(Id), [URI](FInoWebViewImpl_Android* Impl)
+    {
+        if (Impl->OnNewWindowRequestedCallback) Impl->OnNewWindowRequestedCallback(URI);
     });
 }
 
