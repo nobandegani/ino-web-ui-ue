@@ -21,12 +21,13 @@ namespace InoWebUIJNI
 {
     static bool      bInitAttempted = false;
     static jclass    JavaClass      = nullptr;    // global ref; freed on module unload
-    static jmethodID MCreate        = nullptr;
-    static jmethodID MDestroy       = nullptr;
-    static jmethodID MLoadURL       = nullptr;
-    static jmethodID MSetVisible    = nullptr;
-    static jmethodID MReload        = nullptr;
-    static jmethodID MSyncBounds    = nullptr;
+    static jmethodID MCreate         = nullptr;
+    static jmethodID MDestroy        = nullptr;
+    static jmethodID MLoadURL        = nullptr;
+    static jmethodID MSetVisible     = nullptr;
+    static jmethodID MReload         = nullptr;
+    static jmethodID MSyncBounds     = nullptr;
+    static jmethodID MSetVirtualHost = nullptr;
 
     /**
      * Look up the Java helper class and all the static methods we call.
@@ -58,14 +59,16 @@ namespace InoWebUIJNI
         JavaClass = (jclass)Env->NewGlobalRef(Local);
         Env->DeleteLocalRef(Local);
 
-        MCreate     = Env->GetStaticMethodID(JavaClass, "createWebView",  "(IZZ)V");
-        MDestroy    = Env->GetStaticMethodID(JavaClass, "destroyWebView", "(I)V");
-        MLoadURL    = Env->GetStaticMethodID(JavaClass, "loadURL",        "(ILjava/lang/String;)V");
-        MSetVisible = Env->GetStaticMethodID(JavaClass, "setVisible",     "(IZ)V");
-        MReload     = Env->GetStaticMethodID(JavaClass, "reload",         "(I)V");
-        MSyncBounds = Env->GetStaticMethodID(JavaClass, "syncBounds",     "(IIIII)V");
+        MCreate         = Env->GetStaticMethodID(JavaClass, "createWebView",   "(IZZ)V");
+        MDestroy        = Env->GetStaticMethodID(JavaClass, "destroyWebView",  "(I)V");
+        MLoadURL        = Env->GetStaticMethodID(JavaClass, "loadURL",         "(ILjava/lang/String;)V");
+        MSetVisible     = Env->GetStaticMethodID(JavaClass, "setVisible",      "(IZ)V");
+        MReload         = Env->GetStaticMethodID(JavaClass, "reload",          "(I)V");
+        MSyncBounds     = Env->GetStaticMethodID(JavaClass, "syncBounds",      "(IIIII)V");
+        MSetVirtualHost = Env->GetStaticMethodID(JavaClass, "setVirtualHost",  "(ILjava/lang/String;Ljava/lang/String;)V");
 
-        if (!MCreate || !MDestroy || !MLoadURL || !MSetVisible || !MReload || !MSyncBounds)
+        if (!MCreate || !MDestroy || !MLoadURL || !MSetVisible || !MReload
+            || !MSyncBounds || !MSetVirtualHost)
         {
             UE_LOG(LogInoWebUI, Error,
                 TEXT("One or more InoWebViewAndroid methods not found — Java helper "
@@ -107,19 +110,38 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
     JNIEnv* Env = FAndroidApplication::GetJavaEnv();
     if (!Env) return false;
 
-    // Step 1: create the WebView without navigating. Later phases (virtual
-    // host, messaging bridge, lockdown) insert configuration calls between
-    // creation and the first loadURL — all queued on the Android UI thread
-    // in submission order, so they apply before the page actually loads.
+    // Step 1: create the WebView without navigating.
     Env->CallStaticVoidMethod(
         InoWebUIJNI::JavaClass, InoWebUIJNI::MCreate,
         static_cast<jint>(InstanceId),
         static_cast<jboolean>(Config.bTransparentBackground ? JNI_TRUE : JNI_FALSE),
         static_cast<jboolean>(Config.bVisibleOnCreate        ? JNI_TRUE : JNI_FALSE));
 
-    // Step 2: navigate, if requested. (Configuration insertion points for
-    // virtual host / messaging / hardening go BETWEEN step 1 and step 2 in
-    // subsequent Android-parity commits.)
+    // Step 2: virtual host. Installs a WebViewClient.shouldInterceptRequest
+    // handler that serves files from the resolved folder when the page
+    // requests anything under https://<VirtualHostName>/. Must happen before
+    // the first navigation so the initial URL hits the handler.
+    if (!Config.VirtualHostName.IsEmpty() && !Config.VirtualHostFolder.IsEmpty())
+    {
+        // Resolve relative → absolute (ProjectContentDir-anchored), mirroring
+        // the Windows impl's behavior.
+        const FString AbsoluteFolder = FPaths::IsRelative(Config.VirtualHostFolder)
+            ? FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir() / Config.VirtualHostFolder)
+            : FPaths::ConvertRelativePathToFull(Config.VirtualHostFolder);
+
+        jstring JHost   = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.VirtualHostName));
+        jstring JFolder = Env->NewStringUTF(TCHAR_TO_UTF8(*AbsoluteFolder));
+        Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetVirtualHost,
+            static_cast<jint>(InstanceId), JHost, JFolder);
+        Env->DeleteLocalRef(JHost);
+        Env->DeleteLocalRef(JFolder);
+
+        UE_LOG(LogInoWebUI, Log,
+            TEXT("FInoWebViewImpl_Android[%d] virtual host:  https://%s/  ->  %s"),
+            InstanceId, *Config.VirtualHostName, *AbsoluteFolder);
+    }
+
+    // Step 3: navigate, if requested.
     if (!Config.InitialURL.IsEmpty())
     {
         jstring JUrl = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.InitialURL));

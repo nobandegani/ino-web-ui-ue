@@ -16,9 +16,16 @@ import android.graphics.Color;
 import android.util.SparseArray;
 import android.view.View;
 import android.view.ViewGroup;
+import android.webkit.MimeTypeMap;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.util.Collections;
 
 import com.epicgames.unreal.GameActivity;
 import com.epicgames.unreal.Logger;
@@ -91,6 +98,108 @@ public class InoWebViewAndroid
                 // construction and the first page load.
             }
         });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Virtual host mapping
+    //
+    //  Installs a WebViewClient whose shouldInterceptRequest handler serves
+    //  any request to https://<host>/* from the given local folder. This is
+    //  Android's equivalent of WebView2's SetVirtualHostNameToFolderMapping.
+    //
+    //  Must be called AFTER createWebView and BEFORE loadURL — the URL
+    //  being navigated to must resolve through the handler.
+    // ─────────────────────────────────────────────────────────────────────
+    public static void setVirtualHost(final int id, final String host, final String folder)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        if (host == null || host.isEmpty() || folder == null || folder.isEmpty()) return;
+
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv == null) {
+                    Log.warn("setVirtualHost(" + id + "): no WebView");
+                    return;
+                }
+
+                final File rootFolder = new File(folder);
+                if (!rootFolder.isDirectory()) {
+                    Log.warn("setVirtualHost(" + id + "): folder does not exist: " + folder +
+                             " (requests to " + host + " will 404)");
+                }
+
+                final String prefix = "https://" + host + "/";
+
+                wv.setWebViewClient(new WebViewClient() {
+                    @Override
+                    public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                        final String url = request.getUrl().toString();
+                        if (!url.startsWith(prefix)) {
+                            return null; // let WebView handle normally
+                        }
+
+                        // Strip the prefix and any query/fragment to get a pure file path.
+                        String path = url.substring(prefix.length());
+                        int q = path.indexOf('?');     if (q >= 0) path = path.substring(0, q);
+                        int h = path.indexOf('#');     if (h >= 0) path = path.substring(0, h);
+
+                        // Reject path-traversal attempts up front.
+                        if (path.contains("..")) {
+                            return notFound(); // 404 even for traversal — don't leak "forbidden"
+                        }
+                        if (path.isEmpty()) path = "index.html";
+
+                        File file = new File(rootFolder, path);
+                        if (!file.isFile()) return notFound();
+
+                        try {
+                            FileInputStream fis = new FileInputStream(file);
+                            return new WebResourceResponse(guessMimeType(file.getName()), null, fis);
+                        } catch (Exception e) {
+                            Log.error("shouldInterceptRequest: " + e.getMessage());
+                            return notFound();
+                        }
+                    }
+                });
+
+                Log.debug("setVirtualHost(" + id + "): https://" + host + "/ -> " + folder);
+            }
+        });
+    }
+
+    /** 404 response — empty body, no data stream (WebResourceResponse allows null input). */
+    private static WebResourceResponse notFound()
+    {
+        return new WebResourceResponse("text/plain", "UTF-8", 404, "Not Found",
+                Collections.<String, String>emptyMap(), null);
+    }
+
+    /** Best-effort MIME type from extension. Falls back to common web types
+     *  that Android's MimeTypeMap sometimes misses (mjs, woff2), then to
+     *  application/octet-stream (browser will content-sniff). */
+    private static String guessMimeType(String filename)
+    {
+        int dot = filename.lastIndexOf('.');
+        String ext = (dot >= 0 && dot + 1 < filename.length())
+                ? filename.substring(dot + 1).toLowerCase()
+                : "";
+
+        String mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+        if (mime != null) return mime;
+
+        switch (ext) {
+            case "js":    case "mjs":   return "application/javascript";
+            case "css":                 return "text/css";
+            case "html":  case "htm":   return "text/html";
+            case "json":                return "application/json";
+            case "svg":                 return "image/svg+xml";
+            case "woff":                return "font/woff";
+            case "woff2":               return "font/woff2";
+            case "wasm":                return "application/wasm";
+            default:                    return "application/octet-stream";
+        }
     }
 
     public static void destroyWebView(final int id)
