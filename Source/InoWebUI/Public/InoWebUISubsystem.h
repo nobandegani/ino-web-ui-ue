@@ -8,6 +8,7 @@
 #include "InoWebUISubsystem.generated.h"
 
 class UInoWebView;
+class UInoWebBundle;
 
 /**
  * UInoWebUISubsystem — entry point for all WebView overlay management.
@@ -55,6 +56,22 @@ public:
               meta = (AutoCreateRefTerm = "Config"))
     UInoWebView* CreateWebView(FName Name, const FInoWebViewConfig& Config);
 
+    /**
+     * Create a WebView driven by a UInoWebBundle asset. Uses the asset's
+     * InitialURL, VirtualHostName, and (depending on build):
+     *
+     *   • Editor / non-cooked: serves loose files directly from the asset's
+     *     SourceFolder so React hot-iteration still works.
+     *   • Packaged / cooked:   extracts Files[] to
+     *     <ProjectSavedDir>/InoWebBundles/<AssetName>/ on first use (or
+     *     when the content hash changes), then serves from there.
+     *
+     * Null Bundle → logs an error and returns nullptr.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI",
+              meta = (DisplayName = "Create Web View From Bundle"))
+    UInoWebView* CreateWebViewFromAsset(FName Name, UInoWebBundle* Bundle);
+
     /** Returns nullptr if no WebView with that name exists. */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Ino|WebUI")
     UInoWebView* GetWebView(FName Name) const;
@@ -93,6 +110,14 @@ private:
 
     /** Called by FViewport::ViewportResizedEvent — pushes new bounds to every WebView. */
     void OnViewportResized(class FViewport* InViewport, uint32 Unused);
+
+    /**
+     * Pick the folder to serve for a given bundle. In editor/dev we prefer
+     * the bundle's SourceFolder (loose files — React dev loop friendly);
+     * in packaged builds (or if the source folder is missing) we extract
+     * baked bytes to a persistent folder in ProjectSavedDir.
+     */
+    FString ResolveBundleContentFolder(UInoWebBundle* Bundle);
 
     /**
      * Pushes the parent window's current client-area size to every live

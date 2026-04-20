@@ -4,7 +4,11 @@
 
 #include "InoWebUILog.h"
 #include "InoWebView.h"
+#include "InoWebBundle.h"
 #include "IInoWebViewImpl.h"    // now a public header (see commit 16140a0)
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
@@ -264,4 +268,120 @@ void UInoWebUISubsystem::BroadcastClientRectToAll()
             View->OnParentResized(ScreenX, ScreenY, Width, Height);
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CreateWebViewFromAsset — bundle-driven creation.
+//
+//  Builds a FInoWebViewConfig from the asset's fields (InitialURL +
+//  VirtualHostName), plus a VirtualHostFolder resolved via
+//  ResolveBundleContentFolder (source folder in editor, extracted folder
+//  in packaged). Then delegates to the regular CreateWebView.
+// ─────────────────────────────────────────────────────────────────────────────
+UInoWebView* UInoWebUISubsystem::CreateWebViewFromAsset(FName Name, UInoWebBundle* Bundle)
+{
+    check(IsInGameThread());
+
+    if (!Bundle)
+    {
+        UE_LOG(LogInoWebUI, Error,
+            TEXT("CreateWebViewFromAsset('%s'): Bundle is null."), *Name.ToString());
+        return nullptr;
+    }
+
+    const FString Folder = ResolveBundleContentFolder(Bundle);
+    if (Folder.IsEmpty())
+    {
+        UE_LOG(LogInoWebUI, Error,
+            TEXT("CreateWebViewFromAsset('%s'): could not resolve a content folder for bundle '%s'."),
+            *Name.ToString(), *Bundle->GetName());
+        return nullptr;
+    }
+
+    FInoWebViewConfig Config;
+    Config.InitialURL        = Bundle->InitialURL;
+    Config.VirtualHostName   = Bundle->VirtualHostName;
+    Config.VirtualHostFolder = Folder;   // already absolute; VirtualHostFolder accepts that
+    // Everything else (transparent bg, lockdown, dialogs, etc.) stays at its
+    // FInoWebViewConfig default. Users can wrap this helper in their own
+    // BP / C++ path if they need to override specific fields.
+
+    return CreateWebView(Name, Config);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ResolveBundleContentFolder
+//
+//  Editor / non-cooked: prefer the bundle's SourceFolder if it exists on disk.
+//                       Lets dev iterate on React with loose files.
+//  Packaged / cooked:   extract baked Files[] to ProjectSavedDir. Uses a
+//                       content-hash sidecar so extraction is only re-done
+//                       when the asset's bytes actually change.
+// ─────────────────────────────────────────────────────────────────────────────
+FString UInoWebUISubsystem::ResolveBundleContentFolder(UInoWebBundle* Bundle)
+{
+#if WITH_EDITOR
+    {
+        const FString SourceFolder = Bundle->GetAbsoluteSourceFolder();
+        if (!SourceFolder.IsEmpty() && IFileManager::Get().DirectoryExists(*SourceFolder))
+        {
+            UE_LOG(LogInoWebUI, Log,
+                TEXT("Bundle '%s': serving from SourceFolder  %s"),
+                *Bundle->GetName(), *SourceFolder);
+            return SourceFolder;
+        }
+        UE_LOG(LogInoWebUI, Verbose,
+            TEXT("Bundle '%s': SourceFolder unavailable, falling through to extraction."),
+            *Bundle->GetName());
+    }
+#endif
+
+    // Packaged path (or editor fallback).
+    if (Bundle->Files.Num() == 0)
+    {
+        UE_LOG(LogInoWebUI, Error,
+            TEXT("Bundle '%s': no baked Files — did you Reimport before packaging?"),
+            *Bundle->GetName());
+        return FString();
+    }
+
+    const FString ExtractRoot = FPaths::ProjectSavedDir() / TEXT("InoWebBundles");
+    const FString ExtractDir  = ExtractRoot / Bundle->GetName();
+    const FString HashFile    = ExtractDir / TEXT(".inowebbundle.hash");
+
+    // Fast path: we've already extracted this exact content hash — reuse it.
+    FString OnDiskHash;
+    if (FFileHelper::LoadFileToString(OnDiskHash, *HashFile))
+    {
+        OnDiskHash.TrimStartAndEndInline();
+        if (OnDiskHash == Bundle->ContentHash && !Bundle->ContentHash.IsEmpty())
+        {
+            UE_LOG(LogInoWebUI, Verbose,
+                TEXT("Bundle '%s': extraction at %s is up-to-date (hash=%s)."),
+                *Bundle->GetName(), *ExtractDir, *OnDiskHash);
+            return ExtractDir;
+        }
+    }
+
+    // Stale or first extraction — write fresh.
+    if (!Bundle->ExtractToDirectory(ExtractDir))
+    {
+        UE_LOG(LogInoWebUI, Error,
+            TEXT("Bundle '%s': extraction to %s failed."),
+            *Bundle->GetName(), *ExtractDir);
+        return FString();
+    }
+
+    // Write the hash sidecar so future sessions can skip re-extraction.
+    if (!FFileHelper::SaveStringToFile(Bundle->ContentHash, *HashFile))
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("Bundle '%s': could not write hash sidecar — will re-extract next run."),
+            *Bundle->GetName());
+    }
+
+    UE_LOG(LogInoWebUI, Log,
+        TEXT("Bundle '%s': extracted %d file(s) to %s"),
+        *Bundle->GetName(), Bundle->Files.Num(), *ExtractDir);
+    return ExtractDir;
 }
