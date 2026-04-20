@@ -16,7 +16,7 @@ pixels in the HTML reveal the 3D scene underneath.
 This is fundamentally different from UE's built-in `WebBrowser` plugin, which
 textures the browser output — we skip all of that, zero copy, zero stall.
 
-**Current status: Phase 7 — Win64 (full) + Android MVP + Web Bundle asset type.**
+**Current status: Phase 8 — Win64 (full) + Android (full parity) + Web Bundle asset type.**
 
 ---
 
@@ -127,27 +127,56 @@ methods call Java static methods synchronously (fire-and-forget) and Java
 marshals onto the UI thread via `Activity.runOnUiThread`. Since all
 dispatches share one run loop, ordering is preserved end-to-end.
 
-### What's implemented
+### Feature matrix (Phase 8 — full parity with Windows)
 
-| API | Android MVP |
-|---|---|
-| Create / Destroy | ✔ |
-| Navigate (LoadURL) | ✔ |
-| Reload | ✔ |
-| Show / Hide / SetVisible | ✔ |
-| SyncBounds (margins + size) | ✔ |
-| Transparent background | ✔ (`bTransparentBackground`) |
-| Activity lifecycle hooks | ✔ (Pause / Resume / Destroy) |
+| API | Android | Notes |
+|---|---|---|
+| Create / Destroy | ✔ | |
+| Navigate / Reload / Show / Hide | ✔ | |
+| SyncBounds (margins + size) | ✔ | |
+| Transparent background | ✔ | `bTransparentBackground` |
+| Activity lifecycle hooks | ✔ | Pause / Resume / Destroy via UPL |
+| **Virtual-host mapping** | ✔ | `WebViewClient.shouldInterceptRequest` serves `https://<host>/*` from a local folder |
+| **Web Bundle assets** | ✔ | Runtime logic is cross-platform; works identically |
+| **Two-way messaging** | ✔ | `addJavascriptInterface` + `evaluateJavascript`; same `window.InoWebUI` API as Windows |
+| **Navigation events** | ✔ | `OnNavigationStarting` / `OnNavigationCompleted` / `OnDocumentTitleChanged` |
+| **Lockdown** | ✔ | `shouldOverrideUrlLoading` returns true for non-whitelisted URIs; same wildcard rules |
+| **JS dialog suppression** | ✔ | `WebChromeClient.onJs{Alert,Confirm,Prompt,BeforeUnload}` |
+| **window.open blocking** | ✔ | `onCreateWindow` with transport-WebView trick to capture URL |
+| **Focus events + FocusWebView** | ✔ | `setOnFocusChangeListener` + `requestFocus` |
+| **SetZoomFactor** | ✔ | `setInitialScale(percent)` |
+| **ClearAllCookies** | ✔ | `CookieManager.removeAllCookies` |
+| **OnProcessFailed** | ✔ | `WebViewClient.onRenderProcessGone` (API 26+) |
+| **DevTools (remote)** | ✔ | `setWebContentsDebuggingEnabled` — inspect via `chrome://inspect/#devices` on desktop Chrome |
+| **ExecuteJavaScript** | ✔ | `webView.evaluateJavascript` |
+| **UserAgentOverride** | ✔ | `WebSettings.setUserAgentString` |
+| **bEnableContextMenus** | ✔ | `setOnLongClickListener` suppresses the browser context menu |
+| `OpenDevTools` (programmatic) | — | Android has no in-process API; remote inspect only (log explains) |
+| `SetMuted` / `bStartMuted` | — | `android.webkit.WebView` has no audio mute; log warns |
+| `bEnableAcceleratorKeys` | N/A | F5/F12/Ctrl+F are desktop-only concepts |
 
-### What's NOT implemented yet on Android
+### Android runtime architecture
 
-Logged warning, return. Land in future Android phases:
+One `InoWebViewClient` (handles `shouldInterceptRequest` for virtual host,
+`shouldOverrideUrlLoading` for lockdown, `onPageStarted` for JS bridge
+injection, `onPageFinished` / `onReceivedError` for nav completion,
+`onRenderProcessGone` for crash) plus one `InoWebChromeClient` (handles
+title changes, JS dialogs, `onCreateWindow`). Both are installed once in
+`createWebView` and read per-WebView state from a `sConfigs:
+SparseArray<Config>` that the various `configureXxx` JNI methods
+populate between `createWebView` and the first `loadURL`.
 
-- Messaging (`PostMessage`, `OnMessageReceived`, `window.InoWebUI` JS bridge)
-- Navigation events / lockdown
-- Dialog / popup blocking
-- Focus / zoom / cookies / DevTools / ExecuteJavaScript / mute
-- Virtual-host mapping (Android has `WebViewAssetLoader` — similar API)
+JS bridge is the same `window.InoWebUI.send/on/off` API as Windows.
+`window.chrome.webview.postMessage` doesn't exist on Android; the
+injected bridge routes through `addJavascriptInterface` instead. User
+JS is identical across platforms.
+
+Events from Java to C++ go through six `nativeOn...` JNI exports
+routed via a single `DispatchOnGameThread<Lambda>` helper that:
+(1) marshals onto the game thread via `AsyncTask`, (2) re-acquires the
+impl registry lock, (3) invokes the lambda with the live impl pointer.
+Lock is held through the callback so Shutdown (which removes from the
+registry) serializes correctly.
 
 ### Debugging an Android build
 
@@ -562,7 +591,7 @@ tuples. No compression inside the asset itself.
 | 5 | Game-UI hardening: lockdown + dialog/popup blocking + nav events + zoom/focus/cookies/crash | ✔ done |
 | 6 | Android MVP — overlay + lifecycle + URL/show/hide/reload | ✔ done |
 | 7 | UInoWebBundle asset — bundle web content into a UE asset, extract on demand | ✔ done |
-| 8 | Android parity pass — messaging, hardening, virtual host, runtime polish | — |
+| 8 | Android parity pass — messaging, hardening, virtual host, runtime polish | ✔ done |
 | 9 | DirectComposition hosting (fixes PIE transparency on Windows) | — |
 | 10 | macOS implementation (`WKWebView`) | — |
 
