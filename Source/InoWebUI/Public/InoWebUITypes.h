@@ -153,17 +153,17 @@ struct INOWEBUI_API FInoWebViewConfig
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
     bool bLockToVirtualHost = true;
 
-    /**
-     * Additional URIs allowed past the lockdown. Each entry is a UE wildcard
-     * pattern (`*` = any chars, `?` = single char) matched against the full
-     * navigation URI. Examples:
-     *
-     *   "https://*.api.company.com/*"    — any subdomain of api.company.com
-     *   "http://localhost:*\/*"           — any localhost port (dev)
-     *   "https://cdn.example.com/*"      — specific CDN
-     *
-     * Empty list + bLockToVirtualHost=true = only VirtualHostName is allowed.
-     */
+    // Additional URIs allowed past the lockdown. Each entry is a UE wildcard
+    // pattern (* = any chars, ? = single char) matched against the full
+    // navigation URI. Examples (note: these lines use // comments instead of
+    // /** */ because Clang -Wcomment rejects nested /* inside a block comment,
+    // and wildcard-heavy patterns like "foo/*" would trip it):
+    //
+    //   "https://*.api.company.com/*"    — any subdomain of api.company.com
+    //   "http://localhost:*/*"           — any localhost port (dev)
+    //   "https://cdn.example.com/*"      — specific CDN
+    //
+    // Empty list + bLockToVirtualHost=true = only VirtualHostName is allowed.
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
     TArray<FString> AllowedURIPatterns;
 
