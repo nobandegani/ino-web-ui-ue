@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
 #include "Engine/EngineTypes.h"   // FDirectoryPath
+#include "InoWebUITypes.h"        // FInoWebViewConfig (embedded below)
 #include "InoWebBundle.generated.h"
 
 /**
@@ -56,6 +57,19 @@ public:
     // ── Editor-configured ───────────────────────────────────────────────────
 
     /**
+     * Full FInoWebViewConfig used when this bundle creates a WebView.
+     * Set InitialURL, VirtualHostName, transparency, lockdown, dialog
+     * blocking, devtools, etc. here — all the same fields you'd pass to
+     * UInoWebUISubsystem::CreateWebView.
+     *
+     * VirtualHostFolder inside Config is IGNORED when the bundle is used —
+     * the bundle always provides the folder itself (from SourceFolder in
+     * editor, or from the extracted Files[] in packaged builds).
+     */
+    UPROPERTY(EditAnywhere, Category = "InoWebBundle", meta = (ShowOnlyInnerProperties))
+    FInoWebViewConfig Config;
+
+    /**
      * Folder on disk to read from at Reimport time. Relative paths are
      * resolved against the project's Content/ directory; absolute paths are
      * used verbatim. Only read in the editor — in packaged builds this
@@ -63,20 +77,6 @@ public:
      */
     UPROPERTY(EditAnywhere, Category = "InoWebBundle")
     FDirectoryPath SourceFolder;
-
-    /**
-     * URL the WebView navigates to on creation.
-     * Example:  "https://ui.local/index.html"
-     */
-    UPROPERTY(EditAnywhere, Category = "InoWebBundle")
-    FString InitialURL;
-
-    /**
-     * Hostname the bundle is served under. Usually ".local" to avoid any
-     * real-DNS collision.  Example:  "ui.local"
-     */
-    UPROPERTY(EditAnywhere, Category = "InoWebBundle")
-    FString VirtualHostName;
 
     // ── Baked at Reimport (read-only at runtime) ────────────────────────────
 

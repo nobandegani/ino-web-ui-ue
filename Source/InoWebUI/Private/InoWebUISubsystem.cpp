@@ -298,13 +298,13 @@ UInoWebView* UInoWebUISubsystem::CreateWebViewFromAsset(FName Name, UInoWebBundl
         return nullptr;
     }
 
-    FInoWebViewConfig Config;
-    Config.InitialURL        = Bundle->InitialURL;
-    Config.VirtualHostName   = Bundle->VirtualHostName;
-    Config.VirtualHostFolder = Folder;   // already absolute; VirtualHostFolder accepts that
-    // Everything else (transparent bg, lockdown, dialogs, etc.) stays at its
-    // FInoWebViewConfig default. Users can wrap this helper in their own
-    // BP / C++ path if they need to override specific fields.
+    // Start from the bundle's authored Config (InitialURL, VirtualHostName,
+    // transparency, lockdown, dialog blocking, devtools — all the fields the
+    // user set in the asset's details panel) and inject the resolved folder.
+    // VirtualHostFolder on the asset is always overridden: the bundle owns
+    // that — via SourceFolder in editor or extracted Files[] in packaged.
+    FInoWebViewConfig Config = Bundle->Config;
+    Config.VirtualHostFolder = Folder;
 
     return CreateWebView(Name, Config);
 }
