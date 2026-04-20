@@ -38,9 +38,10 @@ namespace InoWebUIJNI
     static jmethodID MSetVisible     = nullptr;
     static jmethodID MReload         = nullptr;
     static jmethodID MSyncBounds     = nullptr;
-    static jmethodID MSetVirtualHost = nullptr;
-    static jmethodID MSetupMessaging = nullptr;
-    static jmethodID MPostMessage    = nullptr;
+    static jmethodID MSetVirtualHost     = nullptr;
+    static jmethodID MSetupMessaging     = nullptr;
+    static jmethodID MPostMessage        = nullptr;
+    static jmethodID MConfigureLockdown  = nullptr;
 
     /**
      * Look up the Java helper class and all the static methods we call.
@@ -78,12 +79,14 @@ namespace InoWebUIJNI
         MSetVisible     = Env->GetStaticMethodID(JavaClass, "setVisible",      "(IZ)V");
         MReload         = Env->GetStaticMethodID(JavaClass, "reload",          "(I)V");
         MSyncBounds     = Env->GetStaticMethodID(JavaClass, "syncBounds",      "(IIIII)V");
-        MSetVirtualHost = Env->GetStaticMethodID(JavaClass, "setVirtualHost",  "(ILjava/lang/String;Ljava/lang/String;)V");
-        MSetupMessaging = Env->GetStaticMethodID(JavaClass, "setupMessaging",  "(I)V");
-        MPostMessage    = Env->GetStaticMethodID(JavaClass, "postMessageJson", "(ILjava/lang/String;)V");
+        MSetVirtualHost    = Env->GetStaticMethodID(JavaClass, "setVirtualHost",     "(ILjava/lang/String;Ljava/lang/String;)V");
+        MSetupMessaging    = Env->GetStaticMethodID(JavaClass, "setupMessaging",     "(I)V");
+        MPostMessage       = Env->GetStaticMethodID(JavaClass, "postMessageJson",    "(ILjava/lang/String;)V");
+        MConfigureLockdown = Env->GetStaticMethodID(JavaClass, "configureLockdown",  "(IZ[Ljava/lang/String;)V");
 
         if (!MCreate || !MDestroy || !MLoadURL || !MSetVisible || !MReload
-            || !MSyncBounds || !MSetVirtualHost || !MSetupMessaging || !MPostMessage)
+            || !MSyncBounds || !MSetVirtualHost || !MSetupMessaging || !MPostMessage
+            || !MConfigureLockdown)
         {
             UE_LOG(LogInoWebUI, Error,
                 TEXT("One or more InoWebViewAndroid methods not found — Java helper "
@@ -168,6 +171,26 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
     // Unconditional — parity with Windows where the bridge is always available.
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetupMessaging,
         static_cast<jint>(InstanceId));
+
+    // Step 2c: lockdown — hand the Java client the allowlist so
+    // shouldOverrideUrlLoading can cancel non-whitelisted nav.
+    {
+        jclass StringCls = Env->FindClass("java/lang/String");
+        jobjectArray JPatterns = Env->NewObjectArray(
+            Config.AllowedURIPatterns.Num(), StringCls, nullptr);
+        for (int32 i = 0; i < Config.AllowedURIPatterns.Num(); ++i)
+        {
+            jstring S = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.AllowedURIPatterns[i]));
+            Env->SetObjectArrayElement(JPatterns, i, S);
+            Env->DeleteLocalRef(S);
+        }
+        Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MConfigureLockdown,
+            static_cast<jint>(InstanceId),
+            static_cast<jboolean>(Config.bLockToVirtualHost ? JNI_TRUE : JNI_FALSE),
+            JPatterns);
+        Env->DeleteLocalRef(JPatterns);
+        Env->DeleteLocalRef(StringCls);
+    }
 
     // Step 3: navigate, if requested.
     if (!Config.InitialURL.IsEmpty())
@@ -303,34 +326,79 @@ void FInoWebViewImpl_Android::PostMessageJson(const FString& Json)
 //  we marshal onto the game thread before dispatching to the UObject-layer
 //  callback that UInoWebView wired up.
 // ─────────────────────────────────────────────────────────────────────────────
+// Helper for the common JNI "jstring → FString, marshal to game thread, look up
+// impl under lock, call a provided lambda with the impl" pattern.
+template <typename FLambda>
+static void DispatchOnGameThread(int32 Id, FLambda&& Action)
+{
+    const int32 LocalId = Id;
+    AsyncTask(ENamedThreads::GameThread,
+        [LocalId, Action = Forward<FLambda>(Action)]() mutable
+        {
+            FScopeLock Lock(&GRegistryLock);
+            if (FInoWebViewImpl_Android** Found = GImplRegistry.Find(LocalId))
+            {
+                if (FInoWebViewImpl_Android* Impl = *Found)
+                {
+                    Action(Impl);
+                }
+            }
+        });
+}
+
+static FString JStringToFString(JNIEnv* Env, jstring JStr)
+{
+    if (!JStr) return FString();
+    const char* Chars = Env->GetStringUTFChars(JStr, nullptr);
+    FString Result = UTF8_TO_TCHAR(Chars);
+    Env->ReleaseStringUTFChars(JStr, Chars);
+    return Result;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_inoksan_webui_InoWebViewAndroid_nativeOnMessageReceived(
     JNIEnv* Env, jclass /*Cls*/, jint Id, jstring JEnvelope)
 {
     if (!JEnvelope) return;
+    const FString Envelope = JStringToFString(Env, JEnvelope);
 
-    const char* Chars = Env->GetStringUTFChars(JEnvelope, nullptr);
-    FString Envelope = UTF8_TO_TCHAR(Chars);
-    Env->ReleaseStringUTFChars(JEnvelope, Chars);
-
-    const int32 LocalId = static_cast<int32>(Id);
-
-    // Marshal to game thread, then look up the impl under the registry lock.
-    // Holding the lock through the dispatch prevents the impl being destroyed
-    // mid-callback (Shutdown on the game thread blocks on the same lock).
-    AsyncTask(ENamedThreads::GameThread, [LocalId, Envelope]()
+    DispatchOnGameThread(static_cast<int32>(Id), [Envelope](FInoWebViewImpl_Android* Impl)
     {
-        FScopeLock Lock(&GRegistryLock);
-        if (FInoWebViewImpl_Android** Found = GImplRegistry.Find(LocalId))
-        {
-            if (FInoWebViewImpl_Android* Impl = *Found)
-            {
-                if (Impl->OnMessageReceivedJson)
-                {
-                    Impl->OnMessageReceivedJson(Envelope);
-                }
-            }
-        }
+        if (Impl->OnMessageReceivedJson) Impl->OnMessageReceivedJson(Envelope);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_inoksan_webui_InoWebViewAndroid_nativeOnNavigationStarting(
+    JNIEnv* Env, jclass /*Cls*/, jint Id, jstring JUri)
+{
+    const FString URI = JStringToFString(Env, JUri);
+    DispatchOnGameThread(static_cast<int32>(Id), [URI](FInoWebViewImpl_Android* Impl)
+    {
+        if (Impl->OnNavigationStartingCallback) Impl->OnNavigationStartingCallback(URI);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_inoksan_webui_InoWebViewAndroid_nativeOnNavigationCompleted(
+    JNIEnv* Env, jclass /*Cls*/, jint Id, jboolean Success, jstring JUri)
+{
+    const FString URI = JStringToFString(Env, JUri);
+    const bool bSuccess = (Success == JNI_TRUE);
+    DispatchOnGameThread(static_cast<int32>(Id), [bSuccess, URI](FInoWebViewImpl_Android* Impl)
+    {
+        if (Impl->OnNavigationCompletedCallback) Impl->OnNavigationCompletedCallback(bSuccess, URI);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_inoksan_webui_InoWebViewAndroid_nativeOnDocumentTitleChanged(
+    JNIEnv* Env, jclass /*Cls*/, jint Id, jstring JTitle)
+{
+    const FString Title = JStringToFString(Env, JTitle);
+    DispatchOnGameThread(static_cast<int32>(Id), [Title](FInoWebViewImpl_Android* Impl)
+    {
+        if (Impl->OnDocumentTitleChangedCallback) Impl->OnDocumentTitleChangedCallback(Title);
     });
 }
 

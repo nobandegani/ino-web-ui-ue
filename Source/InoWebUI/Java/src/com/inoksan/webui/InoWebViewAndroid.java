@@ -19,6 +19,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
@@ -48,6 +50,10 @@ public class InoWebViewAndroid
 
         // Messaging
         boolean messagingEnabled;   // true once setupMessaging has been called
+
+        // Lockdown
+        boolean  lockToVirtualHost;
+        String[] allowedURIPatterns;
     }
 
     /** id → WebView */
@@ -153,6 +159,58 @@ public class InoWebViewAndroid
                 view.evaluateJavascript(BRIDGE_JS, null);
             }
         }
+
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request)
+        {
+            if (request == null) return false;
+            final String url = request.getUrl().toString();
+
+            // Lockdown check. Matches the C++ rule in InoWebViewImpl_Windows's
+            // IsURIAllowed helper: internal schemes always pass, then
+            // virtualHost-match, then the user's AllowedURIPatterns list.
+            Config c = sConfigs.get(id);
+            if (!isURIAllowed(url, c))
+            {
+                Log.warn("Navigation blocked by lockdown: " + url);
+                nativeOnNavigationStarting(id, url);  // observation, even though blocked
+                return true; // cancel
+            }
+
+            nativeOnNavigationStarting(id, url);
+            return false; // let the navigation proceed
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url)
+        {
+            nativeOnNavigationCompleted(id, true, url);
+        }
+
+        @Override
+        public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error)
+        {
+            if (request != null && request.isForMainFrame())
+            {
+                nativeOnNavigationCompleted(id, false, request.getUrl().toString());
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  WebChromeClient — surface page events that live on the Chrome side
+    //  (title changes, dialogs in later commits, window.open in later).
+    // ─────────────────────────────────────────────────────────────────────
+    private static class InoWebChromeClient extends WebChromeClient
+    {
+        private final int id;
+        InoWebChromeClient(int id) { this.id = id; }
+
+        @Override
+        public void onReceivedTitle(WebView view, String title)
+        {
+            if (title != null) nativeOnDocumentTitleChanged(id, title);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -172,10 +230,13 @@ public class InoWebViewAndroid
         }
     }
 
-    /** JNI function implemented in InoWebViewImpl_Android.cpp.
-     *  Called on whatever thread WebView chooses (usually not UI thread);
-     *  C++ side marshals onto the UE game thread before firing delegates. */
-    private static native void nativeOnMessageReceived(int id, String envelopeJson);
+    /** JNI functions implemented in InoWebViewImpl_Android.cpp. All are
+     *  called on arbitrary threads; C++ marshals onto the game thread
+     *  before firing the corresponding BP delegates. */
+    private static native void nativeOnMessageReceived    (int id, String envelopeJson);
+    private static native void nativeOnNavigationStarting (int id, String uri);
+    private static native void nativeOnNavigationCompleted(int id, boolean success, String uri);
+    private static native void nativeOnDocumentTitleChanged(int id, String title);
 
     // ─────────────────────────────────────────────────────────────────────
     //  Create / Destroy
@@ -202,8 +263,9 @@ public class InoWebViewAndroid
                 wv.getSettings().setDomStorageEnabled(true);
 
                 // Single unified client drives virtual-host + bridge injection
-                // + (future) nav events + lockdown. Config flips flags on sConfigs.
+                // + nav events + lockdown. Config flips flags on sConfigs.
                 wv.setWebViewClient(new InoWebViewClient(id));
+                wv.setWebChromeClient(new InoWebChromeClient(id));
 
                 wv.setVisibility(visible ? View.VISIBLE : View.GONE);
 
@@ -267,6 +329,97 @@ public class InoWebViewAndroid
                 Log.debug("setVirtualHost(" + id + "): " + c.virtualHostPrefix + " -> " + folder);
             }
         });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Lockdown — a URI is allowed iff any of:
+    //    1. Internal scheme (about:, data:, blob:)
+    //    2. lockToVirtualHost == false
+    //    3. Host matches virtualHost (case-insensitive)
+    //    4. Full URI matches any pattern in allowedURIPatterns
+    //  Matches the Windows-side rule exactly.
+    // ─────────────────────────────────────────────────────────────────────
+    public static void configureLockdown(final int id,
+                                         final boolean lockToVirtualHost,
+                                         final String[] allowedPatterns)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                Config c = getOrCreateConfig(id);
+                c.lockToVirtualHost  = lockToVirtualHost;
+                c.allowedURIPatterns = allowedPatterns;
+                Log.debug("configureLockdown(" + id + "): locked=" + lockToVirtualHost
+                        + ", allowed=" + (allowedPatterns == null ? 0 : allowedPatterns.length));
+            }
+        });
+    }
+
+    private static String extractHost(String uri)
+    {
+        if (uri == null) return null;
+        int schemeEnd = uri.indexOf("://");
+        if (schemeEnd < 0) return null;
+        String rest = uri.substring(schemeEnd + 3);
+
+        int at = rest.indexOf('@');
+        if (at >= 0) rest = rest.substring(at + 1);
+
+        int end = rest.length();
+        for (char ch : new char[]{'/', '?', '#', ':'})
+        {
+            int i = rest.indexOf(ch);
+            if (i >= 0 && i < end) end = i;
+        }
+        return rest.substring(0, end);
+    }
+
+    private static boolean isURIAllowed(String uri, Config c)
+    {
+        if (uri == null || uri.isEmpty()) return true;
+        if (uri.startsWith("about:") || uri.startsWith("data:") || uri.startsWith("blob:"))
+            return true;
+        if (c == null || !c.lockToVirtualHost) return true;
+
+        // Virtual host: whole-host match, case-insensitive.
+        if (c.virtualHost != null && !c.virtualHost.isEmpty())
+        {
+            String host = extractHost(uri);
+            if (host != null && host.equalsIgnoreCase(c.virtualHost)) return true;
+        }
+
+        // Wildcard allowlist.
+        if (c.allowedURIPatterns != null)
+        {
+            for (String pattern : c.allowedURIPatterns)
+            {
+                if (matchesWildcard(uri, pattern)) return true;
+            }
+        }
+        return false;
+    }
+
+    /** UE-style wildcard match: "*" = any run, "?" = single char. */
+    private static boolean matchesWildcard(String s, String pattern)
+    {
+        if (pattern == null || pattern.isEmpty()) return false;
+        StringBuilder re = new StringBuilder();
+        for (int i = 0; i < pattern.length(); i++)
+        {
+            char c = pattern.charAt(i);
+            switch (c)
+            {
+                case '*': re.append(".*"); break;
+                case '?': re.append('.');  break;
+                case '.': case '\\': case '(': case ')': case '[': case ']':
+                case '{': case '}': case '|': case '+': case '^': case '$':
+                    re.append('\\').append(c); break;
+                default:
+                    re.append(c);
+            }
+        }
+        return s.matches(re.toString());
     }
 
     // ─────────────────────────────────────────────────────────────────────
