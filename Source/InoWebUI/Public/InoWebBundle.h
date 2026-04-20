@@ -1,0 +1,123 @@
+// Copyright Inoksan. All Rights Reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "UObject/Object.h"
+#include "Engine/EngineTypes.h"   // FDirectoryPath
+#include "InoWebBundle.generated.h"
+
+/**
+ * One file inside a UInoWebBundle — relative path + raw bytes.
+ * Populated at editor-time by UInoWebBundle::BundleFromFolder; serialized
+ * into the asset on save and restored on load.
+ */
+USTRUCT()
+struct FInoWebBundleFile
+{
+    GENERATED_BODY()
+
+    /** POSIX-style relative path from the bundle root ("index.html", "assets/app.js"). */
+    UPROPERTY()
+    FString RelativePath;
+
+    /** Raw file bytes. Stored uncompressed — UE's .pak handles compression at cook. */
+    UPROPERTY()
+    TArray<uint8> Bytes;
+};
+
+/**
+ * UInoWebBundle — a self-contained blob of web content (HTML/JS/CSS/etc.)
+ * bundled as a UE asset.
+ *
+ * Dev workflow:
+ *   1. Drop a folder (Vite/Webpack dist, or hand-written HTML) into your project.
+ *   2. Create a WebBundle asset, set SourceFolder to that folder.
+ *   3. Set InitialURL + VirtualHostName.
+ *   4. Click Reimport in the asset editor — all the files are read into the
+ *      asset, hashed, and saved.
+ *
+ * Runtime usage:
+ *   UInoWebView* View = Subsystem->CreateWebViewFromAsset(TEXT("MainUI"), Bundle);
+ *
+ * Behavior depends on build:
+ *   • Editor / non-cooked: serves loose files directly from SourceFolder.
+ *   • Packaged / cooked:   on first use, extracts Files[] into
+ *                          Saved/InoWebBundles/<AssetName>/ (if stale or
+ *                          missing), then virtual-host-maps that directory.
+ */
+UCLASS(BlueprintType)
+class INOWEBUI_API UInoWebBundle : public UObject
+{
+    GENERATED_BODY()
+
+public:
+
+    // ── Editor-configured ───────────────────────────────────────────────────
+
+    /**
+     * Folder on disk to read from at Reimport time. Relative paths are
+     * resolved against the project's Content/ directory; absolute paths are
+     * used verbatim. Only read in the editor — in packaged builds this
+     * field is informational and Files[] is the source of truth.
+     */
+    UPROPERTY(EditAnywhere, Category = "InoWebBundle")
+    FDirectoryPath SourceFolder;
+
+    /**
+     * URL the WebView navigates to on creation.
+     * Example:  "https://ui.local/index.html"
+     */
+    UPROPERTY(EditAnywhere, Category = "InoWebBundle")
+    FString InitialURL;
+
+    /**
+     * Hostname the bundle is served under. Usually ".local" to avoid any
+     * real-DNS collision.  Example:  "ui.local"
+     */
+    UPROPERTY(EditAnywhere, Category = "InoWebBundle")
+    FString VirtualHostName;
+
+    // ── Baked at Reimport (read-only at runtime) ────────────────────────────
+
+    /** All files captured from SourceFolder at Reimport. Sorted by relative path. */
+    UPROPERTY(VisibleAnywhere, Category = "InoWebBundle|Baked")
+    TArray<FInoWebBundleFile> Files;
+
+    /** MD5 hex of the bundled content. Doubles as a version tag for the on-disk
+     *  extraction sidecar so we can detect stale extractions. */
+    UPROPERTY(VisibleAnywhere, Category = "InoWebBundle|Baked")
+    FString ContentHash;
+
+    /** Total uncompressed byte count across all Files. Diagnostic only. */
+    UPROPERTY(VisibleAnywhere, Category = "InoWebBundle|Baked")
+    int64 TotalBytes = 0;
+
+    // ── Editor + runtime operations ─────────────────────────────────────────
+
+    /**
+     * Walk AbsoluteFolder recursively, read every file into Files[], compute
+     * ContentHash, update TotalBytes. Returns true on success, false if the
+     * folder can't be read or is empty. Clears prior contents on success.
+     */
+    bool BundleFromFolder(const FString& AbsoluteFolder);
+
+    /**
+     * Write Files[] to DestFolder as loose files. Clears DestFolder first.
+     * Used by the runtime extractor when loading a packaged bundle.
+     */
+    bool ExtractToDirectory(const FString& DestFolder) const;
+
+    /**
+     * Compute an MD5 hash over every file's relative path + bytes. Stable
+     * across runs because Files[] is sorted in BundleFromFolder.
+     */
+    FString ComputeHash() const;
+
+    /**
+     * Resolve SourceFolder to an absolute disk path. Relative paths anchor
+     * at the project's Content/ directory (same rule as LoadLocalFile and
+     * FInoWebViewConfig::VirtualHostFolder). Returns empty if unset.
+     */
+    FString GetAbsoluteSourceFolder() const;
+};
