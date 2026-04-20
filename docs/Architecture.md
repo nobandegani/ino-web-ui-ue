@@ -105,7 +105,7 @@ Plugins/InoWebUI/
 |   |-- InoWebUI/                                          runtime module
 |   |   |-- InoWebUI.Build.cs
 |   |   |-- InoWebUI_UPL.xml                               Android UPL
-|   |   |-- Java/src/com/inoksan/webui/InoWebViewAndroid.java
+|   |   |-- Java/src/net/inoland/webui/InoWebViewAndroid.java
 |   |   |-- Public/
 |   |   |   |-- InoWebUI.h
 |   |   |   |-- InoWebUILog.h

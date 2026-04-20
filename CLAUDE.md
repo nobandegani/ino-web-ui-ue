@@ -110,7 +110,7 @@ Plugins/InoWebUI/Source/InoWebUI/
 │                                       • hooks GameActivity lifecycle →
 │                                         InoWebViewAndroid.onActivity{Pause,Resume,Destroy}
 │                                       • ProGuard keep rule for R8
-├── Java/src/com/inoksan/webui/
+├── Java/src/net/inoland/webui/
 │   └── InoWebViewAndroid.java        UI-thread-only helper, owns
 │                                       SparseArray<WebView> keyed by
 │                                       primitive int IDs
@@ -184,7 +184,7 @@ registry) serializes correctly.
 - Chromium DevTools for the WebView content: `chrome://inspect/#devices` in desktop Chrome with the device connected via adb. The Android WebView exposes its own devtools remotely — no API call needed, no Phase 3 DevTools plumbing.
 - If the Java helper isn't found ("InoWebViewAndroid Java class not found"), check:
   1. UPL was registered (look for "InoWebUI: UPL init (Android)" in build log)
-  2. Java file got copied — check `Intermediate/Android/APK/src/com/inoksan/webui/`
+  2. Java file got copied — check `Intermediate/Android/APK/src/net/inoland/webui/`
   3. ProGuard isn't stripping the class (our `-keep` rule should prevent this)
 
 ---

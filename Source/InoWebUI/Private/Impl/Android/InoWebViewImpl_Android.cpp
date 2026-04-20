@@ -71,7 +71,7 @@ namespace InoWebUIJNI
             return false;
         }
 
-        jclass Local = FAndroidApplication::FindJavaClass("com/inoksan/webui/InoWebViewAndroid");
+        jclass Local = FAndroidApplication::FindJavaClass("net/inoland/webui/InoWebViewAndroid");
         if (!Local)
         {
             UE_LOG(LogInoWebUI, Error,
@@ -413,7 +413,7 @@ static FString JStringToFString(JNIEnv* Env, jstring JStr)
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_inoksan_webui_InoWebViewAndroid_nativeOnMessageReceived(
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnMessageReceived(
     JNIEnv* Env, jclass /*Cls*/, jint Id, jstring JEnvelope)
 {
     if (!JEnvelope) return;
@@ -426,7 +426,7 @@ Java_com_inoksan_webui_InoWebViewAndroid_nativeOnMessageReceived(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_inoksan_webui_InoWebViewAndroid_nativeOnNavigationStarting(
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnNavigationStarting(
     JNIEnv* Env, jclass /*Cls*/, jint Id, jstring JUri)
 {
     const FString URI = JStringToFString(Env, JUri);
@@ -437,7 +437,7 @@ Java_com_inoksan_webui_InoWebViewAndroid_nativeOnNavigationStarting(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_inoksan_webui_InoWebViewAndroid_nativeOnNavigationCompleted(
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnNavigationCompleted(
     JNIEnv* Env, jclass /*Cls*/, jint Id, jboolean Success, jstring JUri)
 {
     const FString URI = JStringToFString(Env, JUri);
@@ -449,7 +449,7 @@ Java_com_inoksan_webui_InoWebViewAndroid_nativeOnNavigationCompleted(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_inoksan_webui_InoWebViewAndroid_nativeOnDocumentTitleChanged(
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnDocumentTitleChanged(
     JNIEnv* Env, jclass /*Cls*/, jint Id, jstring JTitle)
 {
     const FString Title = JStringToFString(Env, JTitle);
@@ -460,7 +460,7 @@ Java_com_inoksan_webui_InoWebViewAndroid_nativeOnDocumentTitleChanged(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_inoksan_webui_InoWebViewAndroid_nativeOnScriptDialog(
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnScriptDialog(
     JNIEnv* Env, jclass /*Cls*/, jint Id, jint Kind, jstring JMessage)
 {
     const FString Message = JStringToFString(Env, JMessage);
@@ -474,7 +474,7 @@ Java_com_inoksan_webui_InoWebViewAndroid_nativeOnScriptDialog(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_inoksan_webui_InoWebViewAndroid_nativeOnNewWindowRequested(
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnNewWindowRequested(
     JNIEnv* Env, jclass /*Cls*/, jint Id, jstring JUri)
 {
     const FString URI = JStringToFString(Env, JUri);
@@ -485,7 +485,7 @@ Java_com_inoksan_webui_InoWebViewAndroid_nativeOnNewWindowRequested(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_inoksan_webui_InoWebViewAndroid_nativeOnGotFocus(
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnGotFocus(
     JNIEnv* /*Env*/, jclass /*Cls*/, jint Id)
 {
     DispatchOnGameThread(static_cast<int32>(Id), [](FInoWebViewImpl_Android* Impl)
@@ -495,7 +495,7 @@ Java_com_inoksan_webui_InoWebViewAndroid_nativeOnGotFocus(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_inoksan_webui_InoWebViewAndroid_nativeOnLostFocus(
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnLostFocus(
     JNIEnv* /*Env*/, jclass /*Cls*/, jint Id)
 {
     DispatchOnGameThread(static_cast<int32>(Id), [](FInoWebViewImpl_Android* Impl)
@@ -505,7 +505,7 @@ Java_com_inoksan_webui_InoWebViewAndroid_nativeOnLostFocus(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_inoksan_webui_InoWebViewAndroid_nativeOnProcessFailed(
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnProcessFailed(
     JNIEnv* Env, jclass /*Cls*/, jint Id, jstring JDescription)
 {
     const FString Description = JStringToFString(Env, JDescription);

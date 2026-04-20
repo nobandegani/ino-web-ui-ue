@@ -25,7 +25,7 @@
     <!-- Import the helper class into GameActivity so our lifecycle hooks resolve -->
     <gameActivityImportAdditions>
         <insert>
-import com.inoksan.webui.InoWebViewAndroid;
+import net.inoland.webui.InoWebViewAndroid;
         </insert>
     </gameActivityImportAdditions>
 
@@ -51,7 +51,7 @@ import com.inoksan.webui.InoWebViewAndroid;
     <!-- Keep ProGuard / R8 from stripping our helper; it's called via JNI -->
     <proguardAdditions>
         <insert>
--keep class com.inoksan.webui.InoWebViewAndroid {
+-keep class net.inoland.webui.InoWebViewAndroid {
     public *;
 }
         </insert>

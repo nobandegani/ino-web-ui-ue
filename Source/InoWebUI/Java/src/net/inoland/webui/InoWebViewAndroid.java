@@ -9,7 +9,7 @@
 // only be touched from the UI thread, whereas the JNI calls arrive on UE's
 // game thread.
 
-package com.inoksan.webui;
+package net.inoland.webui;
 
 import android.app.Activity;
 import android.graphics.Bitmap;

@@ -10,7 +10,7 @@
 /**
  * FInoWebViewImpl_Android — MVP implementation of IInoWebViewImpl backed by
  * android.webkit.WebView via the Java helper at
- *   com.inoksan.webui.InoWebViewAndroid
+ *   net.inoland.webui.InoWebViewAndroid
  *
  * All public methods run on the game thread; the JNI calls they make into
  * Java dispatch their real work onto the Android UI thread via

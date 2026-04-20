@@ -32,7 +32,7 @@ Plugins/InoWebUI/Source/InoWebUI/
 |                                          - hooks GameActivity lifecycle
 |                                            (onPause / onResume / onDestroy)
 |                                          - ProGuard -keep rule for R8
-|-- Java/src/com/inoksan/webui/
+|-- Java/src/net/inoland/webui/
 |   `-- InoWebViewAndroid.java           UI-thread-only helper, owns
 |                                          SparseArray<WebView> keyed by
 |                                          primitive int IDs
@@ -147,7 +147,7 @@ Error: `"InoWebViewAndroid Java class not found"`. Check, in order:
 1. **UPL registered** — build log should contain
    `"InoWebUI: UPL init (Android)"`.
 2. **Java file copied** — inspect
-   `Intermediate/Android/APK/src/com/inoksan/webui/InoWebViewAndroid.java`.
+   `Intermediate/Android/APK/src/net/inoland/webui/InoWebViewAndroid.java`.
 3. **ProGuard / R8** — our `-keep` rule in the UPL should stop
    stripping; check the mapping output if suspicious.
 
