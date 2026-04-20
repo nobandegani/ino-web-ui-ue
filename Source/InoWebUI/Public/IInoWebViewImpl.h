@@ -164,6 +164,14 @@ public:
 
     /** Delete all cookies from this WebView's isolated profile. */
     virtual void ClearAllCookies() = 0;
+
+    /**
+     * Flip the WebView's background between transparent and opaque at
+     * runtime. bOpaque=true paints a solid color (currently white on
+     * Windows, Color.WHITE on Android) behind the HTML, useful for
+     * debugging where the UI's boundaries sit against the 3D scene.
+     */
+    virtual void SetBackgroundOpaque(bool bOpaque) = 0;
 };
 
 /**

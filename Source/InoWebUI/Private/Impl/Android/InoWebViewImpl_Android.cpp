@@ -50,6 +50,7 @@ namespace InoWebUIJNI
     static jmethodID MExecuteJavaScript  = nullptr;
     static jmethodID MSetUserAgent       = nullptr;
     static jmethodID MSetContextMenusEnabled = nullptr;
+    static jmethodID MSetBackgroundOpaque    = nullptr;
 
     /**
      * Look up the Java helper class and all the static methods we call.
@@ -99,13 +100,14 @@ namespace InoWebUIJNI
         MExecuteJavaScript      = Env->GetStaticMethodID(JavaClass, "executeJavaScript",     "(ILjava/lang/String;)V");
         MSetUserAgent           = Env->GetStaticMethodID(JavaClass, "setUserAgent",          "(ILjava/lang/String;)V");
         MSetContextMenusEnabled = Env->GetStaticMethodID(JavaClass, "setContextMenusEnabled","(IZ)V");
+        MSetBackgroundOpaque    = Env->GetStaticMethodID(JavaClass, "setBackgroundOpaque",   "(IZ)V");
 
         if (!MCreate || !MDestroy || !MLoadURL || !MSetVisible || !MReload
             || !MSyncBounds || !MSetVirtualHost || !MSetupMessaging || !MPostMessage
             || !MConfigureLockdown || !MConfigureDialogs
             || !MFocusWebView || !MSetZoomFactor || !MClearAllCookies
             || !MSetDevToolsEnabled || !MExecuteJavaScript || !MSetUserAgent
-            || !MSetContextMenusEnabled)
+            || !MSetContextMenusEnabled || !MSetBackgroundOpaque)
         {
             UE_LOG(LogInoWebUI, Error,
                 TEXT("One or more InoWebViewAndroid methods not found — Java helper "
@@ -579,6 +581,17 @@ void FInoWebViewImpl_Android::ClearAllCookies()
     if (!Env || !InoWebUIJNI::JavaClass) return;
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MClearAllCookies,
         static_cast<jint>(InstanceId));
+}
+
+void FInoWebViewImpl_Android::SetBackgroundOpaque(bool bOpaque)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetBackgroundOpaque,
+        static_cast<jint>(InstanceId),
+        static_cast<jboolean>(bOpaque ? JNI_TRUE : JNI_FALSE));
 }
 
 #endif // PLATFORM_ANDROID

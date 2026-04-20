@@ -50,6 +50,7 @@ public:
     virtual void  SetZoomFactor(float Factor) override;
     virtual float GetZoomFactor() const override { return 1.0f; }
     virtual void  ClearAllCookies() override;
+    virtual void  SetBackgroundOpaque(bool bOpaque) override;
 
 private:
     /** Process-unique identifier passed across JNI; the Java side keeps a

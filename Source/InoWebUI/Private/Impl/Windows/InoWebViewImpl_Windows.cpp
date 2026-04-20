@@ -1026,6 +1026,21 @@ void FInoWebViewImpl_Windows::ClearAllCookies()
     UE_LOG(LogInoWebUI, Log, TEXT("All cookies cleared for this WebView's profile."));
 }
 
+void FInoWebViewImpl_Windows::SetBackgroundOpaque(bool bOpaque)
+{
+    check(IsInGameThread());
+    if (!bReady) return;
+
+    ComPtr<ICoreWebView2Controller2> Ctrl2;
+    if (FAILED(Internal->Controller.As(&Ctrl2))) return;
+
+    // Opaque: full-alpha white; Transparent: zero alpha, any RGB.
+    COREWEBVIEW2_COLOR Color;
+    if (bOpaque) { Color = { 255, 255, 255, 255 }; }
+    else         { Color = { 0, 0, 0, 0 }; }
+    Ctrl2->put_DefaultBackgroundColor(Color);
+}
+
 void FInoWebViewImpl_Windows::PostMessageJson(const FString& Json)
 {
     check(IsInGameThread());

@@ -749,6 +749,21 @@ public class InoWebViewAndroid
         });
     }
 
+    /** Toggle the WebView's background between transparent and opaque at
+     *  runtime. Useful for the dev overlay's "Toggle transparency" button. */
+    public static void setBackgroundOpaque(final int id, final boolean opaque)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv == null) return;
+                wv.setBackgroundColor(opaque ? Color.WHITE : Color.TRANSPARENT);
+            }
+        });
+    }
+
     /** Suppress the browser's built-in long-press context menu (text-select,
      *  "save image", etc.). Text fields still show the system copy/paste
      *  toolbar via the standard IME — we only kill the BROWSER menu. */

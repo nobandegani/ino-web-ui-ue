@@ -39,6 +39,7 @@ public:
     virtual void SetZoomFactor(float Factor) override;
     virtual float GetZoomFactor() const override;
     virtual void ClearAllCookies() override;
+    virtual void SetBackgroundOpaque(bool bOpaque) override;
 
 private:
     /** Opaque state — defined in the .cpp so WebView2.h stays out of headers. */
