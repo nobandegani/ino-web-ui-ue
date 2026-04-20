@@ -18,7 +18,9 @@ import android.util.SparseArray;
 import android.view.View;
 import android.view.ViewGroup;
 import android.os.Message;
+import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.JsPromptResult;
 import android.webkit.JsResult;
 import android.webkit.MimeTypeMap;
@@ -209,6 +211,20 @@ public class InoWebViewAndroid
                 nativeOnNavigationCompleted(id, false, request.getUrl().toString());
             }
         }
+
+        @Override
+        public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail)
+        {
+            // Renderer process died (OOM or crash). Fire the callback; the
+            // WebView is now unusable and the caller should Reload() or
+            // recreate. Returning true means "we handled it — don't bubble
+            // up and crash the app."
+            String desc = (detail != null && detail.didCrash())
+                    ? "renderer crashed"
+                    : "renderer killed by system (OOM?)";
+            nativeOnProcessFailed(id, desc);
+            return true;
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -327,6 +343,9 @@ public class InoWebViewAndroid
     private static native void nativeOnDocumentTitleChanged(int id, String title);
     private static native void nativeOnScriptDialog        (int id, int kind, String message);
     private static native void nativeOnNewWindowRequested  (int id, String uri);
+    private static native void nativeOnGotFocus            (int id);
+    private static native void nativeOnLostFocus           (int id);
+    private static native void nativeOnProcessFailed       (int id, String description);
 
     // ─────────────────────────────────────────────────────────────────────
     //  Create / Destroy
@@ -361,6 +380,14 @@ public class InoWebViewAndroid
                 // + nav events + lockdown. Config flips flags on sConfigs.
                 wv.setWebViewClient(new InoWebViewClient(id));
                 wv.setWebChromeClient(new InoWebChromeClient(id));
+
+                // OnGotFocus / OnLostFocus parity with the Windows impl.
+                wv.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+                    @Override public void onFocusChange(View v, boolean hasFocus) {
+                        if (hasFocus) nativeOnGotFocus(id);
+                        else          nativeOnLostFocus(id);
+                    }
+                });
 
                 wv.setVisibility(visible ? View.VISIBLE : View.GONE);
 
@@ -621,6 +648,56 @@ public class InoWebViewAndroid
             @Override public void run() {
                 WebView wv = sWebViews.get(id);
                 if (wv != null) wv.reload();
+            }
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Focus / zoom / cookies
+    // ─────────────────────────────────────────────────────────────────────
+
+    public static void focusWebView(final int id)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv == null) return;
+                wv.requestFocus();
+                wv.requestFocusFromTouch(); // covers the "no touch yet" edge case
+            }
+        });
+    }
+
+    /** Factor is 1.0 = 100%, 1.5 = 150%. Android's API takes an int percent. */
+    public static void setZoomFactor(final int id, final float factor)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv == null) return;
+                int percent = Math.round(factor * 100.0f);
+                if (percent < 1) percent = 1;
+                wv.setInitialScale(percent);
+            }
+        });
+    }
+
+    /** Clear cookies across all WebViews in this app. Async internally; we
+     *  don't surface the completion callback (fire-and-forget, matching
+     *  Windows's ClearAllCookies). */
+    public static void clearAllCookies(final int id)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                CookieManager.getInstance().removeAllCookies(null);
+                CookieManager.getInstance().flush();
+                Log.debug("clearAllCookies(" + id + ")");
             }
         });
     }

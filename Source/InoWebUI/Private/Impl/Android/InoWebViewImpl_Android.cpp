@@ -43,6 +43,9 @@ namespace InoWebUIJNI
     static jmethodID MPostMessage        = nullptr;
     static jmethodID MConfigureLockdown  = nullptr;
     static jmethodID MConfigureDialogs   = nullptr;
+    static jmethodID MFocusWebView       = nullptr;
+    static jmethodID MSetZoomFactor      = nullptr;
+    static jmethodID MClearAllCookies    = nullptr;
 
     /**
      * Look up the Java helper class and all the static methods we call.
@@ -85,10 +88,14 @@ namespace InoWebUIJNI
         MPostMessage       = Env->GetStaticMethodID(JavaClass, "postMessageJson",    "(ILjava/lang/String;)V");
         MConfigureLockdown = Env->GetStaticMethodID(JavaClass, "configureLockdown",  "(IZ[Ljava/lang/String;)V");
         MConfigureDialogs  = Env->GetStaticMethodID(JavaClass, "configureDialogs",   "(IZZ)V");
+        MFocusWebView      = Env->GetStaticMethodID(JavaClass, "focusWebView",       "(I)V");
+        MSetZoomFactor     = Env->GetStaticMethodID(JavaClass, "setZoomFactor",      "(IF)V");
+        MClearAllCookies   = Env->GetStaticMethodID(JavaClass, "clearAllCookies",    "(I)V");
 
         if (!MCreate || !MDestroy || !MLoadURL || !MSetVisible || !MReload
             || !MSyncBounds || !MSetVirtualHost || !MSetupMessaging || !MPostMessage
-            || !MConfigureLockdown || !MConfigureDialogs)
+            || !MConfigureLockdown || !MConfigureDialogs
+            || !MFocusWebView || !MSetZoomFactor || !MClearAllCookies)
         {
             UE_LOG(LogInoWebUI, Error,
                 TEXT("One or more InoWebViewAndroid methods not found — Java helper "
@@ -435,6 +442,37 @@ Java_com_inoksan_webui_InoWebViewAndroid_nativeOnNewWindowRequested(
     });
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_inoksan_webui_InoWebViewAndroid_nativeOnGotFocus(
+    JNIEnv* /*Env*/, jclass /*Cls*/, jint Id)
+{
+    DispatchOnGameThread(static_cast<int32>(Id), [](FInoWebViewImpl_Android* Impl)
+    {
+        if (Impl->OnGotFocusCallback) Impl->OnGotFocusCallback();
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_inoksan_webui_InoWebViewAndroid_nativeOnLostFocus(
+    JNIEnv* /*Env*/, jclass /*Cls*/, jint Id)
+{
+    DispatchOnGameThread(static_cast<int32>(Id), [](FInoWebViewImpl_Android* Impl)
+    {
+        if (Impl->OnLostFocusCallback) Impl->OnLostFocusCallback();
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_inoksan_webui_InoWebViewAndroid_nativeOnProcessFailed(
+    JNIEnv* Env, jclass /*Cls*/, jint Id, jstring JDescription)
+{
+    const FString Description = JStringToFString(Env, JDescription);
+    DispatchOnGameThread(static_cast<int32>(Id), [Description](FInoWebViewImpl_Android* Impl)
+    {
+        if (Impl->OnProcessFailedCallback) Impl->OnProcessFailedCallback(Description);
+    });
+}
+
 void FInoWebViewImpl_Android::OpenDevTools()
 {
     UE_LOG(LogInoWebUI, Warning,
@@ -456,20 +494,32 @@ void FInoWebViewImpl_Android::SetMuted(bool /*bMuted*/)
 
 void FInoWebViewImpl_Android::FocusWebView()
 {
-    UE_LOG(LogInoWebUI, Warning,
-        TEXT("FocusWebView not implemented on Android MVP (Phase 6)."));
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MFocusWebView,
+        static_cast<jint>(InstanceId));
 }
 
-void FInoWebViewImpl_Android::SetZoomFactor(float /*Factor*/)
+void FInoWebViewImpl_Android::SetZoomFactor(float Factor)
 {
-    UE_LOG(LogInoWebUI, Warning,
-        TEXT("SetZoomFactor not implemented on Android MVP (Phase 6)."));
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetZoomFactor,
+        static_cast<jint>(InstanceId), static_cast<jfloat>(Factor));
 }
 
 void FInoWebViewImpl_Android::ClearAllCookies()
 {
-    UE_LOG(LogInoWebUI, Warning,
-        TEXT("ClearAllCookies not implemented on Android MVP (Phase 6)."));
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MClearAllCookies,
+        static_cast<jint>(InstanceId));
 }
 
 #endif // PLATFORM_ANDROID
