@@ -8,11 +8,22 @@
 #include "Android/AndroidApplication.h"
 #include "Android/AndroidJavaEnv.h"
 #include "HAL/ThreadSafeCounter.h"
+#include "HAL/CriticalSection.h"
+#include "Async/Async.h"
+#include "Misc/Paths.h"
 
 // Process-unique instance id generator. Crosses JNI as a plain jint and keys
 // the Java-side SparseArray<WebView>. Atomic so CreateWebView is safe if ever
 // called off the game thread in the future.
 static FThreadSafeCounter GInstanceIdGenerator(0);
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Impl registry — lets JNI callbacks from arbitrary threads find the right
+//  C++ impl by ID. Registered in Initialize, unregistered in Shutdown. Held
+//  under a lock because JNI may call in from any thread.
+// ─────────────────────────────────────────────────────────────────────────────
+static FCriticalSection                           GRegistryLock;
+static TMap<int32, class FInoWebViewImpl_Android*> GImplRegistry;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Cached JNI handles (one-time init, process-wide).
@@ -28,6 +39,8 @@ namespace InoWebUIJNI
     static jmethodID MReload         = nullptr;
     static jmethodID MSyncBounds     = nullptr;
     static jmethodID MSetVirtualHost = nullptr;
+    static jmethodID MSetupMessaging = nullptr;
+    static jmethodID MPostMessage    = nullptr;
 
     /**
      * Look up the Java helper class and all the static methods we call.
@@ -66,9 +79,11 @@ namespace InoWebUIJNI
         MReload         = Env->GetStaticMethodID(JavaClass, "reload",          "(I)V");
         MSyncBounds     = Env->GetStaticMethodID(JavaClass, "syncBounds",      "(IIIII)V");
         MSetVirtualHost = Env->GetStaticMethodID(JavaClass, "setVirtualHost",  "(ILjava/lang/String;Ljava/lang/String;)V");
+        MSetupMessaging = Env->GetStaticMethodID(JavaClass, "setupMessaging",  "(I)V");
+        MPostMessage    = Env->GetStaticMethodID(JavaClass, "postMessageJson", "(ILjava/lang/String;)V");
 
         if (!MCreate || !MDestroy || !MLoadURL || !MSetVisible || !MReload
-            || !MSyncBounds || !MSetVirtualHost)
+            || !MSyncBounds || !MSetVirtualHost || !MSetupMessaging || !MPostMessage)
         {
             UE_LOG(LogInoWebUI, Error,
                 TEXT("One or more InoWebViewAndroid methods not found — Java helper "
@@ -110,6 +125,13 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
     JNIEnv* Env = FAndroidApplication::GetJavaEnv();
     if (!Env) return false;
 
+    // Register this impl in the global registry so JNI callbacks from Java
+    // (e.g. nativeOnMessageReceived) can find us. Unregistered in Shutdown.
+    {
+        FScopeLock Lock(&GRegistryLock);
+        GImplRegistry.Add(InstanceId, this);
+    }
+
     // Step 1: create the WebView without navigating.
     Env->CallStaticVoidMethod(
         InoWebUIJNI::JavaClass, InoWebUIJNI::MCreate,
@@ -140,6 +162,12 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
             TEXT("FInoWebViewImpl_Android[%d] virtual host:  https://%s/  ->  %s"),
             InstanceId, *Config.VirtualHostName, *AbsoluteFolder);
     }
+
+    // Step 2b: messaging — expose the JS bridge object + flip the injection
+    // flag so the unified WebViewClient injects window.InoWebUI at onPageStarted.
+    // Unconditional — parity with Windows where the bridge is always available.
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetupMessaging,
+        static_cast<jint>(InstanceId));
 
     // Step 3: navigate, if requested.
     if (!Config.InitialURL.IsEmpty())
@@ -234,6 +262,14 @@ void FInoWebViewImpl_Android::Shutdown()
     bDestroyed = true;
     bReady     = false;
 
+    // Unregister BEFORE destroying the Java WebView so no late JNI callback
+    // can find us after this point. Acquire the lock to serialize with any
+    // in-flight dispatch from the game-thread async task.
+    {
+        FScopeLock Lock(&GRegistryLock);
+        GImplRegistry.Remove(InstanceId);
+    }
+
     JNIEnv* Env = FAndroidApplication::GetJavaEnv();
     if (!Env || !InoWebUIJNI::JavaClass) return;
 
@@ -247,10 +283,55 @@ void FInoWebViewImpl_Android::Shutdown()
 //  Phase 2+ APIs — not implemented in Android MVP.
 //  Each is wrapped so callers get a clean warning instead of a no-op silence.
 // ─────────────────────────────────────────────────────────────────────────────
-void FInoWebViewImpl_Android::PostMessageJson(const FString& /*Json*/)
+void FInoWebViewImpl_Android::PostMessageJson(const FString& Json)
 {
-    UE_LOG(LogInoWebUI, Warning,
-        TEXT("PostMessage not implemented on Android MVP (Phase 6)."));
+    check(IsInGameThread());
+    if (bDestroyed) return;
+
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+
+    jstring JJson = Env->NewStringUTF(TCHAR_TO_UTF8(*Json));
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MPostMessage,
+        static_cast<jint>(InstanceId), JJson);
+    Env->DeleteLocalRef(JJson);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  JNI callback from Java — fires when window.InoWebUI.send(...) is called
+//  in the page. Runs on whichever thread WebView chose (NOT the game thread);
+//  we marshal onto the game thread before dispatching to the UObject-layer
+//  callback that UInoWebView wired up.
+// ─────────────────────────────────────────────────────────────────────────────
+extern "C" JNIEXPORT void JNICALL
+Java_com_inoksan_webui_InoWebViewAndroid_nativeOnMessageReceived(
+    JNIEnv* Env, jclass /*Cls*/, jint Id, jstring JEnvelope)
+{
+    if (!JEnvelope) return;
+
+    const char* Chars = Env->GetStringUTFChars(JEnvelope, nullptr);
+    FString Envelope = UTF8_TO_TCHAR(Chars);
+    Env->ReleaseStringUTFChars(JEnvelope, Chars);
+
+    const int32 LocalId = static_cast<int32>(Id);
+
+    // Marshal to game thread, then look up the impl under the registry lock.
+    // Holding the lock through the dispatch prevents the impl being destroyed
+    // mid-callback (Shutdown on the game thread blocks on the same lock).
+    AsyncTask(ENamedThreads::GameThread, [LocalId, Envelope]()
+    {
+        FScopeLock Lock(&GRegistryLock);
+        if (FInoWebViewImpl_Android** Found = GImplRegistry.Find(LocalId))
+        {
+            if (FInoWebViewImpl_Android* Impl = *Found)
+            {
+                if (Impl->OnMessageReceivedJson)
+                {
+                    Impl->OnMessageReceivedJson(Envelope);
+                }
+            }
+        }
+    });
 }
 
 void FInoWebViewImpl_Android::OpenDevTools()
