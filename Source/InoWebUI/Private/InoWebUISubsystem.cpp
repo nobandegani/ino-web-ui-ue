@@ -345,16 +345,20 @@ FString UInoWebUISubsystem::ResolveBundleContentFolder(UInoWebBundle* Bundle)
         return FString();
     }
 
-    // CRUCIAL: make this absolute up front. FPaths::ProjectSavedDir() returns
-    // a relative-to-CWD path in packaged builds (e.g. "../../../InoAgentDemo/
-    // Saved/"). Extraction via IFileManager resolves that against CWD and
-    // writes files correctly — but WebView2's SetVirtualHostNameToFolderMapping
-    // is platform-native, has no notion of UE's CWD, and (via our impl's
-    // FPaths::IsRelative branch) would re-anchor the '..' segments against
-    // ProjectContentDir, landing in a path that doesn't exist.
-    // Collapsing to absolute here keeps the extraction and the mapping in sync.
-    const FString ExtractDir = FPaths::ConvertRelativePathToFull(
-        FPaths::ProjectSavedDir() / TEXT("InoWebBundles") / Bundle->GetName());
+    // CRUCIAL: get an absolute OS-level path that platform-native code
+    // (WebView2 on Windows, Java new File(...) on Android) can open directly.
+    //
+    // FPaths::ConvertRelativePathToFull on Android does NOT fully resolve
+    // UE's "../../../ProjectName/..." relative form — UE's BaseDir concept
+    // on Android isn't a real filesystem CWD, and Android's JNI doesn't
+    // reinterpret those '..' segments the way UE's IFileManager does.
+    //
+    // ConvertToAbsolutePathForExternalAppForRead is the UE-blessed API for
+    // exactly this purpose: get a path external apps can use. On Windows
+    // it's equivalent to ConvertRelativePathToFull; on Android it resolves
+    // to the real on-disk location under the app's external-files dir.
+    const FString ExtractDir = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(
+        *(FPaths::ProjectSavedDir() / TEXT("InoWebBundles") / Bundle->GetName()));
     const FString HashFile   = ExtractDir / TEXT(".inowebbundle.hash");
 
     // Fast path: we've already extracted this exact content hash — reuse it.
