@@ -227,6 +227,10 @@ static const TCHAR* GInoWebUIDevToolsOverlayScript = TEXT(R"JS(
     modal.addEventListener('click', function(e) { if (e.target === modal) modal.remove(); });
     document.body.appendChild(modal);
   }
+)JS") TEXT(R"JS(
+  // MSVC's string-literal limit is 16380 chars per token, so the overlay
+  // script is split into two adjacent raw literals that the preprocessor
+  // concatenates. No runtime cost — this happens at compile time.
 
   // 90-degree arc from 0 (up) to 90 (left), 15-degree step, radius 140.
   var POSITIONS = [
