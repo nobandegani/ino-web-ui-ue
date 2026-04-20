@@ -21,8 +21,11 @@ public:
     virtual UClass* GetSupportedClass() const override;
     virtual FColor  GetTypeColor()     const override;
     virtual uint32  GetCategories()          override;
+    virtual void    GetActions(const TArray<UObject*>& InObjects, FMenuBuilder& MenuBuilder) override;
 
 private:
+    /** Re-read SourceFolder into Files[] for every selected bundle. */
+    static void ExecuteReimport(TArray<TWeakObjectPtr<class UInoWebBundle>> Bundles);
     /** Category bit assigned by AssetTools::RegisterAdvancedAssetCategory. */
     EAssetTypeCategories::Type Category;
 };
