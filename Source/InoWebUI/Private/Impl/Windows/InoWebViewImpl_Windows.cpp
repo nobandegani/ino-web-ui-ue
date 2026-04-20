@@ -142,15 +142,91 @@ static const TCHAR* GInoWebUIDevToolsOverlayScript = TEXT(R"JS(
   if (window.__inoDevOverlayLoaded) return;
   window.__inoDevOverlayLoaded = true;
 
+  // "handler" on an action means JS-only — don't hop to UE. Info shows an
+  // inline modal instead so the user gets immediate visual feedback.
   var ACTIONS = [
     { id: 'refresh',            icon: '\u21BB', title: 'Refresh' },
     { id: 'openDevTools',       icon: '\u2325', title: 'Open DevTools' },
     { id: 'clearData',          icon: '\u232B', title: 'Clear Data' },
-    { id: 'info',               icon: '\u24D8', title: 'Info' },
+    { id: 'info',               icon: '\u24D8', title: 'Info',
+      handler: function() { showInfoModal(); } },
     { id: 'toggleTransparency', icon: '\u25C9', title: 'Toggle Transparency' },
     { id: 'hideWebUI',          icon: '\u2298', title: 'Hide WebUI' },
     { id: 'devCallback',        icon: '\u25C6', title: 'Dev Callback' }
   ];
+
+  function detectPlatform() {
+    if (window.chrome && window.chrome.webview) return 'Windows (WebView2)';
+    if (window._InoWebUIHost)                   return 'Android (WebView)';
+    return 'Browser (no bridge)';
+  }
+
+  function showInfoModal() {
+    var existing = document.getElementById('__ino-dev-info-modal');
+    if (existing) { existing.remove(); return; }
+
+    var info = {
+      'URL':                 location.href,
+      'Title':               document.title || '(none)',
+      'Platform':            detectPlatform(),
+      'Viewport':            window.innerWidth + ' x ' + window.innerHeight,
+      'Screen':              screen.width + ' x ' + screen.height,
+      'Device Pixel Ratio':  window.devicePixelRatio,
+      'Language':            navigator.language,
+      'Online':              navigator.onLine ? 'yes' : 'no',
+      'Touch':               ('ontouchstart' in window) ? 'yes' : 'no',
+      'InoWebUI bridge':     window.InoWebUI ? ('loaded v' + window.InoWebUI.version) : 'NOT loaded',
+      'User Agent':          navigator.userAgent
+    };
+
+    var modal = document.createElement('div');
+    modal.id = '__ino-dev-info-modal';
+    modal.style.cssText = 'position:fixed;inset:0;z-index:2147483646;'
+      + 'background:rgba(0,0,0,0.62);backdrop-filter:blur(4px);'
+      + '-webkit-backdrop-filter:blur(4px);'
+      + 'display:flex;align-items:center;justify-content:center;'
+      + 'pointer-events:auto;padding:24px;'
+      + 'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
+
+    var card = document.createElement('div');
+    card.style.cssText = S('background:rgba(18,18,26,0.96);'
+      + 'border:1px solid rgba(255,255,255,0.12);border-radius:14px;'
+      + 'padding:20px 24px;max-width:560px;width:100%;'
+      + 'color:#e7ecf3;font-size:13px;'
+      + 'box-shadow:0 20px 60px rgba(0,0,0,0.5);');
+
+    var header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
+      + 'margin-bottom:14px;';
+    var h = document.createElement('div');
+    h.textContent = 'WebView Info';
+    h.style.cssText = 'font-size:15px;font-weight:600;color:#fff;';
+    var x = document.createElement('button');
+    x.textContent = '\u00D7';
+    x.style.cssText = S('background:transparent;border:0;color:rgba(255,255,255,0.6);'
+      + 'font-size:22px;cursor:pointer;padding:0 4px;line-height:1;');
+    header.appendChild(h); header.appendChild(x);
+    card.appendChild(header);
+
+    var table = document.createElement('div');
+    table.style.cssText = 'display:grid;grid-template-columns:auto 1fr;gap:6px 14px;';
+    Object.keys(info).forEach(function(k) {
+      var kEl = document.createElement('div');
+      kEl.textContent = k;
+      kEl.style.cssText = 'color:rgba(255,255,255,0.55);font-size:12px;';
+      var vEl = document.createElement('div');
+      vEl.textContent = info[k];
+      vEl.style.cssText = 'font-family:"SF Mono",Menlo,Consolas,monospace;'
+        + 'font-size:12px;word-break:break-all;user-select:text;-webkit-user-select:text;';
+      table.appendChild(kEl); table.appendChild(vEl);
+    });
+    card.appendChild(table);
+
+    modal.appendChild(card);
+    x.addEventListener('click', function() { modal.remove(); });
+    modal.addEventListener('click', function(e) { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+  }
 
   // 90-degree arc from 0 (up) to 90 (left), 15-degree step, radius 140.
   var POSITIONS = [
@@ -203,11 +279,12 @@ static const TCHAR* GInoWebUIDevToolsOverlayScript = TEXT(R"JS(
         + 'opacity 0.2s,background 0.15s;');
       btn.addEventListener('click', function(e) {
         e.stopPropagation();
+        collapse();
+        if (a.handler) { a.handler(); return; }
         if (window.InoWebUI && typeof window.InoWebUI.send === 'function') {
           try { window.InoWebUI.send('_devtools.' + a.id, {}); }
           catch (err) { console.error('InoDevOverlay:', err); }
         }
-        collapse();
       });
       btn.addEventListener('mouseenter', function() {
         if (expanded) {

@@ -71,12 +71,6 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInoWebProcessFailed,
  *  and won't fire again. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebReady);
 
-/** Fired when the Info button on the dev overlay is clicked. Bind this to
- *  show whatever dev-relevant info you want (bundle version, build ID,
- *  player state, etc.). The overlay itself doesn't display anything for
- *  you — it just sends the event to UE. */
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebDevInfo);
-
 /** Fired when the "Custom" (last) button on the dev overlay is clicked.
  *  Project-specific dev action — bind to do whatever you want in-game. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebDevCallback);
@@ -199,11 +193,6 @@ public:
      *  construction and is ready for operations. See FOnInoWebReady docs. */
     UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
     FOnInoWebReady OnReady;
-
-    /** Fires when the Info button on the dev overlay is clicked (the dev
-     *  overlay only shows if bEnableDevTools=true in the WebView's config). */
-    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI|DevTools")
-    FOnInoWebDevInfo OnDevInfo;
 
     /** Fires when the "Custom" button on the dev overlay is clicked. Use
      *  this as a project-specific dev hook — bind to do whatever you

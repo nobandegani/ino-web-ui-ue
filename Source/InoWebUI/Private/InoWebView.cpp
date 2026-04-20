@@ -257,11 +257,8 @@ bool UInoWebView::HandleDevToolsAction(const FString& Channel)
             bBackgroundCurrentlyOpaque ? TEXT("OPAQUE (white)") : TEXT("TRANSPARENT"));
         return true;
     }
-    if (Channel == TEXT("_devtools.info"))
-    {
-        OnDevInfo.Broadcast();
-        return true;
-    }
+    // Note: "_devtools.info" never reaches UE — the dev overlay handles
+    // Info entirely in JS with a modal that shows page/platform stats.
     if (Channel == TEXT("_devtools.devCallback"))
     {
         OnDevCallback.Broadcast();
