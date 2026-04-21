@@ -81,6 +81,11 @@ public class InoWebUI : ModuleRules
             "shlwapi.lib",      // Shell lightweight API (path, registry helpers)
             "version.lib",      // Version info (used by the loader to find Edge)
             "ole32.lib",        // COM (CoCreateInstance, CoInitialize...)
+            // DirectComposition — used ONLY by the PIE-only composition-hosting
+            // impl (FInoWebViewImpl_Windows_Composition). The standalone /
+            // packaged path never loads this code. Ships on Win8+ so no new
+            // minimum platform requirement beyond WebView2's own Win10+.
+            "dcomp.lib",
         });
     }
 }
