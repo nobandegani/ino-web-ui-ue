@@ -78,6 +78,28 @@ public:
     UPROPERTY(EditAnywhere, Category = "InoWebBundle")
     FDirectoryPath SourceFolder;
 
+    /**
+     * Optional override used ONLY in editor / uncooked builds (PIE,
+     * Standalone Game launched from the editor). When non-empty, overrides
+     * Config.InitialURL so you can point the WebView at a live dev server
+     * (Vite, webpack-dev-server, etc.) with hot-module reload. In packaged
+     * / cooked builds this field is ignored — Config.InitialURL is used
+     * and the virtual-host mapping serves the bundled files.
+     *
+     * When this URL is used, the plugin additionally:
+     *   • clears VirtualHostName / VirtualHostFolder (the dev server
+     *     serves its own URLs, not the virtual host),
+     *   • disables bLockToVirtualHost (so lockdown doesn't block the
+     *     dev URL you just asked for).
+     *
+     * Leave empty to use Config.InitialURL + the virtual host in every
+     * build type.
+     *
+     * Typical value:  http://localhost:5173
+     */
+    UPROPERTY(EditAnywhere, Category = "InoWebBundle")
+    FString DevInitialURL;
+
     // ── Baked at Reimport (read-only at runtime) ────────────────────────────
 
     /** All files captured from SourceFolder at Reimport. Sorted by relative path. */

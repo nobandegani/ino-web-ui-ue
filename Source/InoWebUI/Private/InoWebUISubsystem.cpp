@@ -273,10 +273,17 @@ void UInoWebUISubsystem::BroadcastClientRectToAll()
 // ─────────────────────────────────────────────────────────────────────────────
 //  CreateWebViewFromAsset — bundle-driven creation.
 //
-//  Builds a FInoWebViewConfig from the asset's fields (InitialURL +
-//  VirtualHostName), plus a VirtualHostFolder resolved via
-//  ResolveBundleContentFolder (source folder in editor, extracted folder
-//  in packaged). Then delegates to the regular CreateWebView.
+//  Two paths:
+//
+//    Dev path (editor / uncooked AND Bundle->DevInitialURL is non-empty):
+//      Point the WebView straight at the dev URL (Vite, webpack-dev-server,
+//      etc.). Skip the virtual-host setup entirely — the dev server owns its
+//      own origin. Disable lockdown so the dev URL isn't blocked.
+//
+//    Packaged / default path:
+//      Use Bundle->Config.InitialURL with a virtual-host mapping onto the
+//      bundle's content folder (SourceFolder in editor, extracted Files[]
+//      in cooked).
 // ─────────────────────────────────────────────────────────────────────────────
 UInoWebView* UInoWebUISubsystem::CreateWebViewFromAsset(FName Name, UInoWebBundle* Bundle)
 {
@@ -289,6 +296,31 @@ UInoWebView* UInoWebUISubsystem::CreateWebViewFromAsset(FName Name, UInoWebBundl
         return nullptr;
     }
 
+    FInoWebViewConfig Config = Bundle->Config;
+
+#if WITH_EDITOR
+    // Dev-server shortcut: if the user set DevInitialURL, prefer it over the
+    // packaged flow. Virtual host becomes irrelevant (dev server serves its
+    // own URLs) and lockdown would otherwise block the dev URL since it
+    // doesn't match VirtualHostName.
+    if (!Bundle->DevInitialURL.IsEmpty())
+    {
+        UE_LOG(LogInoWebUI, Log,
+            TEXT("CreateWebViewFromAsset('%s'): editor build — using DevInitialURL '%s' "
+                 "(virtual host + lockdown disabled for dev)."),
+            *Name.ToString(), *Bundle->DevInitialURL);
+
+        Config.InitialURL        = Bundle->DevInitialURL;
+        Config.VirtualHostName   = FString();
+        Config.VirtualHostFolder = FString();
+        Config.bLockToVirtualHost = false;
+
+        return CreateWebView(Name, Config);
+    }
+#endif
+
+    // Packaged path (or editor with no DevInitialURL): resolve the content
+    // folder and wire up virtual-host mapping.
     const FString Folder = ResolveBundleContentFolder(Bundle);
     if (Folder.IsEmpty())
     {
@@ -298,12 +330,8 @@ UInoWebView* UInoWebUISubsystem::CreateWebViewFromAsset(FName Name, UInoWebBundl
         return nullptr;
     }
 
-    // Start from the bundle's authored Config (InitialURL, VirtualHostName,
-    // transparency, lockdown, dialog blocking, devtools — all the fields the
-    // user set in the asset's details panel) and inject the resolved folder.
     // VirtualHostFolder on the asset is always overridden: the bundle owns
     // that — via SourceFolder in editor or extracted Files[] in packaged.
-    FInoWebViewConfig Config = Bundle->Config;
     Config.VirtualHostFolder = Folder;
 
     return CreateWebView(Name, Config);

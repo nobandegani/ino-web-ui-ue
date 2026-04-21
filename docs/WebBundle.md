@@ -27,11 +27,41 @@ runtime.
    | `SourceFolder`      | `WebUI/dist` (relative to `Content/`) |
    | `InitialURL`        | `https://ui.local/index.html` |
    | `VirtualHostName`   | `ui.local` |
+   | `DevInitialURL`     | `http://localhost:5173` *(optional, dev only)* |
 
 4. Right-click the asset -> **Reimport Source Folder**.
    The `Files[]` array fills in, `ContentHash` is computed, the asset
    is marked dirty.
 5. Save with Ctrl+S.
+
+### Dev server vs packaged — `DevInitialURL`
+
+Typical web toolchains (Vite, webpack-dev-server) have one URL during
+development (with HMR) and a different URL in shipped builds (static
+files). The bundle supports this without custom code:
+
+| Field | When used | Typical value |
+|---|---|---|
+| `Config.InitialURL` | Packaged / cooked builds | `https://ui.local/index.html` |
+| `DevInitialURL`     | Editor / uncooked builds, if non-empty | `http://localhost:5173` |
+
+When `DevInitialURL` is non-empty AND you're running in the editor
+(PIE, or Standalone Game launched from the editor), the plugin:
+
+- Uses `DevInitialURL` as the initial URL.
+- Skips the virtual-host mapping (the dev server serves its own origin).
+- Disables `bLockToVirtualHost` (otherwise the dev URL would be
+  blocked by the navigation allowlist).
+
+In packaged / cooked builds, `DevInitialURL` is ignored completely —
+`Config.InitialURL` is used with the virtual host mapped onto the
+extracted bundle contents. No separate build configuration, no
+conditional Blueprint branches: set both URLs once on the asset and
+the plugin picks the right one per build type.
+
+Leave `DevInitialURL` empty to use `Config.InitialURL` everywhere —
+that's the right choice if your dev flow already uses the virtual-host
+URL against loose files in `SourceFolder`.
 
 ## Using a bundle
 
