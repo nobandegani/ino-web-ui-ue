@@ -12,7 +12,9 @@
       "Bash(find \"C:/Inoland/Epic Games/UE_5.7/Engine/Source\" -name \"*.h\" -exec grep -l \"^struct .* FDeprecateVector2DResult\\\\|^class .* FDeprecateVector2DResult\\\\|UE_DEPRECATED_VECTOR\" {} \\\\;)",
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
-      "Bash(git mv *)"
+      "Bash(git mv *)",
+      "Bash(git grep *)",
+      "Bash(xargs -0 sed -i 's/Inoland/Inoland/g')"
     ]
   }
 }
