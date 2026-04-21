@@ -95,17 +95,11 @@ namespace
 // ─────────────────────────────────────────────────────────────────────────────
 //  Bridge + dev-overlay JS
 //
-//  These are identical to the copies in InoWebViewImpl_Windows.cpp. Kept
-//  separately so the two Windows impls have zero compile-time coupling and
-//  either can evolve without affecting the other. If you modify either
-//  script, also update:
+//  Identical to the copies in InoWebViewImpl_Windows.cpp. Kept separately so
+//  the two Windows impls have zero compile-time coupling. If you modify
+//  either script, also update:
 //    • Source/InoWebUI/Private/Impl/Windows/InoWebViewImpl_Windows.cpp
 //    • Source/InoWebUI/Java/src/net/inoland/webui/InoWebViewAndroid.java
-//      (the Android copy — Java syntax, same semantics)
-//
-//  Dev overlay is split into two adjacent TEXT(R"JS(...)JS") chunks because
-//  MSVC has a 16380-character limit on a single string literal. The
-//  preprocessor concatenates them at compile time.
 // ─────────────────────────────────────────────────────────────────────────────
 static const TCHAR* GInoWebUIDevToolsOverlayScript_Composition = TEXT(R"JS(
 (function() {
@@ -312,12 +306,119 @@ static const TCHAR* GInoWebUIBridgeScript_Composition = TEXT(R"JS(
 )JS");
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Overlay window class — registered lazily, once per process.
+//  FInternal — ALL Win32 / DComp / WebView2 state and helpers.
+//
+//  Everything that touches Windows.h or WebView2.h lives here, keeping those
+//  headers out of the class header (header hygiene rule).
+// ─────────────────────────────────────────────────────────────────────────────
+struct FInoWebViewImpl_Windows_Composition::FInternal
+{
+    // UE's game window — read-only reference, not a parent.
+    HWND ParentHwnd = nullptr;
+
+    // Our top-level overlay HWND. Owner = ParentHwnd (for z-order / cleanup).
+    HWND OverlayHwnd = nullptr;
+
+    // Back-pointer to the owning impl so we can reach the BP-facing callbacks
+    // (OnGotFocusCallback etc.) from within WndProc / input forwarding if
+    // needed. Raw pointer; Internal is owned by the impl so lifetime tracks.
+    FInoWebViewImpl_Windows_Composition* Self = nullptr;
+
+    // Desired WebView rect in SCREEN coords, as last reported by SyncBounds.
+    int32 DesiredX = 0;
+    int32 DesiredY = 0;
+    int32 DesiredW = 0;
+    int32 DesiredH = 0;
+
+    // Last observed parent-window rect (screen coords), for move tracking.
+    RECT LastParentRect { 0, 0, 0, 0 };
+
+    // User-level visibility preference — overlay is also hidden when the
+    // parent is minimised, even if bUserVisible is true.
+    bool bUserVisible = true;
+
+    FInoWebViewConfig Config;
+
+    // COM — WebView2 side.
+    ComPtr<ICoreWebView2Environment>             Environment;
+    ComPtr<ICoreWebView2CompositionController>   CompositionController;
+    ComPtr<ICoreWebView2Controller>              Controller;
+    ComPtr<ICoreWebView2>                        WebView;
+
+    // COM — DirectComposition side.
+    ComPtr<IDCompositionDesktopDevice> DCompDevice;
+    ComPtr<IDCompositionTarget>        DCompTarget;
+    ComPtr<IDCompositionVisual2>       RootVisual;
+
+    // Pending-ops queue (same contract as the sibling impl).
+    TOptional<FString> PendingNavigate;
+    TOptional<bool>    PendingVisible;
+
+    struct FRect { int32 X = 0; int32 Y = 0; int32 W = 0; int32 H = 0; };
+    TOptional<FRect>   PendingBounds;
+    bool               bPendingReload = false;
+
+    TArray<FString>    PendingOutboundMessages;
+    TArray<FString>    PendingScripts;
+    TOptional<bool>    PendingMute;
+
+    // Event registration tokens.
+    EventRegistrationToken MessageReceivedToken{};
+    EventRegistrationToken NavigationStartingToken{};
+    EventRegistrationToken NavigationCompletedToken{};
+    EventRegistrationToken DocumentTitleChangedToken{};
+    EventRegistrationToken ScriptDialogOpeningToken{};
+    EventRegistrationToken NewWindowRequestedToken{};
+    EventRegistrationToken GotFocusToken{};
+    EventRegistrationToken LostFocusToken{};
+    EventRegistrationToken ProcessFailedToken{};
+    EventRegistrationToken CursorChangedToken{};
+
+    // Lifetime token — see sibling impl for the weak-ptr pattern.
+    TSharedPtr<int> LifetimeToken = MakeShared<int>(0);
+
+    // ── Win32 / DComp helpers — all live in the .cpp to keep Win32 types
+    //    out of the class header. ───────────────────────────────────────
+    bool    CreateOverlayWindow();
+    void    DestroyOverlayWindow();
+    bool    CreateDCompStack();
+    void    DestroyDCompStack();
+    void    UpdateOverlayToScreenRect(int32 X, int32 Y, int32 W, int32 H);
+    void    ForwardMouseMessage(UINT msg, WPARAM wParam, LPARAM lParam);
+    LRESULT OverlayWndProc   (HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Overlay window class + WndProc trampoline
+//
+//  File-scope (not static class members) so the WNDCLASSEX registration can
+//  wire directly to a C-style function pointer without leaking Win32 types
+//  through the class header.
 // ─────────────────────────────────────────────────────────────────────────────
 namespace
 {
     const TCHAR* kOverlayClassName = TEXT("InoWebUIComposition_Overlay");
     bool         bOverlayClassRegistered = false;
+
+    /** Timer id for the UE-window tracking poll (see FInternal::OverlayWndProc WM_TIMER). */
+    constexpr UINT_PTR kOverlayTrackTimerId = 0x494E4F01; // "INO\x01"
+
+    /**
+     * File-scope trampoline. Looks up the FInternal* we stashed in
+     * GWLP_USERDATA and forwards to its OverlayWndProc method. Messages
+     * that arrive before the USERDATA slot is populated (WM_NCCREATE etc.)
+     * fall through to DefWindowProc.
+     */
+    LRESULT CALLBACK OverlayWndProcTrampoline(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+    {
+        auto* Internal = reinterpret_cast<FInoWebViewImpl_Windows_Composition::FInternal*>(
+            GetWindowLongPtr(hwnd, GWLP_USERDATA));
+        if (!Internal)
+        {
+            return DefWindowProc(hwnd, msg, wParam, lParam);
+        }
+        return Internal->OverlayWndProc(hwnd, msg, wParam, lParam);
+    }
 
     bool EnsureOverlayClassRegistered()
     {
@@ -326,7 +427,7 @@ namespace
         WNDCLASSEX Wc = {};
         Wc.cbSize        = sizeof(WNDCLASSEX);
         Wc.style         = CS_HREDRAW | CS_VREDRAW;
-        Wc.lpfnWndProc   = FInoWebViewImpl_Windows_Composition::OverlayWndProcStatic;
+        Wc.lpfnWndProc   = &OverlayWndProcTrampoline;
         Wc.hInstance     = GetModuleHandle(nullptr);
         Wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
         Wc.hbrBackground = nullptr;          // DComp paints; no GDI fill
@@ -342,113 +443,269 @@ namespace
         bOverlayClassRegistered = true;
         return true;
     }
-
-    /** Poll timer id; identifies our overlay HWND's tracking timer. */
-    constexpr UINT_PTR kOverlayTrackTimerId = 0x494E4F01; // "INO\x01"
 } // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  FInternal — WebView2 + DComp + overlay-window state.
+//  FInternal method implementations
 // ─────────────────────────────────────────────────────────────────────────────
-struct FInoWebViewImpl_Windows_Composition::FInternal
+bool FInoWebViewImpl_Windows_Composition::FInternal::CreateOverlayWindow()
 {
-    //
-    // UE's game window — we only READ its geometry / visibility. Our overlay
-    // is top-level, not a child of it.
-    //
-    HWND ParentHwnd = nullptr;
+    if (!EnsureOverlayClassRegistered()) return false;
 
+    // WS_EX_NOREDIRECTIONBITMAP: tell DWM not to allocate a GDI redirection
+    // surface — DComp paints the window directly. Required for the
+    // "zero-copy composition" path we're using here.
     //
-    // Our own top-level overlay HWND. Hosts the DComp visual tree. Positioned
-    // and sized to match the WebView's intended screen rect on every
-    // SyncBounds. Owner = ParentHwnd (for z-order / auto-destroy).
-    //
-    HWND OverlayHwnd = nullptr;
+    // WS_EX_TOOLWINDOW: keeps the overlay out of the taskbar / Alt+Tab.
+    // No WS_EX_LAYERED — that's for GDI alpha, not DComp.
+    const DWORD ExStyle = WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW;
+    const DWORD Style   = WS_POPUP;
 
-    //
-    // Last observed geometry of the intended WebView rect (screen coords).
-    // Used by the tracking timer to detect UE window moves.
-    //
-    int32 DesiredX = 0;
-    int32 DesiredY = 0;
-    int32 DesiredW = 0;
-    int32 DesiredH = 0;
+    HWND Hwnd = CreateWindowEx(
+        ExStyle,
+        kOverlayClassName,
+        TEXT("InoWebUI Overlay"),
+        Style,
+        0, 0, 1, 1,                      // final geometry comes from SyncBounds
+        ParentHwnd,                      // owner (NOT parent — WS_POPUP)
+        nullptr,
+        GetModuleHandle(nullptr),
+        nullptr);
 
-    //
-    // Last observed parent-window RECT (screen coords). The tracking timer
-    // compares against this to detect moves (UE doesn't fire SyncBounds on
-    // a pure window move — only resize).
-    //
-    RECT LastParentRect {0, 0, 0, 0};
+    if (!Hwnd)
+    {
+        UE_LOG(LogInoWebUI, Error,
+            TEXT("CreateWindowEx for overlay failed: 0x%08X"),
+            static_cast<uint32>(GetLastError()));
+        return false;
+    }
 
-    //
-    // Whether the user has asked for the WebView to be visible. Separate
-    // from the OS window's WS_VISIBLE flag because we also hide the overlay
-    // when the parent minimises.
-    //
-    bool bUserVisible = true;
+    // Stash the FInternal* so the trampoline can route to this instance.
+    SetWindowLongPtr(Hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
 
-    FInoWebViewConfig Config;
+    OverlayHwnd = Hwnd;
+    UE_LOG(LogInoWebUI, Verbose,
+        TEXT("Composition overlay HWND created: 0x%p"), Hwnd);
+    return true;
+}
 
-    //
-    // COM objects — kept minimal. The composition controller is the
-    // composition-specific interface; the Controller pointer is a QI'd
-    // ICoreWebView2Controller for the shared methods (put_Bounds, MoveFocus,
-    // put_IsVisible, etc.).
-    //
-    ComPtr<ICoreWebView2Environment>             Environment;
-    ComPtr<ICoreWebView2CompositionController>   CompositionController;
-    ComPtr<ICoreWebView2Controller>              Controller;
-    ComPtr<ICoreWebView2>                        WebView;
+void FInoWebViewImpl_Windows_Composition::FInternal::DestroyOverlayWindow()
+{
+    if (!OverlayHwnd) return;
+    KillTimer(OverlayHwnd, kOverlayTrackTimerId);
+    DestroyWindow(OverlayHwnd);
+    OverlayHwnd = nullptr;
+}
 
-    //
-    // DirectComposition stack — bound to OverlayHwnd.
-    //
-    ComPtr<IDCompositionDesktopDevice> DCompDevice;
-    ComPtr<IDCompositionTarget>        DCompTarget;
-    ComPtr<IDCompositionVisual2>       RootVisual;
+bool FInoWebViewImpl_Windows_Composition::FInternal::CreateDCompStack()
+{
+    // DCompositionCreateDevice2 accepts a null rendering device — we don't
+    // draw anything ourselves; WebView2 renders INTO the visual.
+    ComPtr<IDCompositionDesktopDevice> Device;
+    if (FAILED(DCompositionCreateDevice2(nullptr, IID_PPV_ARGS(&Device))))
+    {
+        UE_LOG(LogInoWebUI, Error, TEXT("DCompositionCreateDevice2 failed."));
+        return false;
+    }
+    DCompDevice = Device;
 
-    //
-    // Pending-ops queue — identical to the sibling impl.
-    //
-    TOptional<FString> PendingNavigate;
-    TOptional<bool>    PendingVisible;
+    ComPtr<IDCompositionTarget> Target;
+    if (FAILED(Device->CreateTargetForHwnd(OverlayHwnd, TRUE, &Target)))
+    {
+        UE_LOG(LogInoWebUI, Error, TEXT("CreateTargetForHwnd failed."));
+        return false;
+    }
+    DCompTarget = Target;
 
-    struct FRect { int32 X = 0; int32 Y = 0; int32 W = 0; int32 H = 0; };
-    TOptional<FRect>   PendingBounds;
-    bool               bPendingReload = false;
+    ComPtr<IDCompositionVisual2> Root;
+    if (FAILED(Device->CreateVisual(&Root)))
+    {
+        UE_LOG(LogInoWebUI, Error, TEXT("CreateVisual failed."));
+        return false;
+    }
+    RootVisual = Root;
 
-    TArray<FString>    PendingOutboundMessages;
-    TArray<FString>    PendingScripts;
-    TOptional<bool>    PendingMute;
+    Target->SetRoot(Root.Get());
+    return true;
+}
 
-    //
-    // Event registration tokens.
-    //
-    EventRegistrationToken MessageReceivedToken{};
-    EventRegistrationToken NavigationStartingToken{};
-    EventRegistrationToken NavigationCompletedToken{};
-    EventRegistrationToken DocumentTitleChangedToken{};
-    EventRegistrationToken ScriptDialogOpeningToken{};
-    EventRegistrationToken NewWindowRequestedToken{};
-    EventRegistrationToken GotFocusToken{};
-    EventRegistrationToken LostFocusToken{};
-    EventRegistrationToken ProcessFailedToken{};
-    EventRegistrationToken CursorChangedToken{};
+void FInoWebViewImpl_Windows_Composition::FInternal::DestroyDCompStack()
+{
+    // Order: visual first, then target (unbinds HWND), then device.
+    RootVisual.Reset();
+    DCompTarget.Reset();
+    DCompDevice.Reset();
+}
 
-    //
-    // Lifetime token — same pattern as the sibling impl. Async callbacks
-    // capture a TWeakPtr; Shutdown resets the token; stragglers no-op.
-    //
-    TSharedPtr<int> LifetimeToken = MakeShared<int>(0);
-};
+void FInoWebViewImpl_Windows_Composition::FInternal::UpdateOverlayToScreenRect(
+    int32 ScreenX, int32 ScreenY, int32 Width, int32 Height)
+{
+    if (!OverlayHwnd) return;
+
+    DesiredX = ScreenX;
+    DesiredY = ScreenY;
+    DesiredW = Width;
+    DesiredH = Height;
+
+    // SWP_NOACTIVATE: moving the overlay must not steal foreground activation
+    // from UE (would cause focus flicker on drag).
+    // SWP_NOZORDER: preserve current stacking; tracking timer enforces proper
+    // order.
+    UINT Flags = SWP_NOACTIVATE | SWP_NOZORDER;
+    if (bUserVisible) Flags |= SWP_SHOWWINDOW;
+
+    SetWindowPos(OverlayHwnd, nullptr, ScreenX, ScreenY, Width, Height, Flags);
+
+    // Update WebView's own bounds to match. In composition mode, Bounds are
+    // in the target HWND's client coords → (0,0,W,H) since our overlay is
+    // exactly the WebView rect.
+    if (Controller)
+    {
+        RECT Client = { 0, 0, Width, Height };
+        Controller->put_Bounds(Client);
+    }
+}
+
+void FInoWebViewImpl_Windows_Composition::FInternal::ForwardMouseMessage(
+    UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (!CompositionController) return;
+
+    // Mouse event kind: the COREWEBVIEW2_MOUSE_EVENT_KIND_* enum values equal
+    // the Win32 WM_* message IDs by design, so a direct cast is legitimate.
+    const auto EventKind = static_cast<COREWEBVIEW2_MOUSE_EVENT_KIND>(msg);
+
+    // Modifiers. Wheel messages pack the delta in the high word of wParam,
+    // so we pull the keystate out via the dedicated macro in that case.
+    UINT32 VirtualKeys = 0;
+    const WORD KeyState = (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL)
+        ? GET_KEYSTATE_WPARAM(wParam)
+        : LOWORD(wParam);
+
+    if (KeyState & MK_LBUTTON)  VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON;
+    if (KeyState & MK_MBUTTON)  VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_MIDDLE_BUTTON;
+    if (KeyState & MK_RBUTTON)  VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON;
+    if (KeyState & MK_SHIFT)    VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT;
+    if (KeyState & MK_CONTROL)  VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL;
+    if (KeyState & MK_XBUTTON1) VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_X_BUTTON1;
+    if (KeyState & MK_XBUTTON2) VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_X_BUTTON2;
+
+    UINT32 MouseData = 0;
+    if (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL)
+    {
+        MouseData = static_cast<UINT32>(GET_WHEEL_DELTA_WPARAM(wParam));
+    }
+    else if (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP || msg == WM_XBUTTONDBLCLK)
+    {
+        MouseData = GET_XBUTTON_WPARAM(wParam);
+    }
+
+    // Coordinates. Mouse messages use CLIENT coords of the receiving HWND;
+    // wheel messages use SCREEN coords (Win32 quirk) so we convert.
+    POINT Pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+    if (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL)
+    {
+        ::ScreenToClient(OverlayHwnd, &Pt);
+    }
+
+    CompositionController->SendMouseInput(
+        EventKind,
+        static_cast<COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS>(VirtualKeys),
+        MouseData, Pt);
+}
+
+LRESULT FInoWebViewImpl_Windows_Composition::FInternal::OverlayWndProc(
+    HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+        case WM_MOUSEMOVE:
+        case WM_LBUTTONDOWN:   case WM_LBUTTONUP:   case WM_LBUTTONDBLCLK:
+        case WM_MBUTTONDOWN:   case WM_MBUTTONUP:   case WM_MBUTTONDBLCLK:
+        case WM_RBUTTONDOWN:   case WM_RBUTTONUP:   case WM_RBUTTONDBLCLK:
+        case WM_XBUTTONDOWN:   case WM_XBUTTONUP:   case WM_XBUTTONDBLCLK:
+        case WM_MOUSEWHEEL:    case WM_MOUSEHWHEEL:
+            ForwardMouseMessage(msg, wParam, lParam);
+            return 0;
+
+        case WM_MOUSELEAVE:
+            if (CompositionController)
+            {
+                CompositionController->SendMouseInput(
+                    COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE,
+                    static_cast<COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS>(0),
+                    0, POINT{ 0, 0 });
+            }
+            return 0;
+
+        case WM_SETCURSOR:
+            // Fall through to DefWindowProc — it honours the class cursor,
+            // which we update from add_CursorChanged.
+            break;
+
+        case WM_TIMER:
+            if (wParam == kOverlayTrackTimerId && ParentHwnd)
+            {
+                RECT ParentRect;
+                if (::GetWindowRect(ParentHwnd, &ParentRect))
+                {
+                    if (ParentRect.left   != LastParentRect.left  ||
+                        ParentRect.top    != LastParentRect.top   ||
+                        ParentRect.right  != LastParentRect.right ||
+                        ParentRect.bottom != LastParentRect.bottom)
+                    {
+                        // UE window moved/resized. Shift overlay by the
+                        // same delta. The subsystem fires SyncBounds on
+                        // resize; pure moves we handle here.
+                        const int32 DX = ParentRect.left - LastParentRect.left;
+                        const int32 DY = ParentRect.top  - LastParentRect.top;
+
+                        if (LastParentRect.right != 0)  // skip first-call init
+                        {
+                            UpdateOverlayToScreenRect(
+                                DesiredX + DX, DesiredY + DY,
+                                DesiredW, DesiredH);
+                        }
+                        LastParentRect = ParentRect;
+                    }
+                }
+
+                // Sync overlay visibility with parent minimise/restore.
+                const bool bParentVisible = ::IsWindowVisible(ParentHwnd)
+                                         && !::IsIconic(ParentHwnd);
+                const bool bOverlayVisible = ::IsWindowVisible(hwnd) != 0;
+                const bool bShouldShow = bUserVisible && bParentVisible;
+                if (bShouldShow != bOverlayVisible)
+                {
+                    ::ShowWindow(hwnd, bShouldShow ? SW_SHOWNOACTIVATE : SW_HIDE);
+                }
+            }
+            return 0;
+
+        case WM_MOUSEACTIVATE:
+            // Don't let clicks on the overlay steal activation from UE.
+            return MA_NOACTIVATE;
+
+        case WM_PAINT:
+            ValidateRect(hwnd, nullptr);
+            return 0;
+
+        case WM_DESTROY:
+            return 0;
+
+        default:
+            break;
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Construction / destruction
+//  Outer class — construction / destruction
 // ─────────────────────────────────────────────────────────────────────────────
 FInoWebViewImpl_Windows_Composition::FInoWebViewImpl_Windows_Composition()
     : Internal(MakeUnique<FInternal>())
 {
+    Internal->Self = this;
 }
 
 FInoWebViewImpl_Windows_Composition::~FInoWebViewImpl_Windows_Composition()
@@ -458,13 +715,6 @@ FInoWebViewImpl_Windows_Composition::~FInoWebViewImpl_Windows_Composition()
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Initialize
-//
-//    1. Stash ParentHwnd (UE's game window — read-only, not parented)
-//    2. Register + create our own overlay HWND (top-level, DComp-friendly)
-//    3. Verify WebView2 runtime, create the environment (async)
-//    4. On env ready → CreateCoreWebView2CompositionController (async)
-//    5. On comp-controller ready → build DComp stack, mount WebView visual,
-//         configure controller, hook events, flush pending queue
 // ─────────────────────────────────────────────────────────────────────────────
 bool FInoWebViewImpl_Windows_Composition::Initialize(void* ParentNativeHandle, const FInoWebViewConfig& Config)
 {
@@ -473,20 +723,18 @@ bool FInoWebViewImpl_Windows_Composition::Initialize(void* ParentNativeHandle, c
     if (bInitStarted)
     {
         UE_LOG(LogInoWebUI, Warning,
-            TEXT("FInoWebViewImpl_Windows_Composition::Initialize called more than once — ignoring."));
+            TEXT("FInoWebViewImpl_Windows_Composition::Initialize called twice."));
         return false;
     }
     if (!ParentNativeHandle)
     {
-        UE_LOG(LogInoWebUI, Error,
-            TEXT("FInoWebViewImpl_Windows_Composition::Initialize: parent HWND is null."));
+        UE_LOG(LogInoWebUI, Error, TEXT("Composition init: parent HWND is null."));
         return false;
     }
 
     Internal->ParentHwnd = static_cast<HWND>(ParentNativeHandle);
     Internal->Config     = Config;
 
-    // Seed pending ops from config.
     if (!Config.InitialURL.IsEmpty())
     {
         Internal->PendingNavigate = Config.InitialURL;
@@ -494,38 +742,34 @@ bool FInoWebViewImpl_Windows_Composition::Initialize(void* ParentNativeHandle, c
     Internal->PendingVisible = Config.bVisibleOnCreate;
     Internal->bUserVisible   = Config.bVisibleOnCreate;
 
-    // Verify the WebView2 Runtime is installed.
+    // Verify WebView2 runtime.
     {
         LPWSTR VersionString = nullptr;
-        const HRESULT HrVer = GetAvailableCoreWebView2BrowserVersionString(nullptr, &VersionString);
-        if (FAILED(HrVer) || VersionString == nullptr)
+        if (FAILED(GetAvailableCoreWebView2BrowserVersionString(nullptr, &VersionString))
+            || !VersionString)
         {
             UE_LOG(LogInoWebUI, Error,
-                TEXT("WebView2 Runtime not found. Install from "
-                     "https://developer.microsoft.com/microsoft-edge/webview2/"));
+                TEXT("WebView2 Runtime not found. Install the Evergreen runtime."));
             return false;
         }
         UE_LOG(LogInoWebUI, Log,
-            TEXT("WebView2 Runtime version (composition impl): %s"), VersionString);
+            TEXT("WebView2 Runtime version (composition): %s"), VersionString);
         CoTaskMemFree(VersionString);
     }
 
-    // Create our overlay HWND BEFORE the async environment call. The HWND is
-    // the composition controller's "parent window" (used for DPI + input
-    // routing) — WebView2 needs a valid HWND at CreateCoreWebView2CompositionController time.
-    CreateOverlayWindow();
-    if (!Internal->OverlayHwnd)
+    // Create overlay HWND up front — needed as the parent arg to
+    // CreateCoreWebView2CompositionController.
+    if (!Internal->CreateOverlayWindow())
     {
         UE_LOG(LogInoWebUI, Error, TEXT("Failed to create overlay HWND."));
         return false;
     }
 
-    // Per-WebView user data folder.
     const FString UserDataPath = FPaths::ConvertRelativePathToFull(
         FPaths::ProjectSavedDir() / Config.UserDataSubfolder);
     IFileManager::Get().MakeDirectory(*UserDataPath, /*Tree=*/true);
 
-    UE_LOG(LogInoWebUI, Log, TEXT("WebView2 composition-hosting async init started."));
+    UE_LOG(LogInoWebUI, Log, TEXT("WebView2 composition init started."));
 
     TWeakPtr<int> WeakLifetime = Internal->LifetimeToken;
 
@@ -554,9 +798,7 @@ bool FInoWebViewImpl_Windows_Composition::Initialize(void* ParentNativeHandle, c
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  OnEnvironmentReady — environment alive; spin up the COMPOSITION controller
-//  (the whole point of this impl; the sibling Windows class uses the plain
-//  CreateCoreWebView2Controller here instead).
+//  OnEnvironmentReady — spin up the COMPOSITION controller.
 // ─────────────────────────────────────────────────────────────────────────────
 void FInoWebViewImpl_Windows_Composition::OnEnvironmentReady(int32 HResult, void* EnvironmentPtr)
 {
@@ -572,18 +814,16 @@ void FInoWebViewImpl_Windows_Composition::OnEnvironmentReady(int32 HResult, void
     auto* Env = static_cast<ICoreWebView2Environment*>(EnvironmentPtr);
     Internal->Environment = Env;
 
-    // CreateCoreWebView2CompositionController lives on ICoreWebView2Environment3+.
     ComPtr<ICoreWebView2Environment3> Env3;
     if (FAILED(Env->QueryInterface(IID_PPV_ARGS(&Env3))) || !Env3)
     {
         UE_LOG(LogInoWebUI, Error,
             TEXT("ICoreWebView2Environment3 unavailable — composition-hosting requires a "
-                 "modern WebView2 Runtime. Update the Evergreen runtime and retry."));
+                 "modern WebView2 Runtime."));
         return;
     }
 
-    UE_LOG(LogInoWebUI, Log,
-        TEXT("WebView2 environment ready (composition); creating composition controller..."));
+    UE_LOG(LogInoWebUI, Log, TEXT("WebView2 env ready; creating composition controller..."));
 
     TWeakPtr<int> WeakLifetime = Internal->LifetimeToken;
 
@@ -607,10 +847,8 @@ void FInoWebViewImpl_Windows_Composition::OnEnvironmentReady(int32 HResult, void
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  OnCompositionControllerReady — build DComp, mount WebView visual,
-//  configure the controller, hook events, and flush queued operations.
-//
-//  This is the big one. Structure mirrors the sibling impl's OnControllerReady
-//  except for the DComp bits at the top.
+//  hook events, flush pending operations. Big function, mirrors the
+//  sibling impl's OnControllerReady with DComp additions.
 // ─────────────────────────────────────────────────────────────────────────────
 void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HResult, void* CompositionControllerPtr)
 {
@@ -627,43 +865,32 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
     auto* CompCtrl = static_cast<ICoreWebView2CompositionController*>(CompositionControllerPtr);
     Internal->CompositionController = CompCtrl;
 
-    // QI for the shared ICoreWebView2Controller — this is how we access all the
-    // usual controller operations (put_Bounds, put_IsVisible, MoveFocus,
-    // zoom, focus events). The composition controller exposes both faces.
     if (FAILED(CompCtrl->QueryInterface(IID_PPV_ARGS(&Internal->Controller))))
     {
-        UE_LOG(LogInoWebUI, Error,
-            TEXT("QI ICoreWebView2Controller on composition controller failed."));
+        UE_LOG(LogInoWebUI, Error, TEXT("QI ICoreWebView2Controller failed."));
         return;
     }
-
     if (FAILED(Internal->Controller->get_CoreWebView2(&Internal->WebView)))
     {
         UE_LOG(LogInoWebUI, Error, TEXT("get_CoreWebView2 failed."));
         return;
     }
 
-    // ── Build the DComp stack and attach the WebView visual ─────────────────
-    CreateDCompStack();
-    if (!Internal->DCompDevice || !Internal->DCompTarget || !Internal->RootVisual)
+    // ── Build DComp stack and attach the WebView visual ─────────────────────
+    if (!Internal->CreateDCompStack())
     {
         UE_LOG(LogInoWebUI, Error, TEXT("DirectComposition stack setup failed."));
         return;
     }
 
-    // Hand our DComp visual to the WebView — it'll render its content INTO
-    // this visual rather than into a child HWND. That's the whole trick.
     if (FAILED(CompCtrl->put_RootVisualTarget(Internal->RootVisual.Get())))
     {
         UE_LOG(LogInoWebUI, Error, TEXT("put_RootVisualTarget failed."));
         return;
     }
-
-    // Commit the DComp tree. From here on, the overlay HWND displays the
-    // WebView content via DWM's compositor (zero GDI, zero child HWND).
     Internal->DCompDevice->Commit();
 
-    // ── Cursor routing — propagate the WebView's requested cursor to overlay ─
+    // ── Cursor routing ──────────────────────────────────────────────────────
     {
         TWeakPtr<int> WeakLifetime = Internal->LifetimeToken;
         CompCtrl->add_CursorChanged(
@@ -674,7 +901,6 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
                     HCURSOR Cursor = nullptr;
                     if (SUCCEEDED(Sender->get_Cursor(&Cursor)) && Cursor)
                     {
-                        // Install for our overlay class so WM_SETCURSOR picks it up.
                         SetClassLongPtr(Internal->OverlayHwnd, GCLP_HCURSOR,
                             reinterpret_cast<LONG_PTR>(Cursor));
                     }
@@ -683,11 +909,10 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
             &Internal->CursorChangedToken);
     }
 
-    // ── Inject bridge script (always) ───────────────────────────────────────
+    // ── Inject scripts ──────────────────────────────────────────────────────
     Internal->WebView->AddScriptToExecuteOnDocumentCreated(
         GInoWebUIBridgeScript_Composition, nullptr);
 
-    // ── Inject dev overlay (opt-in) ─────────────────────────────────────────
     if (Internal->Config.bEnableDevTools)
     {
         Internal->WebView->AddScriptToExecuteOnDocumentCreated(
@@ -724,7 +949,6 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
                 [this, WeakLifetime](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* Args) -> HRESULT
                 {
                     if (!WeakLifetime.IsValid() || !Args) return S_OK;
-
                     BOOL bSuccess = 0;
                     Args->get_IsSuccess(&bSuccess);
 
@@ -757,7 +981,6 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
                 }).Get(),
             &Internal->DocumentTitleChangedToken);
 
-        // JS dialog suppression (default-deny; Accept only if user allowed).
         Internal->WebView->add_ScriptDialogOpening(
             Callback<ICoreWebView2ScriptDialogOpeningEventHandler>(
                 [this, WeakLifetime](ICoreWebView2*, ICoreWebView2ScriptDialogOpeningEventArgs* Args) -> HRESULT
@@ -788,15 +1011,14 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
 
                     if (Internal->Config.bAllowScriptDialogs) { Args->Accept(); }
                     else { UE_LOG(LogInoWebUI, Verbose,
-                           TEXT("Suppressed JS dialog (%d): %s"),
-                           static_cast<int32>(Kind), *Message); }
+                        TEXT("Suppressed JS dialog (%d): %s"),
+                        static_cast<int32>(Kind), *Message); }
 
                     if (OnScriptDialogCallback) OnScriptDialogCallback(Kind, Message);
                     return S_OK;
                 }).Get(),
             &Internal->ScriptDialogOpeningToken);
 
-        // Controller-level focus events.
         Internal->Controller->add_GotFocus(
             Callback<ICoreWebView2FocusChangedEventHandler>(
                 [this, WeakLifetime](ICoreWebView2Controller*, IUnknown*) -> HRESULT
@@ -834,7 +1056,6 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
                 }).Get(),
             &Internal->ProcessFailedToken);
 
-        // window.open / target="_blank" — block by default.
         Internal->WebView->add_NewWindowRequested(
             Callback<ICoreWebView2NewWindowRequestedEventHandler>(
                 [this, WeakLifetime](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* Args) -> HRESULT
@@ -896,7 +1117,7 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
         }
     }
 
-    // ── Settings (context menus, dev tools, accelerator keys, UA override) ─
+    // ── Settings ────────────────────────────────────────────────────────────
     {
         ComPtr<ICoreWebView2Settings> Settings;
         if (SUCCEEDED(Internal->WebView->get_Settings(&Settings)))
@@ -960,9 +1181,7 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
         }
     }
 
-    // Initial bounds — for composition mode, put_Bounds covers the WebView's
-    // rect within the overlay HWND. Since our overlay matches the WebView
-    // rect exactly (see SyncBounds), the internal bounds are always (0,0,W,H).
+    // Initial Bounds — overlay's client rect; our overlay == WebView rect.
     if (!Internal->PendingBounds.IsSet())
     {
         RECT Client;
@@ -970,12 +1189,12 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
         Internal->Controller->put_Bounds(Client);
     }
 
-    // Kick off the UE-window tracking timer (16ms ≈ 60 Hz).
+    // Start UE-window tracking timer (60 Hz).
     SetTimer(Internal->OverlayHwnd, kOverlayTrackTimerId, 16, nullptr);
 
     bReady = true;
     UE_LOG(LogInoWebUI, Log,
-        TEXT("WebView2 composition controller ready; DComp visual mounted."));
+        TEXT("Composition controller ready; DComp visual mounted."));
 
     ApplyPendingOperations();
 
@@ -983,7 +1202,7 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  ApplyPendingOperations — flush queue exactly as the sibling impl does.
+//  ApplyPendingOperations
 // ─────────────────────────────────────────────────────────────────────────────
 void FInoWebViewImpl_Windows_Composition::ApplyPendingOperations()
 {
@@ -1032,13 +1251,12 @@ void FInoWebViewImpl_Windows_Composition::ApplyPendingOperations()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Public operations
+//  Public operations (thin wrappers; helpers live on FInternal)
 // ─────────────────────────────────────────────────────────────────────────────
 void FInoWebViewImpl_Windows_Composition::Navigate(const FString& URL)
 {
     check(IsInGameThread());
     if (!bReady) { Internal->PendingNavigate = URL; return; }
-
     Internal->WebView->Navigate(*URL);
 }
 
@@ -1046,27 +1264,17 @@ void FInoWebViewImpl_Windows_Composition::Reload()
 {
     check(IsInGameThread());
     if (!bReady) { Internal->bPendingReload = true; return; }
-
     Internal->WebView->Reload();
 }
 
 void FInoWebViewImpl_Windows_Composition::SetVisible(bool bVisible)
 {
     check(IsInGameThread());
-
     Internal->bUserVisible = bVisible;
 
-    if (!bReady)
-    {
-        Internal->PendingVisible = bVisible;
-        return;
-    }
+    if (!bReady) { Internal->PendingVisible = bVisible; return; }
 
-    // Two things to toggle: the WebView2 controller's own visibility, and
-    // our overlay HWND. Both must match or we'll either miss input (overlay
-    // hidden) or burn GPU rendering a hidden WebView.
     Internal->Controller->put_IsVisible(bVisible ? 1 : 0);
-
     if (Internal->OverlayHwnd)
     {
         ::ShowWindow(Internal->OverlayHwnd, bVisible ? SW_SHOWNOACTIVATE : SW_HIDE);
@@ -1076,20 +1284,14 @@ void FInoWebViewImpl_Windows_Composition::SetVisible(bool bVisible)
 void FInoWebViewImpl_Windows_Composition::SyncBounds(int32 ScreenX, int32 ScreenY, int32 Width, int32 Height)
 {
     check(IsInGameThread());
-
     if (!bReady)
     {
         Internal->PendingBounds = FInternal::FRect{ ScreenX, ScreenY, Width, Height };
         return;
     }
-
-    UpdateOverlayToScreenRect(ScreenX, ScreenY, Width, Height);
+    Internal->UpdateOverlayToScreenRect(ScreenX, ScreenY, Width, Height);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Phase 3 runtime polish (DevTools, ExecuteJS, mute, focus, zoom, cookies)
-//  — identical signatures and behaviour to the sibling impl.
-// ─────────────────────────────────────────────────────────────────────────────
 void FInoWebViewImpl_Windows_Composition::OpenDevTools()
 {
     check(IsInGameThread());
@@ -1098,7 +1300,7 @@ void FInoWebViewImpl_Windows_Composition::OpenDevTools()
     if (!Internal->Config.bEnableDevTools)
     {
         UE_LOG(LogInoWebUI, Warning,
-            TEXT("OpenDevTools called but bEnableDevTools was false at construction."));
+            TEXT("OpenDevTools called but bEnableDevTools was false."));
         return;
     }
     Internal->WebView->OpenDevToolsWindow();
@@ -1131,8 +1333,6 @@ void FInoWebViewImpl_Windows_Composition::FocusWebView()
     check(IsInGameThread());
     if (!bReady || !Internal->Controller) return;
 
-    // Activate the overlay so the thread's focus is here, then hand logical
-    // focus to the WebView via the controller.
     if (Internal->OverlayHwnd)
     {
         ::SetForegroundWindow(Internal->OverlayHwnd);
@@ -1194,306 +1394,11 @@ void FInoWebViewImpl_Windows_Composition::PostMessageJson(const FString& Json)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Overlay window creation / destruction
-// ─────────────────────────────────────────────────────────────────────────────
-void FInoWebViewImpl_Windows_Composition::CreateOverlayWindow()
-{
-    if (!EnsureOverlayClassRegistered()) return;
-
-    // WS_EX_NOREDIRECTIONBITMAP is the key flag — tells DWM not to allocate a
-    // GDI redirection surface for this HWND. DirectComposition paints the
-    // window directly; the redirection surface would be wasted memory AND
-    // would force DWM into a different (slower) compositing path.
-    //
-    // WS_EX_TOOLWINDOW keeps the overlay out of the taskbar and Alt+Tab.
-    // No WS_EX_LAYERED — that's for GDI alpha, not DComp.
-    const DWORD ExStyle = WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW;
-    const DWORD Style   = WS_POPUP;
-
-    HWND Hwnd = CreateWindowEx(
-        ExStyle,
-        kOverlayClassName,
-        TEXT("InoWebUI Overlay"),
-        Style,
-        0, 0, 1, 1,                      // final geometry comes from SyncBounds
-        Internal->ParentHwnd,            // owner (NOT parent — WS_POPUP)
-        nullptr,
-        GetModuleHandle(nullptr),
-        this);                           // CreateStruct::lpCreateParams
-
-    if (!Hwnd)
-    {
-        UE_LOG(LogInoWebUI, Error,
-            TEXT("CreateWindowEx for overlay failed: 0x%08X"),
-            static_cast<uint32>(GetLastError()));
-        return;
-    }
-
-    // Stash the impl pointer so the static WndProc can route to this instance.
-    // WM_NCCREATE handling would also work but this is simpler given we
-    // don't need pre-create routing.
-    SetWindowLongPtr(Hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-
-    Internal->OverlayHwnd = Hwnd;
-    UE_LOG(LogInoWebUI, Verbose,
-        TEXT("Composition overlay HWND created: 0x%p"), Hwnd);
-}
-
-void FInoWebViewImpl_Windows_Composition::DestroyOverlayWindow()
-{
-    if (!Internal->OverlayHwnd) return;
-
-    KillTimer(Internal->OverlayHwnd, kOverlayTrackTimerId);
-    DestroyWindow(Internal->OverlayHwnd);
-    Internal->OverlayHwnd = nullptr;
-}
-
-void FInoWebViewImpl_Windows_Composition::UpdateOverlayToScreenRect(
-    int32 ScreenX, int32 ScreenY, int32 Width, int32 Height)
-{
-    if (!Internal->OverlayHwnd) return;
-
-    Internal->DesiredX = ScreenX;
-    Internal->DesiredY = ScreenY;
-    Internal->DesiredW = Width;
-    Internal->DesiredH = Height;
-
-    // SWP_NOACTIVATE: moving the overlay shouldn't steal foreground activation
-    // from the UE window (that would cause constant focus flicker on drag).
-    // SWP_NOZORDER: preserve current stacking; the tracking timer will enforce
-    // proper z-order (overlay above UE window but not above other apps).
-    SetWindowPos(Internal->OverlayHwnd, nullptr,
-        ScreenX, ScreenY, Width, Height,
-        SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW * (Internal->bUserVisible ? 1 : 0));
-
-    // Update the WebView's internal bounds to match the new overlay size.
-    // Bounds are in the target window's client coords → (0,0,W,H) for us.
-    if (Internal->Controller)
-    {
-        RECT Client = { 0, 0, Width, Height };
-        Internal->Controller->put_Bounds(Client);
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  DirectComposition setup
-// ─────────────────────────────────────────────────────────────────────────────
-void FInoWebViewImpl_Windows_Composition::CreateDCompStack()
-{
-    // DCompositionCreateDevice2 accepts a null rendering device — which is
-    // what we want. We don't draw anything ourselves; WebView2 renders into
-    // the visual via the composition controller.
-    ComPtr<IDCompositionDesktopDevice> Device;
-    if (FAILED(DCompositionCreateDevice2(nullptr, IID_PPV_ARGS(&Device))))
-    {
-        UE_LOG(LogInoWebUI, Error, TEXT("DCompositionCreateDevice2 failed."));
-        return;
-    }
-    Internal->DCompDevice = Device;
-
-    // Bind to our overlay HWND. TRUE = topmost within the target's tree.
-    ComPtr<IDCompositionTarget> Target;
-    if (FAILED(Device->CreateTargetForHwnd(Internal->OverlayHwnd, TRUE, &Target)))
-    {
-        UE_LOG(LogInoWebUI, Error, TEXT("IDCompositionDesktopDevice::CreateTargetForHwnd failed."));
-        return;
-    }
-    Internal->DCompTarget = Target;
-
-    // Create the root visual — this is what we hand WebView2 via
-    // put_RootVisualTarget. WebView2 will attach its own sub-visuals to it.
-    ComPtr<IDCompositionVisual2> Root;
-    if (FAILED(Device->CreateVisual(&Root)))
-    {
-        UE_LOG(LogInoWebUI, Error, TEXT("IDCompositionDesktopDevice::CreateVisual failed."));
-        return;
-    }
-    Internal->RootVisual = Root;
-
-    Target->SetRoot(Root.Get());
-}
-
-void FInoWebViewImpl_Windows_Composition::DestroyDCompStack()
-{
-    // Order matters a little: visual first, then target (unbinds HWND),
-    // then device.
-    if (Internal->RootVisual)  Internal->RootVisual.Reset();
-    if (Internal->DCompTarget) Internal->DCompTarget.Reset();
-    if (Internal->DCompDevice) Internal->DCompDevice.Reset();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Overlay WndProc — mouse/pointer forwarding + tracking timer
-// ─────────────────────────────────────────────────────────────────────────────
-LRESULT CALLBACK FInoWebViewImpl_Windows_Composition::OverlayWndProcStatic(
-    HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    auto* Self = reinterpret_cast<FInoWebViewImpl_Windows_Composition*>(
-        GetWindowLongPtr(hwnd, GWLP_USERDATA));
-    if (!Self)
-    {
-        return DefWindowProc(hwnd, msg, wParam, lParam);
-    }
-    return Self->OverlayWndProc(hwnd, msg, wParam, lParam);
-}
-
-LRESULT FInoWebViewImpl_Windows_Composition::OverlayWndProc(
-    HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    switch (msg)
-    {
-        // Mouse events — forward every one into the composition controller.
-        // The COREWEBVIEW2_MOUSE_EVENT_KIND_* enum values equal the Win32
-        // WM_* message IDs by design, so we don't need a translation table.
-        case WM_MOUSEMOVE:
-        case WM_LBUTTONDOWN:   case WM_LBUTTONUP:   case WM_LBUTTONDBLCLK:
-        case WM_MBUTTONDOWN:   case WM_MBUTTONUP:   case WM_MBUTTONDBLCLK:
-        case WM_RBUTTONDOWN:   case WM_RBUTTONUP:   case WM_RBUTTONDBLCLK:
-        case WM_XBUTTONDOWN:   case WM_XBUTTONUP:   case WM_XBUTTONDBLCLK:
-        case WM_MOUSEWHEEL:    case WM_MOUSEHWHEEL:
-            ForwardMouseMessage(msg, wParam, lParam);
-            return 0;
-
-        case WM_MOUSELEAVE:
-            if (Internal && Internal->CompositionController)
-            {
-                // No coordinates for leave; zero point is fine.
-                Internal->CompositionController->SendMouseInput(
-                    COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE,
-                    static_cast<COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS>(0),
-                    0, POINT{ 0, 0 });
-            }
-            return 0;
-
-        // Cursor — serve whatever WebView2 requested via add_CursorChanged.
-        case WM_SETCURSOR:
-        {
-            const LRESULT Handled = DefWindowProc(hwnd, msg, wParam, lParam);
-            return Handled;
-        }
-
-        // Tracking timer — re-sync overlay to UE window in case it moved
-        // (drag title bar, Windows snap, multi-monitor move). We don't get
-        // an event for pure window moves; polling is cheap and reliable.
-        case WM_TIMER:
-            if (wParam == kOverlayTrackTimerId && Internal && Internal->ParentHwnd)
-            {
-                RECT ParentRect;
-                if (::GetWindowRect(Internal->ParentHwnd, &ParentRect))
-                {
-                    if (ParentRect.left   != Internal->LastParentRect.left ||
-                        ParentRect.top    != Internal->LastParentRect.top  ||
-                        ParentRect.right  != Internal->LastParentRect.right ||
-                        ParentRect.bottom != Internal->LastParentRect.bottom)
-                    {
-                        // Parent moved or resized — the subsystem will fire
-                        // SyncBounds on resize, but pure moves we handle
-                        // ourselves. Shift the overlay by the same delta.
-                        const int32 DX = ParentRect.left - Internal->LastParentRect.left;
-                        const int32 DY = ParentRect.top  - Internal->LastParentRect.top;
-
-                        if (Internal->LastParentRect.right != 0)  // skip first-call initialisation
-                        {
-                            UpdateOverlayToScreenRect(
-                                Internal->DesiredX + DX,
-                                Internal->DesiredY + DY,
-                                Internal->DesiredW,
-                                Internal->DesiredH);
-                        }
-                        Internal->LastParentRect = ParentRect;
-                    }
-                }
-
-                // Also check for UE window minimise/restore — sync overlay visibility.
-                const bool bParentVisible = ::IsWindowVisible(Internal->ParentHwnd)
-                                         && !::IsIconic(Internal->ParentHwnd);
-                const bool bOverlayVisible = ::IsWindowVisible(hwnd);
-                const bool bShouldShow = Internal->bUserVisible && bParentVisible;
-                if (bShouldShow != bOverlayVisible)
-                {
-                    ::ShowWindow(hwnd, bShouldShow ? SW_SHOWNOACTIVATE : SW_HIDE);
-                }
-            }
-            return 0;
-
-        // Don't let the overlay steal activation on click — the user's click
-        // should hit the overlay (forwarded to WebView) without focus-flashing
-        // UE's window. WS_EX_NOACTIVATE is too strong (disables keyboard);
-        // WM_MOUSEACTIVATE is the right surgical answer.
-        case WM_MOUSEACTIVATE:
-            return MA_NOACTIVATE;
-
-        // Nothing to paint — DComp renders everything.
-        case WM_PAINT:
-            ValidateRect(hwnd, nullptr);
-            return 0;
-
-        case WM_DESTROY:
-            // Don't reach into the impl here — Shutdown() drives teardown;
-            // we're just finalising the Win32 side.
-            return 0;
-
-        default:
-            break;
-    }
-    return DefWindowProc(hwnd, msg, wParam, lParam);
-}
-
-void FInoWebViewImpl_Windows_Composition::ForwardMouseMessage(
-    UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    if (!Internal || !Internal->CompositionController) return;
-
-    // Mouse event kind: enum values equal WM_* IDs.
-    const auto EventKind = static_cast<COREWEBVIEW2_MOUSE_EVENT_KIND>(msg);
-
-    // Modifier keys. Mouse messages pack MK_* flags in wParam's low word
-    // EXCEPT for the wheel messages, which also pack delta in the high word
-    // (we pull it out separately).
-    UINT32 VirtualKeys = 0;
-    const WORD KeyState = (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL)
-        ? GET_KEYSTATE_WPARAM(wParam)
-        : LOWORD(wParam);
-
-    if (KeyState & MK_LBUTTON)  VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON;
-    if (KeyState & MK_MBUTTON)  VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_MIDDLE_BUTTON;
-    if (KeyState & MK_RBUTTON)  VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON;
-    if (KeyState & MK_SHIFT)    VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT;
-    if (KeyState & MK_CONTROL)  VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL;
-    if (KeyState & MK_XBUTTON1) VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_X_BUTTON1;
-    if (KeyState & MK_XBUTTON2) VirtualKeys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_X_BUTTON2;
-
-    // mouseData: wheel delta, or x-button number, else 0.
-    UINT32 MouseData = 0;
-    if (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL)
-    {
-        MouseData = static_cast<UINT32>(GET_WHEEL_DELTA_WPARAM(wParam));
-    }
-    else if (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP || msg == WM_XBUTTONDBLCLK)
-    {
-        MouseData = GET_XBUTTON_WPARAM(wParam);
-    }
-
-    // Point. For plain mouse messages, lParam is CLIENT coords of our overlay,
-    // which is what SendMouseInput expects. For wheel messages, lParam is
-    // SCREEN coords (Win32 quirk) — convert to client for the WebView.
-    POINT Pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-    if (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL)
-    {
-        ::ScreenToClient(Internal->OverlayHwnd, &Pt);
-    }
-
-    Internal->CompositionController->SendMouseInput(
-        EventKind, static_cast<COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS>(VirtualKeys),
-        MouseData, Pt);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Shutdown — teardown order is more involved than the sibling impl:
+//  Shutdown — composition path needs a bigger teardown than the sibling impl:
 //    1. Invalidate lifetime token → async callbacks no-op
-//    2. Close composition controller → WebView stops writing to our visual
+//    2. Close controller → WebView stops rendering
 //    3. Release DComp (visual → target → device)
-//    4. Destroy overlay HWND (must outlive the controller close)
+//    4. Destroy overlay HWND
 // ─────────────────────────────────────────────────────────────────────────────
 void FInoWebViewImpl_Windows_Composition::Shutdown()
 {
@@ -1512,8 +1417,8 @@ void FInoWebViewImpl_Windows_Composition::Shutdown()
     Internal->CompositionController.Reset();
     Internal->Environment.Reset();
 
-    DestroyDCompStack();
-    DestroyOverlayWindow();
+    Internal->DestroyDCompStack();
+    Internal->DestroyOverlayWindow();
 
     bReady = false;
     UE_LOG(LogInoWebUI, Log, TEXT("WebView2 composition shutdown complete."));

@@ -34,6 +34,12 @@
  * FInoWebViewImpl_Windows child-HWND path.
  *
  * All methods run on the game thread, same as the sibling impl.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * Header hygiene rule (same as the sibling impl): NEVER expose Win32 or
+ * WebView2 types in this header. Any helper that takes HWND / LRESULT /
+ * WPARAM / LPARAM / COM interfaces lives on FInternal inside the .cpp.
+ * ──────────────────────────────────────────────────────────────────────
  */
 class FInoWebViewImpl_Windows_Composition : public IInoWebViewImpl
 {
@@ -59,31 +65,26 @@ public:
     virtual void ClearAllCookies() override;
     virtual void SetBackgroundOpaque(bool bOpaque) override;
 
-private:
-    /** Opaque state — defined in the .cpp so WebView2.h / dcomp.h stay out of headers. */
+    /**
+     * Opaque state — full definition lives in the .cpp so Windows.h and
+     * WebView2.h stay out of this header. Declared public ONLY so the
+     * file-scope WndProc trampoline in the .cpp can name the type; all
+     * state is still effectively private (only Internal has a valid
+     * pointer, Internal is private).
+     */
     struct FInternal;
+
+private:
     TUniquePtr<FInternal> Internal;
 
     bool bReady = false;
     bool bInitStarted = false;
 
-    // Async-completion callbacks, invoked from WRL lambdas.
+    // Async-completion callbacks, invoked from WRL lambdas. Plain void*
+    // parameter types — the .cpp reinterprets to the correct COM type.
     void OnEnvironmentReady(int32 HResult, void* EnvironmentPtr);
     void OnCompositionControllerReady(int32 HResult, void* CompositionControllerPtr);
     void ApplyPendingOperations();
-
-    // Composition-specific helpers.
-    void CreateOverlayWindow();
-    void DestroyOverlayWindow();
-    void CreateDCompStack();
-    void DestroyDCompStack();
-    void UpdateOverlayToScreenRect(int32 ScreenX, int32 ScreenY, int32 Width, int32 Height);
-
-    // Overlay HWND WndProc — forwards mouse/pointer to the composition
-    // controller and handles our own tracking/timer messages.
-    static LRESULT CALLBACK OverlayWndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-    LRESULT OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-    void ForwardMouseMessage(UINT msg, WPARAM wParam, LPARAM lParam);
 };
 
 #endif // PLATFORM_WINDOWS
