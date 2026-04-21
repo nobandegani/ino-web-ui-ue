@@ -30,8 +30,14 @@ using Microsoft::WRL::Callback;
 // ─────────────────────────────────────────────────────────────────────────────
 //  URI helpers (lockdown) — duplicated from InoWebViewImpl_Windows.cpp so the
 //  two files stay independent. If the logic changes, update both.
+//
+//  These live in a uniquely-named namespace (NOT anonymous) because UE uses
+//  unity builds: anonymous-namespace helpers in multiple .cpp files collide
+//  when the translation units are concatenated. Anonymous-namespace helpers
+//  work fine in isolated compilation; the named wrapper makes unity builds
+//  also work.
 // ─────────────────────────────────────────────────────────────────────────────
-namespace
+namespace InoWebUICompositionPriv
 {
     FString ExtractHost(const FString& URI)
     {
@@ -90,7 +96,7 @@ namespace
         }
         return false;
     }
-} // namespace
+} // namespace InoWebUICompositionPriv
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Bridge + dev-overlay JS
@@ -510,7 +516,9 @@ bool FInoWebViewImpl_Windows_Composition::FInternal::CreateDCompStack()
     DCompDevice = Device;
 
     ComPtr<IDCompositionTarget> Target;
-    if (FAILED(Device->CreateTargetForHwnd(OverlayHwnd, TRUE, &Target)))
+    // Use 1 not TRUE — HideWindowsPlatformTypes.h un-#defines TRUE/FALSE
+    // macros above; BOOL is still a valid typedef for int, so 1 fits.
+    if (FAILED(Device->CreateTargetForHwnd(OverlayHwnd, 1, &Target)))
     {
         UE_LOG(LogInoWebUI, Error, TEXT("CreateTargetForHwnd failed."));
         return false;
@@ -933,7 +941,7 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
                     const FString URI(UriRaw);
                     CoTaskMemFree(UriRaw);
 
-                    if (!IsURIAllowed(URI, Internal->Config))
+                    if (!InoWebUICompositionPriv::IsURIAllowed(URI, Internal->Config))
                     {
                         Args->put_Cancel(1);
                         UE_LOG(LogInoWebUI, Warning,
