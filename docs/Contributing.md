@@ -17,7 +17,7 @@ can be merged.
 
 - Our CLA is managed by [CLA Assistant](https://cla-assistant.io/).
   A bot comment will appear on your first PR with a one-click link.
-- The CLA grants Inoksan a non-exclusive licence to redistribute your
+- The CLA grants Inoland a non-exclusive licence to redistribute your
   contribution under MPL 2.0 **and** under the Fab commercial terms.
   You retain copyright on your contribution.
 - If you do not wish to sign the CLA, your change is still welcome —

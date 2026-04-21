@@ -1,4 +1,4 @@
-// Copyright Inoksan. All Rights Reserved.
+// Copyright Inoland. All Rights Reserved.
 
 #include "IInoWebViewImpl.h"      // now a public header
 #include "InoWebUILog.h"

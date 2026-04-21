@@ -1,4 +1,4 @@
-// Copyright Inoksan. All Rights Reserved.
+// Copyright Inoland. All Rights Reserved.
 //
 // InoWebViewAndroid — Java-side helper that owns all android.webkit.WebView
 // instances for the InoWebUI plugin. Called by C++ via JNI (see

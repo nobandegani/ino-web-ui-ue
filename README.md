@@ -216,6 +216,6 @@ convenience / support package, not an alternate license.
 
 ## Credits and trademark
 
-"InoWebUI" and "Ino*" are trademarks of Inoksan. The *code* is open
+"InoWebUI" and "Ino*" are trademarks of Inoland. The *code* is open
 under MPL 2.0; the *name* is not. Forks are welcome — please rename them
 to something distinct from "InoWebUI" so users can tell the difference.
