@@ -899,7 +899,13 @@ void FInoWebViewImpl_Windows::Navigate(const FString& URL)
 
     if (!bReady)
     {
+        // Most-recent navigation intent wins. Without these resets, an
+        // earlier headered/HTML load queued (e.g. from Initialize using
+        // Config.InitialHeaders) could replay AFTER this Navigate and
+        // override it.
         Internal->PendingNavigate = URL;
+        Internal->PendingHeaderedLoad.Reset();
+        Internal->PendingHTMLLoad.Reset();
         return;
     }
 
@@ -1180,7 +1186,10 @@ void FInoWebViewImpl_Windows::LoadHTMLString(const FString& HTML, const FString&
     check(IsInGameThread());
     if (!bReady)
     {
+        // Most-recent navigation intent wins; clear sibling queues.
         Internal->PendingHTMLLoad = FInternal::FPendingHTML{ HTML, BaseURI };
+        Internal->PendingNavigate.Reset();
+        Internal->PendingHeaderedLoad.Reset();
         return;
     }
 
@@ -1521,7 +1530,10 @@ void FInoWebViewImpl_Windows::LoadURLWithHeaders(const FString& URL,
     check(IsInGameThread());
     if (!bReady)
     {
+        // Most-recent navigation intent wins; clear sibling queues.
         Internal->PendingHeaderedLoad = FInternal::FPendingHeadered{ URL, Headers };
+        Internal->PendingNavigate.Reset();
+        Internal->PendingHTMLLoad.Reset();
         return;
     }
 

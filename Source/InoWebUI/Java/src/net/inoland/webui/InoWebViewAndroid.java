@@ -38,6 +38,7 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
@@ -133,6 +134,19 @@ public class InoWebViewAndroid
             String path = url.substring(c.virtualHostPrefix.length());
             int q = path.indexOf('?'); if (q >= 0) path = path.substring(0, q);
             int h = path.indexOf('#'); if (h >= 0) path = path.substring(0, h);
+
+            // URL-decode percent-encodings BEFORE the traversal check and
+            // before constructing the File, so:
+            //   • the traversal check catches "%2E%2E/secret" → "../secret"
+            //   • filenames with spaces or other escaped chars actually open
+            //     ("foo%20bar" → "foo bar" instead of literal "foo%20bar")
+            try {
+                path = URLDecoder.decode(path, "UTF-8");
+            } catch (Exception e) {
+                Log.warn("vhost: URL-decode failed for " + url + ": " + e.getMessage());
+                return notFound();
+            }
+
             if (path.contains("..")) { Log.warn("vhost: rejected traversal in " + url); return notFound(); }
             if (path.isEmpty()) path = "index.html";
 

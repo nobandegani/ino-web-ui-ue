@@ -1122,7 +1122,14 @@ void FInoWebViewImpl_Windows_Composition::ApplyPendingOperations()
 void FInoWebViewImpl_Windows_Composition::Navigate(const FString& URL)
 {
     check(IsInGameThread());
-    if (!bReady) { Internal->PendingNavigate = URL; return; }
+    if (!bReady)
+    {
+        // Most-recent navigation intent wins.
+        Internal->PendingNavigate = URL;
+        Internal->PendingHeaderedLoad.Reset();
+        Internal->PendingHTMLLoad.Reset();
+        return;
+    }
     Internal->WebView->Navigate(*URL);
 }
 
@@ -1304,7 +1311,10 @@ void FInoWebViewImpl_Windows_Composition::LoadHTMLString(const FString& HTML, co
     check(IsInGameThread());
     if (!bReady)
     {
+        // Most-recent navigation intent wins.
         Internal->PendingHTMLLoad = FInternal::FPendingHTML{ HTML, BaseURI };
+        Internal->PendingNavigate.Reset();
+        Internal->PendingHeaderedLoad.Reset();
         return;
     }
     if (!BaseURI.IsEmpty())
@@ -1548,7 +1558,10 @@ void FInoWebViewImpl_Windows_Composition::LoadURLWithHeaders(const FString& URL,
     check(IsInGameThread());
     if (!bReady)
     {
+        // Most-recent navigation intent wins.
         Internal->PendingHeaderedLoad = FInternal::FPendingHeadered{ URL, Headers };
+        Internal->PendingNavigate.Reset();
+        Internal->PendingHTMLLoad.Reset();
         return;
     }
 
