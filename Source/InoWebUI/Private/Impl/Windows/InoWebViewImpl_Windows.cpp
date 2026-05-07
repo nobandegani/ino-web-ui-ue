@@ -675,6 +675,7 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
         {
             Settings->put_AreDefaultContextMenusEnabled(Internal->Config.bEnableContextMenus   ? 1 : 0);
             Settings->put_AreDevToolsEnabled          (Internal->Config.bEnableDevTools         ? 1 : 0);
+            Settings->put_IsStatusBarEnabled          (Internal->Config.bShowStatusBar          ? 1 : 0);
 
             // Settings3 — browser accelerator keys (F5/F12/Ctrl+F/…). Runtime 89+.
             ComPtr<ICoreWebView2Settings3> Settings3;

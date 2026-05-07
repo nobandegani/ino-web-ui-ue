@@ -959,6 +959,7 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
         {
             Settings->put_AreDefaultContextMenusEnabled(Internal->Config.bEnableContextMenus ? 1 : 0);
             Settings->put_AreDevToolsEnabled          (Internal->Config.bEnableDevTools      ? 1 : 0);
+            Settings->put_IsStatusBarEnabled          (Internal->Config.bShowStatusBar       ? 1 : 0);
 
             ComPtr<ICoreWebView2Settings3> Settings3;
             if (SUCCEEDED(Settings.As(&Settings3)))

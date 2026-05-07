@@ -128,6 +128,16 @@ struct INOWEBUI_API FInoWebViewConfig
     bool bStartMuted = false;
 
     /**
+     * If false (default), the WebView's status bar — the small floating
+     * label that shows a link's URL when you hover over it — is hidden.
+     * Game UI almost never wants this; flip true for browser-style flows
+     * where seeing destinations on hover is helpful (e.g., dev menus).
+     * Windows-only — Android WebView has no equivalent.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    bool bShowStatusBar = false;
+
+    /**
      * When non-empty, overrides navigator.userAgent inside the WebView.
      * Useful for Unreal-specific page branches, e.g.:
      *   if (navigator.userAgent.includes('Unreal')) { ... }
