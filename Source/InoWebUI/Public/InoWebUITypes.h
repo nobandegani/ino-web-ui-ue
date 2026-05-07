@@ -20,6 +20,25 @@ enum class EInoScriptDialogKind : uint8
 };
 
 /**
+ * One cookie to seed into a WebView's cookie store before its first
+ * navigation. `Cookie` is the standard HTTP cookie syntax:
+ *     "name=value; Path=/; Expires=Wed, 09 Jun 2026 10:18:14 GMT; Secure"
+ * `URL` selects the cookie store the cookie is written into (typically
+ * the origin you're about to navigate to, e.g. "https://api.foo.com").
+ */
+USTRUCT(BlueprintType)
+struct INOWEBUI_API FInoInitialCookie
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    FString URL;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    FString Cookie;
+};
+
+/**
  * Image format selector for UInoWebView::CapturePreview. PNG is lossless and
  * the default; JPEG is lossy but smaller for screenshots without alpha.
  */
@@ -197,4 +216,30 @@ struct INOWEBUI_API FInoWebViewConfig
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
     bool bAllowNewWindows = false;
+
+    // ── Initial-load convenience fields ─────────────────────────────────────
+
+    /**
+     * Extra HTTP headers attached to the INITIAL navigation only. Sub-resource
+     * requests (images, scripts, fetch/XHR from the page) carry their normal
+     * browser-built headers — same caveat as UInoWebView::LoadURLWithHeaders.
+     *
+     * Saves the create-then-call-LoadURLWithHeaders dance for SSO / auth
+     * flows where you want the very first request to carry an
+     * Authorization / X-Tenant / etc. header.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    TMap<FString, FString> InitialHeaders;
+
+    /**
+     * Cookies seeded into the WebView's cookie store BEFORE the initial
+     * navigation. Useful for SSO and pre-authenticated sessions where the
+     * server expects a session cookie on the very first request.
+     *
+     * Each entry is applied through the same path as
+     * UInoWebView::SetCookie — see FInoInitialCookie for the field
+     * semantics. Submission order is preserved.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    TArray<FInoInitialCookie> InitialCookies;
 };

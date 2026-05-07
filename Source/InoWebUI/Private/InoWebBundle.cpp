@@ -53,17 +53,55 @@ bool UInoWebBundle::BundleFromFolder(const FString& AbsoluteFolder)
         return false;
     }
 
+    // Trailing slash so MakePathRelativeTo produces clean relative paths.
+    const FString Root = (AbsoluteFolder.EndsWith(TEXT("/")) || AbsoluteFolder.EndsWith(TEXT("\\")))
+        ? AbsoluteFolder
+        : (AbsoluteFolder + TEXT("/"));
+
+    // Filter against ExcludePatterns. Patterns match the POSIX-style path
+    // relative to Root, so users can write rules like ".git/*" or
+    // "node_modules/*" the way they would in a .gitignore.
+    int32 SkippedCount = 0;
+    if (ExcludePatterns.Num() > 0)
+    {
+        FoundFiles.RemoveAll([&](const FString& AbsPath)
+        {
+            FString Rel = AbsPath;
+            FPaths::MakePathRelativeTo(Rel, *Root);
+            Rel.ReplaceInline(TEXT("\\"), TEXT("/"));
+            for (const FString& Pattern : ExcludePatterns)
+            {
+                if (Rel.MatchesWildcard(Pattern))
+                {
+                    UE_LOG(LogInoWebUI, Verbose,
+                        TEXT("  excluded (matches '%s'): %s"), *Pattern, *Rel);
+                    ++SkippedCount;
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+    if (SkippedCount > 0)
+    {
+        UE_LOG(LogInoWebUI, Log,
+            TEXT("Bundle '%s': %d file(s) skipped by ExcludePatterns."),
+            *GetName(), SkippedCount);
+    }
+    if (FoundFiles.Num() == 0)
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("UInoWebBundle::BundleFromFolder: every candidate file was "
+                 "excluded by ExcludePatterns under %s"), *AbsoluteFolder);
+        return false;
+    }
+
     // Sort for stable hash output across machines / runs.
     FoundFiles.Sort();
 
     TArray<FInoWebBundleFile> NewFiles;
     NewFiles.Reserve(FoundFiles.Num());
     int64 NewTotalBytes = 0;
-
-    // Trailing slash on root so MakePathRelativeTo produces clean output.
-    const FString Root = AbsoluteFolder.EndsWith(TEXT("/")) || AbsoluteFolder.EndsWith(TEXT("\\"))
-        ? AbsoluteFolder
-        : (AbsoluteFolder + TEXT("/"));
 
     for (const FString& FullPath : FoundFiles)
     {
@@ -126,30 +164,52 @@ bool UInoWebBundle::ExtractToDirectory(const FString& DestFolder) const
 
     IFileManager& FM = IFileManager::Get();
 
-    // Clean previous extraction — we re-extract fully to guarantee freshness
-    // (stale files from an older bundle version would mislead the WebView).
-    if (FM.DirectoryExists(*DestFolder))
+    // Stage to a sibling temp dir so a mid-extraction failure leaves the
+    // existing dest intact (better than the pre-fix behavior, which would
+    // delete dest first and then leave it half-written if any file failed).
+    const FString StagingFolder = DestFolder + TEXT(".staging");
+
+    // Clean any leftover staging from a previously aborted run.
+    if (FM.DirectoryExists(*StagingFolder))
     {
-        FM.DeleteDirectory(*DestFolder, /*RequireExists=*/false, /*Tree=*/true);
+        FM.DeleteDirectory(*StagingFolder, /*RequireExists=*/false, /*Tree=*/true);
     }
-    if (!FM.MakeDirectory(*DestFolder, /*Tree=*/true))
+    if (!FM.MakeDirectory(*StagingFolder, /*Tree=*/true))
     {
         UE_LOG(LogInoWebUI, Error,
-            TEXT("ExtractToDirectory: could not create %s"), *DestFolder);
+            TEXT("ExtractToDirectory: could not create staging dir %s"), *StagingFolder);
         return false;
     }
 
+    // Write every file into staging. Any failure aborts and leaves the
+    // current dest untouched.
     for (const FInoWebBundleFile& File : Files)
     {
-        const FString FullDest = DestFolder / File.RelativePath;
+        const FString FullDest = StagingFolder / File.RelativePath;
 
         // SaveArrayToFile creates missing parent directories.
         if (!FFileHelper::SaveArrayToFile(File.Bytes, *FullDest))
         {
             UE_LOG(LogInoWebUI, Error,
                 TEXT("ExtractToDirectory: write failed: %s"), *FullDest);
+            FM.DeleteDirectory(*StagingFolder, /*RequireExists=*/false, /*Tree=*/true);
             return false;
         }
+    }
+
+    // Swap into place. Wipe the old dest, then move staging onto it. Both
+    // dirs live under ProjectSavedDir/InoWebBundles/, so the rename is
+    // same-volume on every supported platform.
+    if (FM.DirectoryExists(*DestFolder))
+    {
+        FM.DeleteDirectory(*DestFolder, /*RequireExists=*/false, /*Tree=*/true);
+    }
+    if (!FM.Move(*DestFolder, *StagingFolder))
+    {
+        UE_LOG(LogInoWebUI, Error,
+            TEXT("ExtractToDirectory: rename %s -> %s failed."),
+            *StagingFolder, *DestFolder);
+        return false;
     }
 
     UE_LOG(LogInoWebUI, Log,

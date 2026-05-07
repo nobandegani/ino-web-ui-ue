@@ -548,9 +548,23 @@ bool FInoWebViewImpl_Windows_Composition::Initialize(void* ParentNativeHandle, c
     Internal->ParentHwnd = static_cast<HWND>(ParentNativeHandle);
     Internal->Config     = Config;
 
+    // Seed cookies before navigation so InitialCookies are in the store
+    // before the initial request. ApplyPendingOperations replays cookies
+    // before any navigation queue.
+    for (const FInoInitialCookie& InitCookie : Config.InitialCookies)
+    {
+        SetCookie(InitCookie.URL, InitCookie.Cookie);
+    }
     if (!Config.InitialURL.IsEmpty())
     {
-        Internal->PendingNavigate = Config.InitialURL;
+        if (Config.InitialHeaders.Num() > 0)
+        {
+            LoadURLWithHeaders(Config.InitialURL, Config.InitialHeaders);
+        }
+        else
+        {
+            Navigate(Config.InitialURL);
+        }
         CachedURL = Config.InitialURL;
     }
     Internal->PendingVisible = Config.bVisibleOnCreate;
@@ -1030,6 +1044,18 @@ void FInoWebViewImpl_Windows_Composition::ApplyPendingOperations()
     check(IsInGameThread());
     if (!bReady) return;
 
+    // Cookies replay FIRST — same rationale as the sibling impl. Initial
+    // cookies need to be in the cookie store before any navigation goes
+    // out so the first request carries them.
+    if (Internal->PendingCookies.Num() > 0)
+    {
+        TArray<FInternal::FPendingCookie> Replay = MoveTemp(Internal->PendingCookies);
+        for (const FInternal::FPendingCookie& C : Replay)
+        {
+            SetCookie(C.URL, C.Cookie);
+        }
+    }
+
     if (Internal->PendingNavigate.IsSet())
     {
         Navigate(Internal->PendingNavigate.GetValue());
@@ -1082,14 +1108,7 @@ void FInoWebViewImpl_Windows_Composition::ApplyPendingOperations()
         Internal->PendingHeaderedLoad.Reset();
         LoadURLWithHeaders(Snap.URL, Snap.Headers);
     }
-    if (Internal->PendingCookies.Num() > 0)
-    {
-        TArray<FInternal::FPendingCookie> Replay = MoveTemp(Internal->PendingCookies);
-        for (const FInternal::FPendingCookie& C : Replay)
-        {
-            SetCookie(C.URL, C.Cookie);
-        }
-    }
+    // PendingCookies were replayed at the top of this function.
     if (Internal->bPendingClearAllData)
     {
         Internal->bPendingClearAllData = false;

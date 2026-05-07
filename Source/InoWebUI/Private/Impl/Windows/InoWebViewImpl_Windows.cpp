@@ -217,9 +217,26 @@ bool FInoWebViewImpl_Windows::Initialize(void* ParentNativeHandle, const FInoWeb
     Internal->Config     = Config;
 
     // Seed pending ops from config so they apply as soon as the WebView is ready.
+    //
+    // Order matters: SetCookie calls go into PendingCookies, navigation goes
+    // into PendingNavigate or PendingHeaderedLoad. ApplyPendingOperations
+    // replays cookies BEFORE any navigation, so Config.InitialCookies are
+    // guaranteed to be in the cookie store by the time the initial request
+    // fires.
+    for (const FInoInitialCookie& InitCookie : Config.InitialCookies)
+    {
+        SetCookie(InitCookie.URL, InitCookie.Cookie);
+    }
     if (!Config.InitialURL.IsEmpty())
     {
-        Internal->PendingNavigate = Config.InitialURL;
+        if (Config.InitialHeaders.Num() > 0)
+        {
+            LoadURLWithHeaders(Config.InitialURL, Config.InitialHeaders);
+        }
+        else
+        {
+            Navigate(Config.InitialURL);
+        }
         // Seed cached URL so GetURL() is meaningful before the first
         // NavigationCompleted fires.
         CachedURL = Config.InitialURL;
@@ -777,6 +794,18 @@ void FInoWebViewImpl_Windows::ApplyPendingOperations()
     check(IsInGameThread());
     if (!bReady) return;
 
+    // Cookies replay FIRST so they're in the cookie store before any
+    // navigation request goes out. Config::InitialCookies relies on this
+    // ordering to seed SSO / auth cookies for the very first request.
+    if (Internal->PendingCookies.Num() > 0)
+    {
+        TArray<FInternal::FPendingCookie> Replay = MoveTemp(Internal->PendingCookies);
+        for (const FInternal::FPendingCookie& C : Replay)
+        {
+            SetCookie(C.URL, C.Cookie);
+        }
+    }
+
     if (Internal->PendingNavigate.IsSet())
     {
         Navigate(Internal->PendingNavigate.GetValue());
@@ -844,22 +873,13 @@ void FInoWebViewImpl_Windows::ApplyPendingOperations()
         LoadHTMLString(Snap.HTML, Snap.BaseURI);
     }
 
-    // Replay queued LoadURLWithHeaders.
+    // Replay queued LoadURLWithHeaders. Note: PendingCookies were already
+    // replayed at the top of this function so they apply to this request.
     if (Internal->PendingHeaderedLoad.IsSet())
     {
         const auto Snap = Internal->PendingHeaderedLoad.GetValue();
         Internal->PendingHeaderedLoad.Reset();
         LoadURLWithHeaders(Snap.URL, Snap.Headers);
-    }
-
-    // Replay queued SetCookie calls in submission order.
-    if (Internal->PendingCookies.Num() > 0)
-    {
-        TArray<FInternal::FPendingCookie> Replay = MoveTemp(Internal->PendingCookies);
-        for (const FInternal::FPendingCookie& C : Replay)
-        {
-            SetCookie(C.URL, C.Cookie);
-        }
     }
 
     // Replay a queued ClearAllData.

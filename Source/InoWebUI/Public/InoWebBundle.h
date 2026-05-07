@@ -100,6 +100,35 @@ public:
     UPROPERTY(EditAnywhere, Category = "InoWebBundle")
     FString DevInitialURL;
 
+    /**
+     * User-supplied version string, e.g. "1.4.2" or a git short SHA.
+     * Optional. Useful for cache-busting (BP can append `?v=<version>` to
+     * URLs) and for showing the bundled UI's version on an About screen.
+     * Not consumed by the plugin itself — purely informational.
+     */
+    UPROPERTY(EditAnywhere, Category = "InoWebBundle")
+    FString BundleVersion;
+
+    /**
+     * UE wildcard patterns matched against POSIX-style paths relative to
+     * SourceFolder. Any file whose path matches any pattern is skipped
+     * during BundleFromFolder. Defaults catch the common junk that finds
+     * its way into web build outputs — `.git/`, `.DS_Store`, source maps,
+     * `.env*`, etc. — so an accidental "I bundled my whole project root"
+     * doesn't ship secrets or megabytes of node_modules.
+     *
+     * Customize per-asset to add or override.
+     */
+    UPROPERTY(EditAnywhere, Category = "InoWebBundle")
+    TArray<FString> ExcludePatterns = {
+        TEXT(".git/*"), TEXT(".gitignore"), TEXT(".gitattributes"),
+        TEXT(".DS_Store"), TEXT("Thumbs.db"), TEXT("desktop.ini"),
+        TEXT("node_modules/*"),
+        TEXT("*.map"),
+        TEXT(".env"), TEXT(".env.*"),
+        TEXT("*.bak"), TEXT("*.tmp"), TEXT("*.swp")
+    };
+
     // ── Baked at Reimport (read-only at runtime) ────────────────────────────
 
     /** All files captured from SourceFolder at Reimport. Sorted by relative path. */

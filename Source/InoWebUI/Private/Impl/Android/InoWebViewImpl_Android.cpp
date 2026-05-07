@@ -263,13 +263,29 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
     //  • Accelerator keys (F5 etc.) don't exist on a touch device.
     //  • WebView has no mute API — SetMuted below is a no-op with a warning.
 
-    // Step 3: navigate, if requested.
+    // Step 2f: initial cookies — applied before the initial loadURL so
+    // they're in the cookie store when the first request fires. Java's
+    // runOnUiThread queue serializes setCookie before loadURL.
+    for (const FInoInitialCookie& InitCookie : Config.InitialCookies)
+    {
+        SetCookie(InitCookie.URL, InitCookie.Cookie);
+    }
+
+    // Step 3: navigate, if requested. Use loadUrlWithHeaders if any
+    // InitialHeaders are configured; otherwise plain loadURL.
     if (!Config.InitialURL.IsEmpty())
     {
-        jstring JUrl = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.InitialURL));
-        Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MLoadURL,
-            static_cast<jint>(InstanceId), JUrl);
-        Env->DeleteLocalRef(JUrl);
+        if (Config.InitialHeaders.Num() > 0)
+        {
+            LoadURLWithHeaders(Config.InitialURL, Config.InitialHeaders);
+        }
+        else
+        {
+            jstring JUrl = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.InitialURL));
+            Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MLoadURL,
+                static_cast<jint>(InstanceId), JUrl);
+            Env->DeleteLocalRef(JUrl);
+        }
 
         // Seed cached URL so GetURL() is meaningful even before the first
         // navigation completes.
