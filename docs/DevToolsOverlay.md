@@ -30,19 +30,28 @@ unsupported (it will be swallowed).
 
 ## Where the JS lives
 
-The raw string literal is duplicated in two places — one per platform:
+The single source of truth is
+[`Source/InoWebUI/JS/dev_overlay.js`](../Source/InoWebUI/JS/dev_overlay.js).
+`Scripts/GenerateJSConstants.ps1` reads it and emits two generated
+files that the platform impls consume:
 
-- Windows: `InoWebViewImpl_Windows.cpp`,
-  symbol `GInoWebUIDevToolsOverlayScript`.
-- Android: `InoWebViewAndroid.java`,
-  constant `DEVTOOLS_OVERLAY_JS`.
+- `Source/InoWebUI/Private/Generated/InoWebUIScripts.generated.h` →
+  C++ constant `GInoWebUIDevToolsOverlayScript`, used by both Windows
+  impls (`InoWebViewImpl_Windows.cpp` and `InoWebViewImpl_Windows_Composition.cpp`).
+- `Source/InoWebUI/Java/src/net/inoland/webui/InoWebUIScripts.java` →
+  Java constant `InoWebUIScripts.DEVTOOLS_OVERLAY_JS`, used by
+  `InoWebViewAndroid.onPageStarted`.
 
-A comment at each copy tells you to update both if you modify the JS.
+Workflow when you change the overlay:
 
-MSVC has a 16380-character limit on a single string literal, so the
-Windows copy is split into two adjacent `TEXT(R"JS(...)JS")` chunks —
-the preprocessor concatenates them at compile time. Keep that
-arrangement if the overlay grows.
+1. Edit `Source/InoWebUI/JS/dev_overlay.js`.
+2. Run `Plugins/InoWebUI/Scripts/GenerateJSConstants.ps1`.
+3. Commit both the source `.js` and the regenerated outputs.
+
+The generator auto-chunks the C++ output under MSVC's 16380-character
+single-string-literal limit (adjacent `TEXT(R"JS(...)JS")` chunks; the
+preprocessor concatenates them at compile time), so the overlay can
+grow without manual splitting.
 
 ## Disabling at ship time
 

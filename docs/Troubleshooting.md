@@ -102,10 +102,14 @@ coordinate system that does not match `FrameLayout.LayoutParams`'
 physical-pixel contract.
 
 **Fix.** Shipped default:
-`InoWebViewAndroid.syncBounds` ignores the incoming values and forces
-`MATCH_PARENT` on both axes. Sub-region sizing on Android would need
-explicit DP -> px conversion; add it only when a concrete use case
-requires it.
+in auto-bounds mode `InoWebViewAndroid.syncBounds` ignores the
+incoming values and forces `MATCH_PARENT` on both axes. If you need
+the WebView to occupy a sub-region instead of the whole screen, call
+`UInoWebView::SetBounds(X, Y, W, H)` — the Java helper switches to
+explicit pixel sizing with margins, density-scaling the UE-pixel
+coords to physical pixels via `displayMetrics.density`. Call
+`UInoWebView::SetBoundsAuto()` to return to the fill-the-window
+default.
 
 ---
 

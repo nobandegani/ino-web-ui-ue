@@ -77,6 +77,11 @@ script runs**:
 - Windows: via `ICoreWebView2::AddScriptToExecuteOnDocumentCreated`.
 - Android: via `WebViewClient.onPageStarted` injection.
 
+The shim source-of-truth is
+[`Source/InoWebUI/JS/bridge.js`](../Source/InoWebUI/JS/bridge.js).
+`Scripts/GenerateJSConstants.ps1` regenerates the platform-specific
+constants from it — never edit the generated copies directly.
+
 ```js
 // Send UE <- JS
 window.InoWebUI.send('startMission', { id: 'tutorial', difficulty: 'hard' });
@@ -87,9 +92,28 @@ window.InoWebUI.on('playerState', (data) => {
     ammoLabel.textContent = data.ammo;
 });
 
+// Subscribe once — auto-unsubscribes after the first call.
+window.InoWebUI.once('readyToken', (data) => { initWith(data.token); });
+
 // Unsubscribe (pass the same handler reference)
 window.InoWebUI.off('playerState', playerStateHandler);
+
+// Bridge version string. Bumped on incompatible API changes; current = '1.1'.
+console.log(window.InoWebUI.version);
 ```
+
+Behaviour notes (v1.1):
+- Listener storage uses `Object.create(null)`, so channel names like
+  `"toString"` or `"hasOwnProperty"` work normally instead of colliding
+  with `Object.prototype`.
+- The dispatcher snapshots the listener array before iterating, so a
+  handler that calls `on()` / `off()` mid-dispatch can't skip the next
+  handler or run a removed one.
+- `send()` validates that `channel` is a non-empty string; invalid input
+  logs an error and short-circuits.
+- If neither host transport is present (e.g., the page is opened in
+  plain Chrome for testing), the bridge prints a single `console.warn`
+  and `window.InoWebUI` is left undefined — feature-detection works.
 
 The bridge is intentionally ES5-compatible: no `const`, no `Map`, no
 arrow functions. It runs on arbitrary pages regardless of their

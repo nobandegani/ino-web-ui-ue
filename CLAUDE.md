@@ -16,7 +16,7 @@ pixels in the HTML reveal the 3D scene underneath.
 This is fundamentally different from UE's built-in `WebBrowser` plugin, which
 textures the browser output — we skip all of that, zero copy, zero stall.
 
-**Current status: Phase 8 — Win64 (full) + Android (full parity) + Web Bundle asset type + dev-tools overlay.**
+**Current status: Phase 12 — Win64 (full) + Android (full parity) + Web Bundle assets + dev-tools overlay + DirectComposition hosting for PIE + unified `bridge.js` / `dev_overlay.js` source + browser-style API surface (back/forward, state getters, capture, headers, sub-region bounds).**
 
 ---
 
@@ -127,7 +127,7 @@ methods call Java static methods synchronously (fire-and-forget) and Java
 marshals onto the UI thread via `Activity.runOnUiThread`. Since all
 dispatches share one run loop, ordering is preserved end-to-end.
 
-### Feature matrix (Phase 8 — full parity with Windows)
+### Feature matrix (full parity with Windows)
 
 | API | Android | Notes |
 |---|---|---|
@@ -524,13 +524,14 @@ expands seven action buttons on a quarter-circle arc:
 
 Overlay is injected on every page load (Windows:
 `AddScriptToExecuteOnDocumentCreated`, Android:
-`WebViewClient.onPageStarted`). The JS lives as a raw string literal
-duplicated in `InoWebViewImpl_Windows.cpp`'s
-`GInoWebUIDevToolsOverlayScript` and `InoWebViewAndroid.java`'s
-`DEVTOOLS_OVERLAY_JS` constant — a comment at each copy tells you to
-update both if you modify it. MSVC's 16380-char string-literal limit
-means the Windows copy is split into two adjacent `TEXT(R"JS(...)JS")`
-chunks (the preprocessor concatenates them).
+`WebViewClient.onPageStarted`). The JS source-of-truth lives in
+`Source/InoWebUI/JS/dev_overlay.js`; `Scripts/GenerateJSConstants.ps1`
+emits a C++ header (`Private/Generated/InoWebUIScripts.generated.h`,
+auto-chunked under MSVC's 16380-char string-literal limit) and a Java
+constant (`Java/.../InoWebUIScripts.java`). Edit the `.js` file then
+re-run the script — both platforms stay in sync automatically. The
+generated outputs are committed so a fresh checkout builds without
+the script.
 
 ---
 
@@ -607,10 +608,24 @@ tuples. No compression inside the asset itself.
 
 ### A new runtime operation (e.g., `ExecuteJavaScript`)
 1. Add pure virtual method to `IInoWebViewImpl`.
-2. Implement in `FInoWebViewImpl_Windows`. If it can be called before ready,
-   add a pending-ops slot in `FInternal` and replay in
-   `ApplyPendingOperations()`.
+2. Implement in **all three** platform impls:
+   - `FInoWebViewImpl_Windows` (child-HWND, used in standalone + packaged)
+   - `FInoWebViewImpl_Windows_Composition` (DirectComposition, used in PIE)
+   - `FInoWebViewImpl_Android` (JNI → Java helper)
+   If it can be called before ready, add a pending-ops slot in `FInternal`
+   on each Windows impl and replay in `ApplyPendingOperations()`. On
+   Android the Java side serializes via `runOnUiThread`, so an early-return
+   on `bDestroyed` is usually enough.
 3. Add thin wrapper on `UInoWebView` as `UFUNCTION(BlueprintCallable, ...)`.
+
+### A new bit of injected JS
+1. Add (or edit) a file under `Source/InoWebUI/JS/`.
+2. Run `Plugins/InoWebUI/Scripts/GenerateJSConstants.ps1`.
+3. Reference the generated constant — `GInoWebUI<Name>Script` from the
+   C++ side, `InoWebUIScripts.<NAME>_JS` from Java.
+Don't edit the inline copies in `InoWebViewImpl_Windows.cpp`,
+`InoWebViewImpl_Windows_Composition.cpp`, or `InoWebViewAndroid.java`
+directly — those are generated and will be overwritten.
 
 ### A new platform (macOS, Android)
 1. New folder under `Private/Impl/<Platform>/` with a new `FInoWebViewImpl_<Platform>`.
@@ -631,8 +646,11 @@ tuples. No compression inside the asset itself.
 | 6 | Android MVP — overlay + lifecycle + URL/show/hide/reload | ✔ done |
 | 7 | UInoWebBundle asset — bundle web content into a UE asset, extract on demand | ✔ done |
 | 8 | Android parity pass — messaging, hardening, virtual host, runtime polish | ✔ done |
-| 9 | DirectComposition hosting (fixes PIE transparency on Windows) | — |
-| 10 | macOS implementation (`WKWebView`) | — |
+| 9 | DirectComposition hosting (fixes PIE transparency on Windows) | ✔ done |
+| 10 | JS source dedup — single `bridge.js` / `dev_overlay.js` + build-time codegen | ✔ done |
+| 11 | Bridge hardening — `once`, iteration safety, `Object.create(null)`, U+2028 fix | ✔ done |
+| 12 | Browser API completeness — back/forward, state getters, capture, headers, sub-region bounds | ✔ done |
+| 13 | macOS implementation (`WKWebView`) | — |
 
 Don't stub future phases — add them when they're needed.
 
@@ -666,10 +684,11 @@ Don't stub future phases — add them when they're needed.
 - **Android WebView covers ~1/3 of the screen instead of fullscreen** →
   UE's `SWindow::GetClientRectInScreen` reports in a coord system that
   doesn't match Android `FrameLayout.LayoutParams`' physical-pixel
-  contract. Fix is in `InoWebViewAndroid.syncBounds`: it ignores the
-  incoming values and forces `MATCH_PARENT`. Sub-region sizing on Android
-  would need explicit DP → px conversion; add it when there's a real
-  use case.
+  contract. In auto-bounds mode (the default), `InoWebViewAndroid.syncBounds`
+  ignores the incoming values and forces `MATCH_PARENT`. In manual mode
+  (after `UInoWebView::SetBounds`), the Java side scales UE-pixel
+  coords by the activity's display density to get correct physical-pixel
+  layout params + margins.
 
 - **Transparent WebView shows DESKTOP through "empty" areas in PIE (but
   works fine in standalone)** → known composition limitation. PIE uses

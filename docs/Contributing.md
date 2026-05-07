@@ -68,9 +68,12 @@ can be merged.
 - ES5-compatible only. No `const`, no `let`, no arrow functions,
   no `Map` / `Set` / `Promise` — assume the page's transpile target
   is unknown.
-- The dev-tools overlay JS is duplicated in two places (one per
-  platform). Update both — the top-of-file comments in each remind
-  you.
+- Source-of-truth lives in `Source/InoWebUI/JS/`
+  (`bridge.js` and `dev_overlay.js`). Edit those files, then run
+  `Plugins/InoWebUI/Scripts/GenerateJSConstants.ps1` to regenerate
+  the C++ header and Java constants the platform impls consume. Don't
+  edit the generated copies directly — they'll be overwritten on the
+  next regen.
 
 ## Commits
 

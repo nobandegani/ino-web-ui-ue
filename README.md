@@ -53,12 +53,18 @@ overlay window becomes invisible. Set `FullscreenMode=1` in
 | URL / local file / virtual-host loading | ✔ | ✔ |
 | Show / Hide / Reload / SyncBounds | ✔ | ✔ |
 | Transparent background | ✔ | ✔ |
-| Two-way messaging (`window.InoWebUI`) | ✔ | ✔ |
+| Two-way messaging (`window.InoWebUI` + `once`) | ✔ | ✔ |
 | Navigation lockdown (whitelist) | ✔ | ✔ |
 | JS dialog suppression (`alert`/`confirm`/`prompt`) | ✔ | ✔ |
 | `window.open` blocking | ✔ | ✔ |
 | Navigation + title + focus events | ✔ | ✔ |
-| Zoom factor, clear cookies, crash event | ✔ | ✔ |
+| Browser-style nav (`GoBack` / `GoForward` / `CanGo*`) | ✔ | ✔ |
+| State getters (`GetURL` / `GetTitle` / `IsLoading`) | ✔ | ✔ |
+| `StopLoading` / `LoadHTMLString` / `LoadURLWithHeaders` | ✔ | ✔ |
+| `SetCookie`, `ClearAllCookies`, `ClearAllData`, crash event | ✔ | ✔ |
+| Screenshot to file (`CapturePreview`, PNG / JPEG) | ✔ | ✔ |
+| Manual sub-region bounds (`SetBounds` / `SetBoundsAuto`) | ✔ | ✔ |
+| Zoom factor (`SetZoomFactor`) | ✔ | ✔ |
 | DevTools | In-process panel (F12) | Remote via `chrome://inspect` |
 | ExecuteJavaScript, UA override, context-menu + accelerator toggles | ✔ | ✔ |
 | Audio mute (`SetMuted`) | ✔ | — (not supported by Android WebView) |
@@ -166,8 +172,11 @@ Both directions use a fixed JSON envelope:
 | 6 | Android MVP — overlay + lifecycle + URL/show/hide/reload | done |
 | 7 | `UInoWebBundle` asset — bundle web content into a UE asset, extract on demand | done |
 | 8 | Android parity pass — messaging, hardening, virtual host, runtime polish | done |
-| 9 | DirectComposition hosting (fixes PIE transparency on Windows) | planned |
-| 10 | macOS implementation (`WKWebView`) | planned |
+| 9 | DirectComposition hosting (PIE transparency on Windows) | done |
+| 10 | JS source dedup — single `bridge.js` / `dev_overlay.js` + build-time codegen | done |
+| 11 | Bridge hardening (`once`, iteration safety, `Object.create(null)`, U+2028 fix) | done |
+| 12 | Browser API completeness (back/forward, state getters, capture, headers, sub-region bounds) | done |
+| 13 | macOS implementation (`WKWebView`) | planned |
 
 ---
 

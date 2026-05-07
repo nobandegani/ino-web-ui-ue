@@ -151,15 +151,20 @@ Error: `"InoWebViewAndroid Java class not found"`. Check, in order:
 3. **ProGuard / R8** — our `-keep` rule in the UPL should stop
    stripping; check the mapping output if suspicious.
 
-## Android-specific quirk: MATCH_PARENT sizing
+## Android-specific quirk: MATCH_PARENT sizing (auto mode)
 
 UE's `SWindow::GetClientRectInScreen` reports in a coordinate system
 that does not match `FrameLayout.LayoutParams`' physical-pixel
 contract. When you pass the incoming rect straight through on Android,
 the WebView ends up covering roughly one-third of the screen.
 
-`InoWebViewAndroid.syncBounds` therefore **ignores** the incoming
-values and forces `MATCH_PARENT` for both width and height. This is
-correct for the common "full-screen overlay" case and was shipped as
-the MVP default. Sub-region sizing on Android would need explicit
-DP -> px conversion; add it when there is a concrete use case.
+In **auto-bounds mode** (the default) `InoWebViewAndroid.syncBounds`
+therefore **ignores** the incoming values and forces `MATCH_PARENT`
+for both width and height — correct for the common "full-screen
+overlay" case.
+
+In **manual-bounds mode** (after `UInoWebView::SetBounds`), the Java
+side scales the UE-pixel coords by the activity's display density
+(`getResources().getDisplayMetrics().density`) to get correct
+physical-pixel layout params + margins. Switch back to auto with
+`UInoWebView::SetBoundsAuto()`.
