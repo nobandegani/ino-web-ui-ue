@@ -51,6 +51,16 @@ namespace InoWebUIJNI
     static jmethodID MSetUserAgent       = nullptr;
     static jmethodID MSetContextMenusEnabled = nullptr;
     static jmethodID MSetBackgroundOpaque    = nullptr;
+    // ── New ops ───────────────────────────────────────────────────────────
+    static jmethodID MGoBack             = nullptr;
+    static jmethodID MGoForward          = nullptr;
+    static jmethodID MStopLoading        = nullptr;
+    static jmethodID MLoadHTMLString     = nullptr;
+    static jmethodID MSetCookie          = nullptr;
+    static jmethodID MClearAllData       = nullptr;
+    static jmethodID MCapturePreview     = nullptr;
+    static jmethodID MLoadURLWithHeaders = nullptr;
+    static jmethodID MSetBoundsMode      = nullptr;
 
     /**
      * Look up the Java helper class and all the static methods we call.
@@ -102,12 +112,25 @@ namespace InoWebUIJNI
         MSetContextMenusEnabled = Env->GetStaticMethodID(JavaClass, "setContextMenusEnabled","(IZ)V");
         MSetBackgroundOpaque    = Env->GetStaticMethodID(JavaClass, "setBackgroundOpaque",   "(IZ)V");
 
+        MGoBack             = Env->GetStaticMethodID(JavaClass, "goBack",             "(I)V");
+        MGoForward          = Env->GetStaticMethodID(JavaClass, "goForward",          "(I)V");
+        MStopLoading        = Env->GetStaticMethodID(JavaClass, "stopLoading",        "(I)V");
+        MLoadHTMLString     = Env->GetStaticMethodID(JavaClass, "loadHTMLString",     "(ILjava/lang/String;Ljava/lang/String;)V");
+        MSetCookie          = Env->GetStaticMethodID(JavaClass, "setCookie",          "(ILjava/lang/String;Ljava/lang/String;)V");
+        MClearAllData       = Env->GetStaticMethodID(JavaClass, "clearAllData",       "(I)V");
+        MCapturePreview     = Env->GetStaticMethodID(JavaClass, "capturePreview",     "(IILjava/lang/String;)V");
+        MLoadURLWithHeaders = Env->GetStaticMethodID(JavaClass, "loadURLWithHeaders", "(ILjava/lang/String;[Ljava/lang/String;[Ljava/lang/String;)V");
+        MSetBoundsMode      = Env->GetStaticMethodID(JavaClass, "setBoundsMode",      "(IZ)V");
+
         if (!MCreate || !MDestroy || !MLoadURL || !MSetVisible || !MReload
             || !MSyncBounds || !MSetVirtualHost || !MSetupMessaging || !MPostMessage
             || !MConfigureLockdown || !MConfigureDialogs
             || !MFocusWebView || !MSetZoomFactor || !MClearAllCookies
             || !MSetDevToolsEnabled || !MExecuteJavaScript || !MSetUserAgent
-            || !MSetContextMenusEnabled || !MSetBackgroundOpaque)
+            || !MSetContextMenusEnabled || !MSetBackgroundOpaque
+            || !MGoBack || !MGoForward || !MStopLoading || !MLoadHTMLString
+            || !MSetCookie || !MClearAllData || !MCapturePreview
+            || !MLoadURLWithHeaders || !MSetBoundsMode)
         {
             UE_LOG(LogInoWebUI, Error,
                 TEXT("One or more InoWebViewAndroid methods not found — Java helper "
@@ -247,6 +270,10 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
         Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MLoadURL,
             static_cast<jint>(InstanceId), JUrl);
         Env->DeleteLocalRef(JUrl);
+
+        // Seed cached URL so GetURL() is meaningful even before the first
+        // navigation completes.
+        CachedURL = Config.InitialURL;
     }
 
     // Android WebView construction itself runs on the UI thread (the Java
@@ -286,6 +313,9 @@ void FInoWebViewImpl_Android::Navigate(const FString& URL)
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MLoadURL,
         static_cast<jint>(InstanceId), JUrl);
     Env->DeleteLocalRef(JUrl);
+
+    // Mirror Windows: navigation in flight means IsLoading() should report true.
+    bCachedLoading = true;
 }
 
 void FInoWebViewImpl_Android::Reload()
@@ -432,6 +462,7 @@ Java_net_inoland_webui_InoWebViewAndroid_nativeOnNavigationStarting(
     const FString URI = JStringToFString(Env, JUri);
     DispatchOnGameThread(static_cast<int32>(Id), [URI](FInoWebViewImpl_Android* Impl)
     {
+        Impl->SetCachedLoading(true);
         if (Impl->OnNavigationStartingCallback) Impl->OnNavigationStartingCallback(URI);
     });
 }
@@ -444,6 +475,8 @@ Java_net_inoland_webui_InoWebViewAndroid_nativeOnNavigationCompleted(
     const bool bSuccess = (Success == JNI_TRUE);
     DispatchOnGameThread(static_cast<int32>(Id), [bSuccess, URI](FInoWebViewImpl_Android* Impl)
     {
+        Impl->SetCachedURL(URI);
+        Impl->SetCachedLoading(false);
         if (Impl->OnNavigationCompletedCallback) Impl->OnNavigationCompletedCallback(bSuccess, URI);
     });
 }
@@ -455,7 +488,35 @@ Java_net_inoland_webui_InoWebViewAndroid_nativeOnDocumentTitleChanged(
     const FString Title = JStringToFString(Env, JTitle);
     DispatchOnGameThread(static_cast<int32>(Id), [Title](FInoWebViewImpl_Android* Impl)
     {
+        Impl->SetCachedTitle(Title);
         if (Impl->OnDocumentTitleChangedCallback) Impl->OnDocumentTitleChangedCallback(Title);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnNavStateChanged(
+    JNIEnv* /*Env*/, jclass /*Cls*/, jint Id, jboolean CanGoBack, jboolean CanGoForward)
+{
+    const bool bBack = (CanGoBack == JNI_TRUE);
+    const bool bForward = (CanGoForward == JNI_TRUE);
+    DispatchOnGameThread(static_cast<int32>(Id), [bBack, bForward](FInoWebViewImpl_Android* Impl)
+    {
+        Impl->SetCachedNavState(bBack, bForward);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnCapturePreviewComplete(
+    JNIEnv* Env, jclass /*Cls*/, jint Id, jboolean Success, jstring JFilePath)
+{
+    const FString FilePath = JStringToFString(Env, JFilePath);
+    const bool bSuccess = (Success == JNI_TRUE);
+    DispatchOnGameThread(static_cast<int32>(Id), [bSuccess, FilePath](FInoWebViewImpl_Android* Impl)
+    {
+        if (Impl->OnCapturePreviewCompleteCallback)
+        {
+            Impl->OnCapturePreviewCompleteCallback(bSuccess, FilePath);
+        }
     });
 }
 
@@ -592,6 +653,162 @@ void FInoWebViewImpl_Android::SetBackgroundOpaque(bool bOpaque)
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetBackgroundOpaque,
         static_cast<jint>(InstanceId),
         static_cast<jboolean>(bOpaque ? JNI_TRUE : JNI_FALSE));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  New ops
+// ─────────────────────────────────────────────────────────────────────────────
+void FInoWebViewImpl_Android::GoBack()
+{
+    check(IsInGameThread());
+    if (!bReady || bDestroyed) return;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MGoBack,
+        static_cast<jint>(InstanceId));
+}
+
+void FInoWebViewImpl_Android::GoForward()
+{
+    check(IsInGameThread());
+    if (!bReady || bDestroyed) return;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MGoForward,
+        static_cast<jint>(InstanceId));
+}
+
+bool FInoWebViewImpl_Android::CanGoBack() const
+{
+    // O(~1): updated whenever Java's onPageFinished/onReceivedError fires,
+    // pushed via nativeOnNavStateChanged.
+    if (!bReady || bDestroyed) return false;
+    return bCachedCanGoBack;
+}
+
+bool FInoWebViewImpl_Android::CanGoForward() const
+{
+    if (!bReady || bDestroyed) return false;
+    return bCachedCanGoForward;
+}
+
+void FInoWebViewImpl_Android::StopLoading()
+{
+    check(IsInGameThread());
+    if (!bReady || bDestroyed) return;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MStopLoading,
+        static_cast<jint>(InstanceId));
+}
+
+void FInoWebViewImpl_Android::LoadHTMLString(const FString& HTML, const FString& BaseURI)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+
+    jstring JHtml = Env->NewStringUTF(TCHAR_TO_UTF8(*HTML));
+    jstring JBase = BaseURI.IsEmpty() ? nullptr : Env->NewStringUTF(TCHAR_TO_UTF8(*BaseURI));
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MLoadHTMLString,
+        static_cast<jint>(InstanceId), JHtml, JBase);
+    Env->DeleteLocalRef(JHtml);
+    if (JBase) Env->DeleteLocalRef(JBase);
+
+    bCachedLoading = true;
+}
+
+void FInoWebViewImpl_Android::SetCookie(const FString& URL, const FString& Cookie)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+
+    jstring JUrl    = Env->NewStringUTF(TCHAR_TO_UTF8(*URL));
+    jstring JCookie = Env->NewStringUTF(TCHAR_TO_UTF8(*Cookie));
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetCookie,
+        static_cast<jint>(InstanceId), JUrl, JCookie);
+    Env->DeleteLocalRef(JUrl);
+    Env->DeleteLocalRef(JCookie);
+}
+
+void FInoWebViewImpl_Android::ClearAllData()
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MClearAllData,
+        static_cast<jint>(InstanceId));
+}
+
+bool FInoWebViewImpl_Android::CapturePreview(EInoImageFormat Format, const FString& OutFilePath)
+{
+    check(IsInGameThread());
+    if (!bReady || bDestroyed) return false;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return false;
+
+    jstring JPath = Env->NewStringUTF(TCHAR_TO_UTF8(*OutFilePath));
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MCapturePreview,
+        static_cast<jint>(InstanceId),
+        static_cast<jint>(Format == EInoImageFormat::JPEG ? 1 : 0),
+        JPath);
+    Env->DeleteLocalRef(JPath);
+    return true;
+}
+
+void FInoWebViewImpl_Android::SetBoundsMode(bool bManual)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetBoundsMode,
+        static_cast<jint>(InstanceId),
+        static_cast<jboolean>(bManual ? JNI_TRUE : JNI_FALSE));
+}
+
+void FInoWebViewImpl_Android::LoadURLWithHeaders(const FString& URL,
+                                                  const TMap<FString, FString>& Headers)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+    if (!Env || !InoWebUIJNI::JavaClass) return;
+
+    jclass StringCls = Env->FindClass("java/lang/String");
+
+    // Build parallel arrays of header names and values (simpler than HashMap
+    // construction across JNI).
+    const int32 N = Headers.Num();
+    jobjectArray JNames  = Env->NewObjectArray(N, StringCls, nullptr);
+    jobjectArray JValues = Env->NewObjectArray(N, StringCls, nullptr);
+
+    int32 i = 0;
+    for (const TPair<FString, FString>& KV : Headers)
+    {
+        jstring JN = Env->NewStringUTF(TCHAR_TO_UTF8(*KV.Key));
+        jstring JV = Env->NewStringUTF(TCHAR_TO_UTF8(*KV.Value));
+        Env->SetObjectArrayElement(JNames,  i, JN);
+        Env->SetObjectArrayElement(JValues, i, JV);
+        Env->DeleteLocalRef(JN);
+        Env->DeleteLocalRef(JV);
+        ++i;
+    }
+
+    jstring JUrl = Env->NewStringUTF(TCHAR_TO_UTF8(*URL));
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MLoadURLWithHeaders,
+        static_cast<jint>(InstanceId), JUrl, JNames, JValues);
+    Env->DeleteLocalRef(JUrl);
+    Env->DeleteLocalRef(JNames);
+    Env->DeleteLocalRef(JValues);
+    Env->DeleteLocalRef(StringCls);
+
+    bCachedLoading = true;
 }
 
 #endif // PLATFORM_ANDROID

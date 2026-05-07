@@ -84,6 +84,14 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
     void DestroyAllWebViews();
 
+    /**
+     * Push the current parent client rect to a single WebView.
+     * Called by UInoWebView::SetBoundsAuto so the auto-resize pipeline
+     * is re-engaged for that WebView immediately, without rebroadcasting
+     * to siblings.
+     */
+    void BroadcastClientRectToOne(UInoWebView* View);
+
 private:
     /** All live WebViews keyed by the name passed to CreateWebView. */
     UPROPERTY()

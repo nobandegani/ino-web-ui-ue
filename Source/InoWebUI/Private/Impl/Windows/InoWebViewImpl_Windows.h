@@ -41,6 +41,18 @@ public:
     virtual void ClearAllCookies() override;
     virtual void SetBackgroundOpaque(bool bOpaque) override;
 
+    // ── New ops (browser nav, state, capture, headered load, data wipe) ─────
+    virtual void GoBack() override;
+    virtual void GoForward() override;
+    virtual bool CanGoBack() const override;
+    virtual bool CanGoForward() const override;
+    virtual void StopLoading() override;
+    virtual void LoadHTMLString(const FString& HTML, const FString& BaseURI) override;
+    virtual void SetCookie(const FString& URL, const FString& Cookie) override;
+    virtual void ClearAllData() override;
+    virtual bool CapturePreview(EInoImageFormat Format, const FString& OutFilePath) override;
+    virtual void LoadURLWithHeaders(const FString& URL, const TMap<FString, FString>& Headers) override;
+
 private:
     /** Opaque state — defined in the .cpp so WebView2.h stays out of headers. */
     struct FInternal;

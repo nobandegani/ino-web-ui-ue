@@ -6,6 +6,7 @@
 
 #include "InoWebUILog.h"
 #include "Misc/Paths.h"
+#include "Misc/FileHelper.h"
 #include "HAL/FileManager.h"
 
 // ── Windows + WebView2 headers ─────────────────────────────────────────────
@@ -17,6 +18,7 @@ THIRD_PARTY_INCLUDES_START
 #include <wrl.h>
 #include <wrl/event.h>
 #include <WebView2.h>
+#include <shlwapi.h>            // SHCreateMemStream
 THIRD_PARTY_INCLUDES_END
 
 #include "Windows/HideWindowsPlatformAtomics.h"
@@ -138,6 +140,21 @@ struct FInoWebViewImpl_Windows::FInternal
     /** Last SetMuted() call before the WebView was ready; applied on ready. */
     TOptional<bool>    PendingMute;
 
+    /** Pending LoadHTMLString — queued before ready. */
+    struct FPendingHTML { FString HTML; FString BaseURI; };
+    TOptional<FPendingHTML> PendingHTMLLoad;
+
+    /** Pending LoadURLWithHeaders — queued before ready. */
+    struct FPendingHeadered { FString URL; TMap<FString, FString> Headers; };
+    TOptional<FPendingHeadered> PendingHeaderedLoad;
+
+    /** Pending SetCookie calls — queued before ready. */
+    struct FPendingCookie { FString URL; FString Cookie; };
+    TArray<FPendingCookie> PendingCookies;
+
+    /** Pending ClearAllData call — queued before ready. */
+    bool bPendingClearAllData = false;
+
     /** Tokens for event registrations. */
     EventRegistrationToken MessageReceivedToken{};
     EventRegistrationToken NavigationStartingToken{};
@@ -203,6 +220,9 @@ bool FInoWebViewImpl_Windows::Initialize(void* ParentNativeHandle, const FInoWeb
     if (!Config.InitialURL.IsEmpty())
     {
         Internal->PendingNavigate = Config.InitialURL;
+        // Seed cached URL so GetURL() is meaningful before the first
+        // NavigationCompleted fires.
+        CachedURL = Config.InitialURL;
     }
     Internal->PendingVisible = Config.bVisibleOnCreate;
 
@@ -375,6 +395,11 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
                         UE_LOG(LogInoWebUI, Warning,
                             TEXT("Navigation blocked by lockdown: %s"), *URI);
                     }
+                    else
+                    {
+                        // Real navigation begins; flip cached state.
+                        bCachedLoading = true;
+                    }
 
                     // Always fire the BP delegate for observability.
                     if (OnNavigationStartingCallback)
@@ -404,6 +429,10 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
                         CoTaskMemFree(SourceRaw);
                     }
 
+                    // Cache state — readers expect O(1) URL/IsLoading getters.
+                    CachedURL      = URI;
+                    bCachedLoading = false;
+
                     if (OnNavigationCompletedCallback)
                     {
                         OnNavigationCompletedCallback(bSuccess != 0, URI);
@@ -425,6 +454,8 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
                     }
                     const FString Title(TitleRaw);
                     CoTaskMemFree(TitleRaw);
+
+                    CachedTitle = Title;
 
                     if (OnDocumentTitleChangedCallback)
                     {
@@ -802,6 +833,41 @@ void FInoWebViewImpl_Windows::ApplyPendingOperations()
         SetMuted(Internal->PendingMute.GetValue());
         Internal->PendingMute.Reset();
     }
+
+    // Replay any queued LoadHTMLString. PendingNavigate already replayed
+    // above; if both are set, PendingHTMLLoad wins because LoadHTMLString
+    // ought to be the most recently requested action.
+    if (Internal->PendingHTMLLoad.IsSet())
+    {
+        const auto Snap = Internal->PendingHTMLLoad.GetValue();
+        Internal->PendingHTMLLoad.Reset();
+        LoadHTMLString(Snap.HTML, Snap.BaseURI);
+    }
+
+    // Replay queued LoadURLWithHeaders.
+    if (Internal->PendingHeaderedLoad.IsSet())
+    {
+        const auto Snap = Internal->PendingHeaderedLoad.GetValue();
+        Internal->PendingHeaderedLoad.Reset();
+        LoadURLWithHeaders(Snap.URL, Snap.Headers);
+    }
+
+    // Replay queued SetCookie calls in submission order.
+    if (Internal->PendingCookies.Num() > 0)
+    {
+        TArray<FInternal::FPendingCookie> Replay = MoveTemp(Internal->PendingCookies);
+        for (const FInternal::FPendingCookie& C : Replay)
+        {
+            SetCookie(C.URL, C.Cookie);
+        }
+    }
+
+    // Replay a queued ClearAllData.
+    if (Internal->bPendingClearAllData)
+    {
+        Internal->bPendingClearAllData = false;
+        ClearAllData();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1044,6 +1110,448 @@ void FInoWebViewImpl_Windows::SyncBounds(int32 ScreenX, int32 ScreenY, int32 Wid
 //  teardown (once from UInoWebView::ShutdownImpl, once from the impl's own
 //  destructor as a safety net). Only the first call does work or logs.
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+//  Browser-style nav
+// ─────────────────────────────────────────────────────────────────────────────
+void FInoWebViewImpl_Windows::GoBack()
+{
+    check(IsInGameThread());
+    // Going back before any navigation has happened is meaningless — don't queue.
+    if (!bReady || !Internal->WebView) return;
+    Internal->WebView->GoBack();
+}
+
+void FInoWebViewImpl_Windows::GoForward()
+{
+    check(IsInGameThread());
+    if (!bReady || !Internal->WebView) return;
+    Internal->WebView->GoForward();
+}
+
+bool FInoWebViewImpl_Windows::CanGoBack() const
+{
+    if (!bReady || !Internal || !Internal->WebView) return false;
+    BOOL b = 0;
+    if (FAILED(Internal->WebView->get_CanGoBack(&b))) return false;
+    return b != 0;
+}
+
+bool FInoWebViewImpl_Windows::CanGoForward() const
+{
+    if (!bReady || !Internal || !Internal->WebView) return false;
+    BOOL b = 0;
+    if (FAILED(Internal->WebView->get_CanGoForward(&b))) return false;
+    return b != 0;
+}
+
+void FInoWebViewImpl_Windows::StopLoading()
+{
+    check(IsInGameThread());
+    if (!bReady || !Internal->WebView) return;
+    Internal->WebView->Stop();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  LoadHTMLString — WebView2 has NavigateToString, which doesn't accept a base
+//  URI. Document the BaseURI ignore at runtime to avoid silent surprises.
+// ─────────────────────────────────────────────────────────────────────────────
+void FInoWebViewImpl_Windows::LoadHTMLString(const FString& HTML, const FString& BaseURI)
+{
+    check(IsInGameThread());
+    if (!bReady)
+    {
+        Internal->PendingHTMLLoad = FInternal::FPendingHTML{ HTML, BaseURI };
+        return;
+    }
+
+    if (!BaseURI.IsEmpty())
+    {
+        UE_LOG(LogInoWebUI, Verbose,
+            TEXT("LoadHTMLString: BaseURI ('%s') is ignored on Windows — WebView2's "
+                 "NavigateToString uses about:blank as origin. Use a virtual-host "
+                 "mapping to serve HTML through a real https://<host>/ origin."),
+            *BaseURI);
+    }
+
+    const HRESULT Hr = Internal->WebView->NavigateToString(*HTML);
+    if (FAILED(Hr))
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("NavigateToString failed: 0x%08X"), static_cast<uint32>(Hr));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Cookie parser — accepts the standard HTTP cookie syntax:
+//    name=value; Path=/; Domain=...; Expires=...; HttpOnly; Secure; SameSite=...
+//
+//  ICoreWebView2Cookie's Path/Domain are READ-ONLY post-construction — they
+//  must be supplied to CookieManager::CreateCookie. Everything else (Expires,
+//  IsHttpOnly, IsSecure, SameSite) has a setter and we apply those after.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace
+{
+    bool ParseHttpDateToUnixSeconds(const FString& Date, double& OutSeconds)
+    {
+        FDateTime DT;
+        if (FDateTime::ParseHttpDate(Date, DT))
+        {
+            OutSeconds = static_cast<double>(DT.ToUnixTimestamp());
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Parsed cookie pieces. Path / Domain are created up-front via the
+     * cookie manager; the remaining fields are applied via setters.
+     */
+    struct FParsedCookie
+    {
+        FString  Name;
+        FString  Value;
+        FString  Path   = TEXT("/");
+        FString  Domain;
+        TOptional<double> Expires;     // Unix seconds
+        bool     bSecure   = false;
+        bool     bHttpOnly = false;
+        TOptional<COREWEBVIEW2_COOKIE_SAME_SITE_KIND> SameSite;
+        bool     bValid = false;
+    };
+
+    FParsedCookie ParseHttpCookie(const FString& Raw)
+    {
+        FParsedCookie Out;
+
+        TArray<FString> Parts;
+        Raw.ParseIntoArray(Parts, TEXT(";"), /*bCullEmpty=*/ true);
+        if (Parts.Num() == 0) return Out;
+
+        FString First = Parts[0].TrimStartAndEnd();
+        int32 Eq = INDEX_NONE;
+        if (!First.FindChar(TEXT('='), Eq)) return Out;
+
+        Out.Name  = First.Left(Eq).TrimStartAndEnd();
+        Out.Value = First.Mid(Eq + 1).TrimStartAndEnd();
+        Out.bValid = true;
+
+        for (int32 i = 1; i < Parts.Num(); ++i)
+        {
+            const FString Trim = Parts[i].TrimStartAndEnd();
+            int32 EqIdx = INDEX_NONE;
+            FString K, V;
+            if (Trim.FindChar(TEXT('='), EqIdx))
+            {
+                K = Trim.Left(EqIdx).TrimStartAndEnd();
+                V = Trim.Mid(EqIdx + 1).TrimStartAndEnd();
+            }
+            else
+            {
+                K = Trim;
+            }
+
+            if      (K.Equals(TEXT("Path"),    ESearchCase::IgnoreCase)) Out.Path   = V;
+            else if (K.Equals(TEXT("Domain"),  ESearchCase::IgnoreCase)) Out.Domain = V;
+            else if (K.Equals(TEXT("Expires"), ESearchCase::IgnoreCase))
+            {
+                double Sec = 0.0;
+                if (ParseHttpDateToUnixSeconds(V, Sec)) Out.Expires = Sec;
+            }
+            else if (K.Equals(TEXT("Max-Age"), ESearchCase::IgnoreCase))
+            {
+                const int64 Secs = FCString::Atoi64(*V);
+                Out.Expires = static_cast<double>(FDateTime::UtcNow().ToUnixTimestamp() + Secs);
+            }
+            else if (K.Equals(TEXT("HttpOnly"), ESearchCase::IgnoreCase)) Out.bHttpOnly = true;
+            else if (K.Equals(TEXT("Secure"),   ESearchCase::IgnoreCase)) Out.bSecure   = true;
+            else if (K.Equals(TEXT("SameSite"), ESearchCase::IgnoreCase))
+            {
+                COREWEBVIEW2_COOKIE_SAME_SITE_KIND Kind = COREWEBVIEW2_COOKIE_SAME_SITE_KIND_LAX;
+                if      (V.Equals(TEXT("None"),   ESearchCase::IgnoreCase)) Kind = COREWEBVIEW2_COOKIE_SAME_SITE_KIND_NONE;
+                else if (V.Equals(TEXT("Strict"), ESearchCase::IgnoreCase)) Kind = COREWEBVIEW2_COOKIE_SAME_SITE_KIND_STRICT;
+                Out.SameSite = Kind;
+            }
+            // Unknown attributes silently ignored — be liberal in what you accept.
+        }
+
+        return Out;
+    }
+}
+
+void FInoWebViewImpl_Windows::SetCookie(const FString& URL, const FString& Cookie)
+{
+    check(IsInGameThread());
+    if (!bReady)
+    {
+        Internal->PendingCookies.Add(FInternal::FPendingCookie{ URL, Cookie });
+        return;
+    }
+
+    ComPtr<ICoreWebView2_2> WebView2;
+    if (FAILED(Internal->WebView.As(&WebView2)) || !WebView2)
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("SetCookie: ICoreWebView2_2 unavailable."));
+        return;
+    }
+    ComPtr<ICoreWebView2CookieManager> CookieMgr;
+    if (FAILED(WebView2->get_CookieManager(&CookieMgr)) || !CookieMgr)
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("SetCookie: could not obtain CookieManager."));
+        return;
+    }
+
+    FParsedCookie P = ParseHttpCookie(Cookie);
+    if (!P.bValid)
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("SetCookie: malformed cookie string: '%s'"), *Cookie);
+        return;
+    }
+
+    // Domain default — infer from URL host if the cookie didn't specify.
+    FString Domain = P.Domain;
+    if (Domain.IsEmpty())
+    {
+        Domain = ExtractHost(URL);
+    }
+
+    ComPtr<ICoreWebView2Cookie> NewCookie;
+    if (FAILED(CookieMgr->CreateCookie(*P.Name, *P.Value, *Domain, *P.Path, &NewCookie))
+        || !NewCookie)
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("SetCookie: CreateCookie failed for '%s'"), *P.Name);
+        return;
+    }
+
+    if (P.Expires.IsSet())  NewCookie->put_Expires(P.Expires.GetValue());
+    if (P.bHttpOnly)        NewCookie->put_IsHttpOnly(1);
+    if (P.bSecure)          NewCookie->put_IsSecure(1);
+    if (P.SameSite.IsSet()) NewCookie->put_SameSite(P.SameSite.GetValue());
+
+    if (FAILED(CookieMgr->AddOrUpdateCookie(NewCookie.Get())))
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("SetCookie: AddOrUpdateCookie failed for '%s'"), *P.Name);
+        return;
+    }
+    UE_LOG(LogInoWebUI, Verbose, TEXT("SetCookie applied: %s = %s"), *P.Name, *P.Value);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ClearAllData — modern path: ICoreWebView2_13->Profile->ClearBrowsingData
+//                 fallback:    ClearAllCookies + ExecuteScript("…clear()")
+// ─────────────────────────────────────────────────────────────────────────────
+void FInoWebViewImpl_Windows::ClearAllData()
+{
+    check(IsInGameThread());
+    if (!bReady)
+    {
+        Internal->bPendingClearAllData = true;
+        return;
+    }
+
+    // Try the modern profile-level wipe first.
+    ComPtr<ICoreWebView2_13> WebView13;
+    if (SUCCEEDED(Internal->WebView.As(&WebView13)) && WebView13)
+    {
+        ComPtr<ICoreWebView2Profile> Profile;
+        if (SUCCEEDED(WebView13->get_Profile(&Profile)) && Profile)
+        {
+            ComPtr<ICoreWebView2Profile2> Profile2;
+            if (SUCCEEDED(Profile.As(&Profile2)) && Profile2)
+            {
+                TWeakPtr<int> WeakLifetime = Internal->LifetimeToken;
+                const HRESULT Hr = Profile2->ClearBrowsingData(
+                    COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_PROFILE,
+                    Callback<ICoreWebView2ClearBrowsingDataCompletedHandler>(
+                        [WeakLifetime](HRESULT) -> HRESULT
+                        {
+                            // Lifetime guard — even though we don't touch state,
+                            // keep the pattern consistent for future expansion.
+                            (void)WeakLifetime;
+                            return S_OK;
+                        }).Get());
+                if (SUCCEEDED(Hr))
+                {
+                    UE_LOG(LogInoWebUI, Log, TEXT("ClearAllData via Profile2."));
+                    return;
+                }
+                UE_LOG(LogInoWebUI, Verbose,
+                    TEXT("ClearBrowsingData failed: 0x%08X — falling back."),
+                    static_cast<uint32>(Hr));
+            }
+        }
+    }
+
+    // Fallback for older runtimes.
+    ClearAllCookies();
+    ExecuteJavaScript(TEXT("try{localStorage.clear();sessionStorage.clear();}catch(e){}"));
+    UE_LOG(LogInoWebUI, Log, TEXT("ClearAllData via fallback (cookies + storage clear)."));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CapturePreview — WebView2 calls back via IStream; we copy out and write
+//  through UE FFileHelper. Best-effort — returns false on synchronous failure.
+// ─────────────────────────────────────────────────────────────────────────────
+bool FInoWebViewImpl_Windows::CapturePreview(EInoImageFormat Format, const FString& OutFilePath)
+{
+    check(IsInGameThread());
+    if (!bReady || !Internal->WebView)
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("CapturePreview: WebView not ready."));
+        return false;
+    }
+
+    // SHCreateMemStream(nullptr, 0) gives an in-memory IStream we can read out
+    // afterwards. WebView2 writes the image bytes into this stream.
+    IStream* MemStream = SHCreateMemStream(nullptr, 0);
+    if (!MemStream)
+    {
+        UE_LOG(LogInoWebUI, Warning, TEXT("CapturePreview: SHCreateMemStream failed."));
+        return false;
+    }
+
+    const COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT Fmt =
+        (Format == EInoImageFormat::JPEG)
+        ? COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG
+        : COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
+
+    TWeakPtr<int> WeakLifetime = Internal->LifetimeToken;
+    const FString OutPathCopy = OutFilePath;
+
+    const HRESULT Hr = Internal->WebView->CapturePreview(
+        Fmt,
+        MemStream,
+        Callback<ICoreWebView2CapturePreviewCompletedHandler>(
+            [this, WeakLifetime, MemStream, OutPathCopy](HRESULT Result) -> HRESULT
+            {
+                // Always release the stream on completion, even if we no-op.
+                if (!WeakLifetime.IsValid())
+                {
+                    if (MemStream) MemStream->Release();
+                    return S_OK;
+                }
+
+                bool bSuccess = false;
+                if (SUCCEEDED(Result) && MemStream)
+                {
+                    // Read all bytes from the stream — rewind first.
+                    LARGE_INTEGER LZero{};
+                    LZero.QuadPart = 0;
+                    MemStream->Seek(LZero, STREAM_SEEK_SET, nullptr);
+
+                    TArray<uint8> Bytes;
+                    constexpr ULONG kChunk = 64 * 1024;
+                    uint8 Tmp[kChunk];
+                    while (true)
+                    {
+                        ULONG ReadCount = 0;
+                        const HRESULT ReadHr = MemStream->Read(Tmp, kChunk, &ReadCount);
+                        if (ReadCount > 0)
+                        {
+                            Bytes.Append(Tmp, ReadCount);
+                        }
+                        if (FAILED(ReadHr) || ReadCount < kChunk) break;
+                    }
+
+                    if (Bytes.Num() > 0)
+                    {
+                        bSuccess = FFileHelper::SaveArrayToFile(Bytes, *OutPathCopy);
+                        if (!bSuccess)
+                        {
+                            UE_LOG(LogInoWebUI, Warning,
+                                TEXT("CapturePreview: failed to write %d bytes to %s"),
+                                Bytes.Num(), *OutPathCopy);
+                        }
+                    }
+                }
+
+                if (MemStream) MemStream->Release();
+
+                // Fire completion callback (we're already on the game thread —
+                // WebView2 invokes its completion handlers there).
+                if (OnCapturePreviewCompleteCallback)
+                {
+                    OnCapturePreviewCompleteCallback(bSuccess, OutPathCopy);
+                }
+                return S_OK;
+            }).Get());
+
+    if (FAILED(Hr))
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("CapturePreview: WebView2 call failed: 0x%08X"),
+            static_cast<uint32>(Hr));
+        if (MemStream) MemStream->Release();
+        return false;
+    }
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  LoadURLWithHeaders — only headers on the top-level navigation request.
+// ─────────────────────────────────────────────────────────────────────────────
+void FInoWebViewImpl_Windows::LoadURLWithHeaders(const FString& URL,
+                                                  const TMap<FString, FString>& Headers)
+{
+    check(IsInGameThread());
+    if (!bReady)
+    {
+        Internal->PendingHeaderedLoad = FInternal::FPendingHeadered{ URL, Headers };
+        return;
+    }
+
+    ComPtr<ICoreWebView2Environment2> Env2;
+    if (!Internal->Environment || FAILED(Internal->Environment.As(&Env2)) || !Env2)
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("LoadURLWithHeaders: ICoreWebView2Environment2 unavailable; "
+                 "falling back to plain Navigate (headers will be dropped)."));
+        Navigate(URL);
+        return;
+    }
+
+    ComPtr<ICoreWebView2_2> WebView2;
+    if (FAILED(Internal->WebView.As(&WebView2)) || !WebView2)
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("LoadURLWithHeaders: ICoreWebView2_2 unavailable; falling back to Navigate."));
+        Navigate(URL);
+        return;
+    }
+
+    // Build CRLF-joined "Name: Value" header block.
+    FString Joined;
+    for (const TPair<FString, FString>& KV : Headers)
+    {
+        Joined.Appendf(TEXT("%s: %s\r\n"), *KV.Key, *KV.Value);
+    }
+
+    ComPtr<ICoreWebView2WebResourceRequest> Request;
+    const HRESULT Hr = Env2->CreateWebResourceRequest(
+        *URL, TEXT("GET"), /*PostData=*/ nullptr, *Joined, &Request);
+    if (FAILED(Hr) || !Request)
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("LoadURLWithHeaders: CreateWebResourceRequest failed: 0x%08X"),
+            static_cast<uint32>(Hr));
+        Navigate(URL);
+        return;
+    }
+
+    const HRESULT NavHr = WebView2->NavigateWithWebResourceRequest(Request.Get());
+    if (FAILED(NavHr))
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("NavigateWithWebResourceRequest failed: 0x%08X"),
+            static_cast<uint32>(NavHr));
+    }
+}
+
 void FInoWebViewImpl_Windows::Shutdown()
 {
     check(IsInGameThread());

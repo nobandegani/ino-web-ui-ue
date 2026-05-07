@@ -75,6 +75,12 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebReady);
  *  Project-specific dev action — bind to do whatever you want in-game. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebDevCallback);
 
+/** Fired when CapturePreview finishes (success or failure).
+ *  bSuccess=true means the image was written to FilePath. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInoWebCapturePreviewComplete,
+    bool,           bSuccess,
+    const FString&, FilePath);
+
 /**
  * UInoWebView — Blueprint-visible handle to a single native WebView overlay.
  *
@@ -246,11 +252,114 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
     void ClearAllCookies();
 
+    // ── Browser-style nav (history) ─────────────────────────────────────────
+
+    /** Step back in history. No-op if not ready or no back history. */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void GoBack();
+
+    /** Step forward in history. No-op if not ready or no forward history. */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void GoForward();
+
+    /** Whether GoBack will do anything. Returns false if not ready. */
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Ino|WebUI")
+    bool CanGoBack() const;
+
+    /** Whether GoForward will do anything. Returns false if not ready. */
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Ino|WebUI")
+    bool CanGoForward() const;
+
+    /** Stop the current navigation. No-op if nothing is loading. */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void StopLoading();
+
+    /**
+     * Load arbitrary HTML into the WebView. BaseURI is honoured on Android
+     * (loadDataWithBaseURL) but ignored on Windows (WebView2 NavigateToString
+     * has no equivalent — use a virtual-host mapping if you need a real
+     * origin). Queued if not ready.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void LoadHTMLString(const FString& HTML, const FString& BaseURI);
+
+    /**
+     * Set a single cookie in HTTP cookie syntax for URL.
+     *   "name=value; Path=/; Expires=Wed, 09 Jun 2027 10:18:14 GMT; Secure"
+     * Queued if not ready.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void SetCookie(const FString& URL, const FString& Cookie);
+
+    /**
+     * Wipe all browsing data for this WebView's profile — cookies, cache,
+     * Web Storage (localStorage/sessionStorage), history. Async internally.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void ClearAllData();
+
+    /**
+     * Snapshot the WebView's current visual state to OutFilePath in the
+     * requested format. Async — bind OnCapturePreviewComplete to know when
+     * the file is written. Returns false synchronously if the WebView isn't
+     * ready or the platform call failed; otherwise true (async path took
+     * over).
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    bool CapturePreview(EInoImageFormat Format, const FString& OutFilePath);
+
+    /** Fires when CapturePreview completes (success or fail). */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebCapturePreviewComplete OnCapturePreviewComplete;
+
+    /**
+     * Navigate to URL with extra HTTP headers attached to the top-level
+     * request. Headers are NOT applied to subresource requests — Chromium
+     * fetches assets with its normal header set. Queued if not ready.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void LoadURLWithHeaders(const FString& URL, const TMap<FString, FString>& Headers);
+
+    // ── Sub-region bounds (manual/auto modes) ───────────────────────────────
+
+    /**
+     * Switch this WebView to MANUAL bounds mode and immediately apply
+     * the supplied rect (X/Y/W/H, screen-space pixels). The subsystem's
+     * automatic resize broadcasts will skip this WebView until you call
+     * SetBoundsAuto() to re-enable them.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void SetBounds(int32 X, int32 Y, int32 W, int32 H);
+
+    /**
+     * Switch this WebView back to AUTO bounds mode (follow the parent
+     * client rect on every viewport resize) and immediately push the
+     * current rect to apply right now.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void SetBoundsAuto();
+
+    /** Whether SetBounds was called and SetBoundsAuto hasn't been called since. */
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Ino|WebUI")
+    bool IsManualBounds() const { return bManualBounds; }
+
     // ── State queries ───────────────────────────────────────────────────────
 
     /** True once the native WebView has finished its async construction. */
     UFUNCTION(BlueprintPure, Category = "Ino|WebUI")
     bool IsReady() const;
+
+    /** Cached current page URL — set on each NavigationCompleted. O(1). */
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Ino|WebUI")
+    FString GetURL() const;
+
+    /** Cached current page title — set on each OnDocumentTitleChanged. O(1). */
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Ino|WebUI")
+    FString GetTitle() const;
+
+    /** True between NavigationStarting and NavigationCompleted. O(1). */
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Ino|WebUI")
+    bool IsLoading() const;
 
     /** The Name originally passed to CreateWebView — useful for lookups/logs. */
     UFUNCTION(BlueprintPure, Category = "Ino|WebUI")
@@ -291,6 +400,16 @@ private:
 
     /** Tracks the "Toggle transparency" state driven by the dev overlay. */
     bool bBackgroundCurrentlyOpaque = false;
+
+    /** True when SetBounds is in effect. Subsystem skips this WebView when
+     *  broadcasting the parent client rect. SetBoundsAuto resets it. */
+    bool bManualBounds = false;
+
+    /** Last manually-set rect (only meaningful while bManualBounds). */
+    int32 ManualX = 0;
+    int32 ManualY = 0;
+    int32 ManualW = 0;
+    int32 ManualH = 0;
 
     /**
      * Parse the raw envelope JSON pushed by the impl's OnMessageReceivedJson

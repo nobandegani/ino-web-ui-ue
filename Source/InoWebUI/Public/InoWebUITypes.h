@@ -19,6 +19,17 @@ enum class EInoScriptDialogKind : uint8
     BeforeUnload  UMETA(DisplayName = "onbeforeunload"),
 };
 
+/**
+ * Image format selector for UInoWebView::CapturePreview. PNG is lossless and
+ * the default; JPEG is lossy but smaller for screenshots without alpha.
+ */
+UENUM(BlueprintType)
+enum class EInoImageFormat : uint8
+{
+    PNG   UMETA(DisplayName = "PNG"),
+    JPEG  UMETA(DisplayName = "JPEG"),
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  FInoWebViewConfig
 //

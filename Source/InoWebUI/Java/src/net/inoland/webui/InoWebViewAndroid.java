@@ -18,6 +18,7 @@ import android.util.SparseArray;
 import android.view.View;
 import android.view.ViewGroup;
 import android.os.Message;
+import android.graphics.Canvas;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.RenderProcessGoneDetail;
@@ -28,6 +29,7 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
+import android.webkit.WebStorage;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
@@ -35,8 +37,11 @@ import android.widget.FrameLayout;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 import com.epicgames.unreal.GameActivity;
 import com.epicgames.unreal.Logger;
@@ -68,6 +73,10 @@ public class InoWebViewAndroid
 
         // Dev overlay (the floating circular dev-tools button)
         boolean devOverlayEnabled;
+
+        // Manual bounds — when true, syncBounds applies the supplied X/Y/W/H
+        // (with DP scaling) instead of forcing MATCH_PARENT. Default false.
+        boolean manualBounds;
     }
 
     /** Kind values match the C++ EInoScriptDialogKind enum in InoWebUITypes.h.
@@ -194,6 +203,7 @@ public class InoWebViewAndroid
         public void onPageFinished(WebView view, String url)
         {
             nativeOnNavigationCompleted(id, true, url);
+            nativeOnNavStateChanged(id, view.canGoBack(), view.canGoForward());
         }
 
         @Override
@@ -202,6 +212,7 @@ public class InoWebViewAndroid
             if (request != null && request.isForMainFrame())
             {
                 nativeOnNavigationCompleted(id, false, request.getUrl().toString());
+                nativeOnNavStateChanged(id, view.canGoBack(), view.canGoForward());
             }
         }
 
@@ -339,6 +350,8 @@ public class InoWebViewAndroid
     private static native void nativeOnGotFocus            (int id);
     private static native void nativeOnLostFocus           (int id);
     private static native void nativeOnProcessFailed       (int id, String description);
+    /** Fires after every page-end (success or fail) so C++ can cache nav-history flags. */
+    private static native void nativeOnNavStateChanged     (int id, boolean canGoBack, boolean canGoForward);
 
     // ─────────────────────────────────────────────────────────────────────
     //  Create / Destroy
@@ -830,25 +843,23 @@ public class InoWebViewAndroid
     //  Layout / bounds
     // ─────────────────────────────────────────────────────────────────────
     /**
-     * On Android we deliberately ignore the size values the UE subsystem
-     * sends and keep MATCH_PARENT sizing.
+     * Two modes:
      *
-     * Why: UE's SWindow::GetClientRectInScreen reports a coordinate system
-     * that doesn't line up with Android FrameLayout's physical-pixel layout
-     * params (density scaling mismatch + UE's "virtual window" concept
-     * doesn't map to Android's full-screen activity model). Blindly using
-     * those values leaves the WebView covering only ~1/3 of the screen on
-     * a typical ~3x-density phone.
+     *   • Auto (manualBounds=false, default): the supplied X/Y/W/H are
+     *     ignored; the WebView is sized MATCH_PARENT inside the content
+     *     FrameLayout. UE's `GetClientRectInScreen` reports values whose
+     *     density scaling doesn't line up with FrameLayout's physical-pixel
+     *     params, so the safe-by-default behavior is fullscreen.
      *
-     * Android games are always fullscreen; the activity's content
-     * FrameLayout fills the screen; the WebView as a child of that root
-     * with MATCH_PARENT is exactly what we want. Custom sub-region sizing
-     * can be added later with explicit DP → px conversion when there's a
-     * concrete use case.
+     *   • Manual (manualBounds=true): X/Y/W/H are honoured. The values
+     *     arrive in UE pixels (== logical px); we scale to physical px
+     *     using the activity's display density before applying.
+     *
+     * Mode is set with {@link #setBoundsMode}.
      */
     public static void syncBounds(final int id,
-                                  final int /*x*/ ignoredX, final int /*y*/ ignoredY,
-                                  final int /*width*/ ignoredW, final int /*height*/ ignoredH)
+                                  final int x, final int y,
+                                  final int width, final int height)
     {
         final Activity activity = getActivity();
         if (activity == null) return;
@@ -858,8 +869,27 @@ public class InoWebViewAndroid
                 WebView wv = sWebViews.get(id);
                 if (wv == null) return;
 
-                // Only set MATCH_PARENT if it's not already MATCH_PARENT —
-                // avoids a layout pass every resize event for no reason.
+                Config c = sConfigs.get(id);
+                final boolean manual = (c != null && c.manualBounds);
+
+                if (manual) {
+                    // Convert UE-pixel (logical) values to physical pixels via
+                    // density. This matches what FrameLayout.LayoutParams
+                    // expects.
+                    float density = activity.getResources().getDisplayMetrics().density;
+                    int px = Math.round(x * density);
+                    int py = Math.round(y * density);
+                    int pw = Math.max(0, Math.round(width  * density));
+                    int ph = Math.max(0, Math.round(height * density));
+
+                    FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(pw, ph);
+                    lp.leftMargin = px;
+                    lp.topMargin  = py;
+                    wv.setLayoutParams(lp);
+                    return;
+                }
+
+                // Auto mode — keep MATCH_PARENT.
                 ViewGroup.LayoutParams cur = wv.getLayoutParams();
                 if (cur != null
                     && cur.width  == ViewGroup.LayoutParams.MATCH_PARENT
@@ -873,6 +903,207 @@ public class InoWebViewAndroid
             }
         });
     }
+
+    /** Toggle manual-bounds mode for a WebView. See {@link #syncBounds}. */
+    public static void setBoundsMode(final int id, final boolean manual)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                getOrCreateConfig(id).manualBounds = manual;
+            }
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Browser-style nav
+    // ─────────────────────────────────────────────────────────────────────
+
+    public static void goBack(final int id)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv != null && wv.canGoBack()) wv.goBack();
+            }
+        });
+    }
+
+    public static void goForward(final int id)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv != null && wv.canGoForward()) wv.goForward();
+            }
+        });
+    }
+
+    /**
+     * SYNCHRONOUS query — must be called on the UI thread, NOT from JNI.
+     * The C++ side caches {@link CanGoBack} state instead.
+     */
+    public static boolean canGoBack(final int id)
+    {
+        WebView wv = sWebViews.get(id);
+        return wv != null && wv.canGoBack();
+    }
+
+    public static boolean canGoForward(final int id)
+    {
+        WebView wv = sWebViews.get(id);
+        return wv != null && wv.canGoForward();
+    }
+
+    public static void stopLoading(final int id)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv != null) wv.stopLoading();
+            }
+        });
+    }
+
+    /**
+     * UE → Android. base may be null/empty (passed as null to
+     * loadDataWithBaseURL, in which case the page sees about:blank).
+     */
+    public static void loadHTMLString(final int id, final String html, final String base)
+    {
+        final Activity activity = getActivity();
+        if (activity == null || html == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv == null) return;
+                String b = (base == null || base.isEmpty()) ? null : base;
+                wv.loadDataWithBaseURL(b, html, "text/html", "UTF-8", null);
+            }
+        });
+    }
+
+    /**
+     * Set a single cookie via CookieManager. The cookie string is HTTP cookie
+     * syntax: "name=value; Path=/; Expires=...; HttpOnly; Secure; SameSite=...".
+     */
+    public static void setCookie(final int id, final String url, final String cookie)
+    {
+        final Activity activity = getActivity();
+        if (activity == null || url == null || cookie == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                CookieManager cm = CookieManager.getInstance();
+                cm.setCookie(url, cookie);
+                cm.flush();
+            }
+        });
+    }
+
+    /** Wipe cookies, cache, history, form data, and Web Storage. */
+    public static void clearAllData(final int id)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv != null) {
+                    wv.clearCache(true);
+                    wv.clearFormData();
+                    wv.clearHistory();
+                }
+                WebStorage.getInstance().deleteAllData();
+                CookieManager.getInstance().removeAllCookies(null);
+                CookieManager.getInstance().flush();
+                Log.debug("clearAllData(" + id + ")");
+            }
+        });
+    }
+
+    /**
+     * Render the WebView into a Bitmap and write to outFilePath. Format = 0
+     * for PNG, 1 for JPEG (matches EInoImageFormat). Async — fires
+     * nativeOnCapturePreviewComplete with success bool when done.
+     */
+    public static void capturePreview(final int id, final int format, final String outFilePath)
+    {
+        final Activity activity = getActivity();
+        if (activity == null || outFilePath == null) {
+            nativeOnCapturePreviewComplete(id, false, outFilePath);
+            return;
+        }
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                boolean ok = false;
+                try {
+                    WebView wv = sWebViews.get(id);
+                    if (wv == null) {
+                        nativeOnCapturePreviewComplete(id, false, outFilePath);
+                        return;
+                    }
+                    int w = Math.max(1, wv.getWidth());
+                    int h = Math.max(1, wv.getHeight());
+                    Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                    Canvas canvas = new Canvas(bmp);
+                    wv.draw(canvas);
+
+                    Bitmap.CompressFormat cf = (format == 1)
+                            ? Bitmap.CompressFormat.JPEG
+                            : Bitmap.CompressFormat.PNG;
+                    FileOutputStream fos = new FileOutputStream(outFilePath);
+                    try {
+                        ok = bmp.compress(cf, 90, fos);
+                    } finally {
+                        try { fos.close(); } catch (Exception ignore) {}
+                    }
+                    bmp.recycle();
+                } catch (Exception e) {
+                    Log.error("capturePreview(" + id + ") failed: " + e.getMessage());
+                    ok = false;
+                }
+                nativeOnCapturePreviewComplete(id, ok, outFilePath);
+            }
+        });
+    }
+
+    /**
+     * Navigate with extra HTTP headers attached to the top-level request.
+     * Headers arrive as parallel arrays so we can keep the JNI signature simple.
+     */
+    public static void loadURLWithHeaders(final int id, final String url,
+                                          final String[] headerNames,
+                                          final String[] headerValues)
+    {
+        final Activity activity = getActivity();
+        if (activity == null || url == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv == null) return;
+                Map<String, String> hs = new HashMap<>();
+                if (headerNames != null && headerValues != null) {
+                    int n = Math.min(headerNames.length, headerValues.length);
+                    for (int i = 0; i < n; i++) {
+                        if (headerNames[i] != null && headerValues[i] != null) {
+                            hs.put(headerNames[i], headerValues[i]);
+                        }
+                    }
+                }
+                wv.loadUrl(url, hs);
+            }
+        });
+    }
+
+    /** JNI callback used by capturePreview to deliver the result back to C++. */
+    private static native void nativeOnCapturePreviewComplete(int id, boolean success, String filePath);
 
     // ─────────────────────────────────────────────────────────────────────
     //  Activity lifecycle forwarding (called from GameActivity via UPL)

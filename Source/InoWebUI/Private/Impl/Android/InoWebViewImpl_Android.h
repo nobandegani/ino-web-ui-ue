@@ -52,6 +52,33 @@ public:
     virtual void  ClearAllCookies() override;
     virtual void  SetBackgroundOpaque(bool bOpaque) override;
 
+    // ── New ops ────────────────────────────────────────────────────────────
+    virtual void GoBack() override;
+    virtual void GoForward() override;
+    virtual bool CanGoBack() const override;
+    virtual bool CanGoForward() const override;
+    virtual void StopLoading() override;
+    virtual void LoadHTMLString(const FString& HTML, const FString& BaseURI) override;
+    virtual void SetCookie(const FString& URL, const FString& Cookie) override;
+    virtual void ClearAllData() override;
+    virtual bool CapturePreview(EInoImageFormat Format, const FString& OutFilePath) override;
+    virtual void LoadURLWithHeaders(const FString& URL, const TMap<FString, FString>& Headers) override;
+    virtual void SetBoundsMode(bool bManual) override;
+
+    // ── Friends-of-impl mutators for JNI callbacks ─────────────────────────
+    // The JNI nativeOn* exports (file-scope C functions in the .cpp) need to
+    // write the protected base-class cache fields. Public setters scoped to
+    // the impl keep that path narrow without making the cache fields fully
+    // public.
+    void SetCachedURL    (const FString& URL)         { CachedURL = URL; }
+    void SetCachedTitle  (const FString& Title)       { CachedTitle = Title; }
+    void SetCachedLoading(bool bLoading)              { bCachedLoading = bLoading; }
+    void SetCachedNavState(bool bBack, bool bForward)
+    {
+        bCachedCanGoBack    = bBack;
+        bCachedCanGoForward = bForward;
+    }
+
 private:
     /** Process-unique identifier passed across JNI; the Java side keeps a
      *  SparseArray<WebView> keyed by this int so primitives are all that

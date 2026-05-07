@@ -65,6 +65,18 @@ public:
     virtual void ClearAllCookies() override;
     virtual void SetBackgroundOpaque(bool bOpaque) override;
 
+    // ── New ops ────────────────────────────────────────────────────────────
+    virtual void GoBack() override;
+    virtual void GoForward() override;
+    virtual bool CanGoBack() const override;
+    virtual bool CanGoForward() const override;
+    virtual void StopLoading() override;
+    virtual void LoadHTMLString(const FString& HTML, const FString& BaseURI) override;
+    virtual void SetCookie(const FString& URL, const FString& Cookie) override;
+    virtual void ClearAllData() override;
+    virtual bool CapturePreview(EInoImageFormat Format, const FString& OutFilePath) override;
+    virtual void LoadURLWithHeaders(const FString& URL, const TMap<FString, FString>& Headers) override;
+
     /**
      * Opaque state — full definition lives in the .cpp so Windows.h and
      * WebView2.h stay out of this header. Declared public ONLY so the

@@ -2,6 +2,8 @@
 
 #include "InoWebView.h"
 #include "InoWebUILog.h"
+#include "InoWebUISubsystem.h"
+#include "Engine/GameInstance.h"
 #include "Misc/Paths.h"
 #include "Async/Async.h"
 #include "Dom/JsonObject.h"
@@ -138,6 +140,14 @@ void UInoWebView::Init(FName InName, TUniquePtr<IInoWebViewImpl>&& InImpl,
             }
         });
     };
+
+    // CapturePreview completion → BP delegate. The impl (Windows / Android)
+    // already invokes this on the game thread, so a direct broadcast is fine.
+    Impl->OnCapturePreviewCompleteCallback =
+        [this](bool bSuccess, const FString& FilePath)
+        {
+            OnCapturePreviewComplete.Broadcast(bSuccess, FilePath);
+        };
 
     const bool bOk = Impl->Initialize(ParentNativeHandle, Config);
     if (!bOk)
@@ -378,6 +388,124 @@ void UInoWebView::ClearAllCookies()
 bool UInoWebView::IsReady() const
 {
     return Impl.IsValid() && Impl->IsReady();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  O(1) cached state queries
+// ─────────────────────────────────────────────────────────────────────────────
+FString UInoWebView::GetURL() const
+{
+    return Impl.IsValid() ? Impl->GetURL() : FString();
+}
+
+FString UInoWebView::GetTitle() const
+{
+    return Impl.IsValid() ? Impl->GetTitle() : FString();
+}
+
+bool UInoWebView::IsLoading() const
+{
+    return Impl.IsValid() && Impl->IsLoading();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Browser-style nav (history)
+// ─────────────────────────────────────────────────────────────────────────────
+void UInoWebView::GoBack()
+{
+    check(IsInGameThread());
+    if (Impl.IsValid()) Impl->GoBack();
+}
+
+void UInoWebView::GoForward()
+{
+    check(IsInGameThread());
+    if (Impl.IsValid()) Impl->GoForward();
+}
+
+bool UInoWebView::CanGoBack() const
+{
+    return Impl.IsValid() && Impl->CanGoBack();
+}
+
+bool UInoWebView::CanGoForward() const
+{
+    return Impl.IsValid() && Impl->CanGoForward();
+}
+
+void UInoWebView::StopLoading()
+{
+    check(IsInGameThread());
+    if (Impl.IsValid()) Impl->StopLoading();
+}
+
+void UInoWebView::LoadHTMLString(const FString& HTML, const FString& BaseURI)
+{
+    check(IsInGameThread());
+    if (Impl.IsValid()) Impl->LoadHTMLString(HTML, BaseURI);
+}
+
+void UInoWebView::SetCookie(const FString& URL, const FString& Cookie)
+{
+    check(IsInGameThread());
+    if (Impl.IsValid()) Impl->SetCookie(URL, Cookie);
+}
+
+void UInoWebView::ClearAllData()
+{
+    check(IsInGameThread());
+    if (Impl.IsValid()) Impl->ClearAllData();
+}
+
+bool UInoWebView::CapturePreview(EInoImageFormat Format, const FString& OutFilePath)
+{
+    check(IsInGameThread());
+    if (!Impl.IsValid()) return false;
+    return Impl->CapturePreview(Format, OutFilePath);
+}
+
+void UInoWebView::LoadURLWithHeaders(const FString& URL,
+                                     const TMap<FString, FString>& Headers)
+{
+    check(IsInGameThread());
+    if (Impl.IsValid()) Impl->LoadURLWithHeaders(URL, Headers);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Sub-region bounds — manual vs auto modes (item 9)
+// ─────────────────────────────────────────────────────────────────────────────
+void UInoWebView::SetBounds(int32 X, int32 Y, int32 W, int32 H)
+{
+    check(IsInGameThread());
+
+    bManualBounds = true;
+    ManualX = X; ManualY = Y; ManualW = W; ManualH = H;
+
+    if (Impl.IsValid())
+    {
+        Impl->SetBoundsMode(true);
+        Impl->SyncBounds(X, Y, W, H);
+    }
+}
+
+void UInoWebView::SetBoundsAuto()
+{
+    check(IsInGameThread());
+
+    bManualBounds = false;
+
+    if (Impl.IsValid())
+    {
+        Impl->SetBoundsMode(false);
+    }
+
+    // Ask the subsystem to re-push the current parent rect to JUST this
+    // WebView so auto sizing snaps back to the parent right now (instead of
+    // waiting for the next viewport resize event).
+    if (UInoWebUISubsystem* Subsystem = Cast<UInoWebUISubsystem>(GetOuter()))
+    {
+        Subsystem->BroadcastClientRectToOne(this);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

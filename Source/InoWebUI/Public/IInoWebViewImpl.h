@@ -172,6 +172,93 @@ public:
      * debugging where the UI's boundaries sit against the 3D scene.
      */
     virtual void SetBackgroundOpaque(bool bOpaque) = 0;
+
+    // ── Browser-style nav helpers ───────────────────────────────────────────
+    // GoBack / GoForward are no-ops if the impl isn't ready; CanGo* return
+    // false unless the underlying native view says otherwise.
+    virtual void GoBack() = 0;
+    virtual void GoForward() = 0;
+    virtual bool CanGoBack() const = 0;
+    virtual bool CanGoForward() const = 0;
+
+    // ── O(1) cached state getters ───────────────────────────────────────────
+    // These return values that the impls keep in sync via existing event
+    // callbacks (NavigationStarting/Completed, OnDocumentTitleChanged) and
+    // the initial config. No native round-trip — guaranteed cheap.
+    FString GetURL()   const { return CachedURL;   }
+    FString GetTitle() const { return CachedTitle; }
+    bool    IsLoading() const { return bCachedLoading; }
+
+    /** Stop loading the current navigation. No-op if not ready. */
+    virtual void StopLoading() = 0;
+
+    /**
+     * Load arbitrary HTML directly. Queued like Navigate if not ready.
+     *
+     * BaseURI behavior diverges by platform:
+     *   • Windows (WebView2 NavigateToString): BaseURI is IGNORED — the
+     *     resulting page sees `about:blank` as origin. If you need a base
+     *     URI, use a virtual-host mapping and serve the HTML through that.
+     *   • Android (loadDataWithBaseURL): BaseURI is honoured natively.
+     */
+    virtual void LoadHTMLString(const FString& HTML, const FString& BaseURI) = 0;
+
+    /**
+     * Set a single cookie for URL. Cookie is the raw HTTP cookie syntax
+     * ("name=value; Path=/; Expires=...; HttpOnly; Secure; SameSite=Lax").
+     * Queued if not ready.
+     */
+    virtual void SetCookie(const FString& URL, const FString& Cookie) = 0;
+
+    /** Clear cookies + cache + storage for this WebView's profile. */
+    virtual void ClearAllData() = 0;
+
+    /**
+     * Capture the WebView's current visual state and write it to OutFilePath.
+     * Best-effort: returns false (no queueing) if the impl isn't ready, or
+     * if any of the platform calls fail synchronously. Completion is async
+     * either way — the OnCapturePreviewCompleteCallback fires when done.
+     */
+    virtual bool CapturePreview(EInoImageFormat Format, const FString& OutFilePath) = 0;
+
+    /** Owner-settable; fired when CapturePreview finishes (success or fail). */
+    TFunction<void(bool bSuccess, const FString& FilePath)> OnCapturePreviewCompleteCallback;
+
+    /**
+     * Navigate to URL with extra HTTP headers attached to the top-level
+     * request. Headers DO NOT propagate to subresource requests — only the
+     * navigation itself. Queued if not ready.
+     */
+    virtual void LoadURLWithHeaders(const FString& URL, const TMap<FString, FString>& Headers) = 0;
+
+    // ── Sub-region bounds (item 9) ──────────────────────────────────────────
+    // Same parameter semantics as SyncBounds — screen-space pixel coords for
+    // X/Y, then width/height. Same impl behavior, just keyed off the
+    // "manual bounds" mode the caller selected through UInoWebView.
+
+    /**
+     * Set whether this WebView should size itself manually (per SetBounds)
+     * or automatically follow the parent's client rect (default).
+     *
+     * On Windows the impls don't actually need to know — they just put
+     * whatever they're told. On Android, the Java side needs to know whether
+     * to use MATCH_PARENT (auto) or explicit pixel sizing with margins
+     * (manual). Default no-op so platforms that don't care can ignore it.
+     */
+    virtual void SetBoundsMode(bool bManual) { (void)bManual; }
+
+protected:
+    // Cached state — written by impls from existing event callbacks. Public
+    // accessors above. Access from implementations is fine; access from
+    // anywhere else should go through GetURL/GetTitle/IsLoading.
+    FString CachedURL;
+    FString CachedTitle;
+    bool    bCachedLoading   = false;
+    // Cached on Android via a Java->C++ callback after each nav event;
+    // Windows reads them directly from WebView2 in CanGoBack/CanGoForward
+    // and ignores these fields.
+    bool    bCachedCanGoBack    = false;
+    bool    bCachedCanGoForward = false;
 };
 
 /**

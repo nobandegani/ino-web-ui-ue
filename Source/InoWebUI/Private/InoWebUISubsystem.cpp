@@ -265,9 +265,30 @@ void UInoWebUISubsystem::BroadcastClientRectToAll()
     {
         if (UInoWebView* View = Pair.Value)
         {
+            // Manual-bounds WebViews opt out of auto-resize. Their rect is
+            // owned by the caller via SetBounds; SetBoundsAuto re-engages
+            // them.
+            if (View->IsManualBounds()) continue;
             View->OnParentResized(ScreenX, ScreenY, Width, Height);
         }
     }
+}
+
+void UInoWebUISubsystem::BroadcastClientRectToOne(UInoWebView* View)
+{
+    check(IsInGameThread());
+    if (!View) return;
+
+    TSharedPtr<SWindow> Window = GetParentWindow();
+    if (!Window.IsValid()) return;
+
+    const FSlateRect ClientRect = Window->GetClientRectInScreen();
+    const int32 ScreenX = FMath::FloorToInt32(ClientRect.Left);
+    const int32 ScreenY = FMath::FloorToInt32(ClientRect.Top);
+    const int32 Width   = FMath::Max(0, FMath::CeilToInt32(ClientRect.Right  - ClientRect.Left));
+    const int32 Height  = FMath::Max(0, FMath::CeilToInt32(ClientRect.Bottom - ClientRect.Top));
+
+    View->OnParentResized(ScreenX, ScreenY, Width, Height);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

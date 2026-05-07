@@ -6,6 +6,7 @@
 
 #include "InoWebUILog.h"
 #include "Misc/Paths.h"
+#include "Misc/FileHelper.h"
 #include "HAL/FileManager.h"
 
 // ── Windows + WebView2 + DComp headers ────────────────────────────────────
@@ -18,6 +19,7 @@ THIRD_PARTY_INCLUDES_START
 #include <wrl.h>
 #include <wrl/event.h>
 #include <WebView2.h>
+#include <shlwapi.h>            // SHCreateMemStream
 #include <dcomp.h>              // IDCompositionDevice / Target / Visual
 THIRD_PARTY_INCLUDES_END
 
@@ -158,6 +160,18 @@ struct FInoWebViewImpl_Windows_Composition::FInternal
     TArray<FString>    PendingOutboundMessages;
     TArray<FString>    PendingScripts;
     TOptional<bool>    PendingMute;
+
+    // ── New pending operations (parity with sibling impl) ──────────────────
+    struct FPendingHTML { FString HTML; FString BaseURI; };
+    TOptional<FPendingHTML> PendingHTMLLoad;
+
+    struct FPendingHeadered { FString URL; TMap<FString, FString> Headers; };
+    TOptional<FPendingHeadered> PendingHeaderedLoad;
+
+    struct FPendingCookie { FString URL; FString Cookie; };
+    TArray<FPendingCookie> PendingCookies;
+
+    bool bPendingClearAllData = false;
 
     // Event registration tokens.
     EventRegistrationToken MessageReceivedToken{};
@@ -537,6 +551,7 @@ bool FInoWebViewImpl_Windows_Composition::Initialize(void* ParentNativeHandle, c
     if (!Config.InitialURL.IsEmpty())
     {
         Internal->PendingNavigate = Config.InitialURL;
+        CachedURL = Config.InitialURL;
     }
     Internal->PendingVisible = Config.bVisibleOnCreate;
     Internal->bUserVisible   = Config.bVisibleOnCreate;
@@ -738,6 +753,10 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
                         UE_LOG(LogInoWebUI, Warning,
                             TEXT("Navigation blocked by lockdown: %s"), *URI);
                     }
+                    else
+                    {
+                        bCachedLoading = true;
+                    }
                     if (OnNavigationStartingCallback) OnNavigationStartingCallback(URI);
                     return S_OK;
                 }).Get(),
@@ -758,6 +777,8 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
                         URI = SourceRaw;
                         CoTaskMemFree(SourceRaw);
                     }
+                    CachedURL      = URI;
+                    bCachedLoading = false;
                     if (OnNavigationCompletedCallback) OnNavigationCompletedCallback(bSuccess != 0, URI);
                     return S_OK;
                 }).Get(),
@@ -775,6 +796,7 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
                     }
                     const FString Title(TitleRaw);
                     CoTaskMemFree(TitleRaw);
+                    CachedTitle = Title;
                     if (OnDocumentTitleChangedCallback) OnDocumentTitleChangedCallback(Title);
                     return S_OK;
                 }).Get(),
@@ -1047,6 +1069,32 @@ void FInoWebViewImpl_Windows_Composition::ApplyPendingOperations()
         SetMuted(Internal->PendingMute.GetValue());
         Internal->PendingMute.Reset();
     }
+
+    if (Internal->PendingHTMLLoad.IsSet())
+    {
+        const auto Snap = Internal->PendingHTMLLoad.GetValue();
+        Internal->PendingHTMLLoad.Reset();
+        LoadHTMLString(Snap.HTML, Snap.BaseURI);
+    }
+    if (Internal->PendingHeaderedLoad.IsSet())
+    {
+        const auto Snap = Internal->PendingHeaderedLoad.GetValue();
+        Internal->PendingHeaderedLoad.Reset();
+        LoadURLWithHeaders(Snap.URL, Snap.Headers);
+    }
+    if (Internal->PendingCookies.Num() > 0)
+    {
+        TArray<FInternal::FPendingCookie> Replay = MoveTemp(Internal->PendingCookies);
+        for (const FInternal::FPendingCookie& C : Replay)
+        {
+            SetCookie(C.URL, C.Cookie);
+        }
+    }
+    if (Internal->bPendingClearAllData)
+    {
+        Internal->bPendingClearAllData = false;
+        ClearAllData();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1190,6 +1238,325 @@ void FInoWebViewImpl_Windows_Composition::PostMessageJson(const FString& Json)
     if (!bReady) { Internal->PendingOutboundMessages.Add(Json); return; }
 
     Internal->WebView->PostWebMessageAsString(*Json);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Browser-style nav (composition impl)
+// ─────────────────────────────────────────────────────────────────────────────
+void FInoWebViewImpl_Windows_Composition::GoBack()
+{
+    check(IsInGameThread());
+    if (!bReady || !Internal->WebView) return;
+    Internal->WebView->GoBack();
+}
+
+void FInoWebViewImpl_Windows_Composition::GoForward()
+{
+    check(IsInGameThread());
+    if (!bReady || !Internal->WebView) return;
+    Internal->WebView->GoForward();
+}
+
+bool FInoWebViewImpl_Windows_Composition::CanGoBack() const
+{
+    if (!bReady || !Internal || !Internal->WebView) return false;
+    BOOL b = 0;
+    if (FAILED(Internal->WebView->get_CanGoBack(&b))) return false;
+    return b != 0;
+}
+
+bool FInoWebViewImpl_Windows_Composition::CanGoForward() const
+{
+    if (!bReady || !Internal || !Internal->WebView) return false;
+    BOOL b = 0;
+    if (FAILED(Internal->WebView->get_CanGoForward(&b))) return false;
+    return b != 0;
+}
+
+void FInoWebViewImpl_Windows_Composition::StopLoading()
+{
+    check(IsInGameThread());
+    if (!bReady || !Internal->WebView) return;
+    Internal->WebView->Stop();
+}
+
+void FInoWebViewImpl_Windows_Composition::LoadHTMLString(const FString& HTML, const FString& BaseURI)
+{
+    check(IsInGameThread());
+    if (!bReady)
+    {
+        Internal->PendingHTMLLoad = FInternal::FPendingHTML{ HTML, BaseURI };
+        return;
+    }
+    if (!BaseURI.IsEmpty())
+    {
+        UE_LOG(LogInoWebUI, Verbose,
+            TEXT("LoadHTMLString (composition): BaseURI ('%s') ignored — "
+                 "WebView2 NavigateToString uses about:blank as origin."),
+            *BaseURI);
+    }
+    Internal->WebView->NavigateToString(*HTML);
+}
+
+// Cookie parsing helper (unique-named namespace because of unity builds —
+// matches the IsURIAllowed helper above). ICoreWebView2Cookie's Path/Domain
+// are read-only post-construction; we parse the full string first, then call
+// CreateCookie with name/value/domain/path baked in.
+namespace InoWebUICompositionPriv
+{
+    bool ParseHttpDateToUnixSecondsC(const FString& Date, double& OutSeconds)
+    {
+        FDateTime DT;
+        if (FDateTime::ParseHttpDate(Date, DT))
+        {
+            OutSeconds = static_cast<double>(DT.ToUnixTimestamp());
+            return true;
+        }
+        return false;
+    }
+
+    struct FParsedCookieC
+    {
+        FString  Name;
+        FString  Value;
+        FString  Path = TEXT("/");
+        FString  Domain;
+        TOptional<double> Expires;
+        bool     bSecure   = false;
+        bool     bHttpOnly = false;
+        TOptional<COREWEBVIEW2_COOKIE_SAME_SITE_KIND> SameSite;
+        bool     bValid = false;
+    };
+
+    FParsedCookieC ParseHttpCookieC(const FString& Raw)
+    {
+        FParsedCookieC Out;
+        TArray<FString> Parts;
+        Raw.ParseIntoArray(Parts, TEXT(";"), true);
+        if (Parts.Num() == 0) return Out;
+
+        FString First = Parts[0].TrimStartAndEnd();
+        int32 Eq = INDEX_NONE;
+        if (!First.FindChar(TEXT('='), Eq)) return Out;
+        Out.Name  = First.Left(Eq).TrimStartAndEnd();
+        Out.Value = First.Mid(Eq + 1).TrimStartAndEnd();
+        Out.bValid = true;
+
+        for (int32 i = 1; i < Parts.Num(); ++i)
+        {
+            const FString Trim = Parts[i].TrimStartAndEnd();
+            int32 EqIdx = INDEX_NONE;
+            FString K, V;
+            if (Trim.FindChar(TEXT('='), EqIdx))
+            {
+                K = Trim.Left(EqIdx).TrimStartAndEnd();
+                V = Trim.Mid(EqIdx + 1).TrimStartAndEnd();
+            }
+            else
+            {
+                K = Trim;
+            }
+
+            if      (K.Equals(TEXT("Path"),    ESearchCase::IgnoreCase)) Out.Path   = V;
+            else if (K.Equals(TEXT("Domain"),  ESearchCase::IgnoreCase)) Out.Domain = V;
+            else if (K.Equals(TEXT("Expires"), ESearchCase::IgnoreCase))
+            {
+                double Sec = 0.0;
+                if (ParseHttpDateToUnixSecondsC(V, Sec)) Out.Expires = Sec;
+            }
+            else if (K.Equals(TEXT("Max-Age"), ESearchCase::IgnoreCase))
+            {
+                const int64 Secs = FCString::Atoi64(*V);
+                Out.Expires = static_cast<double>(FDateTime::UtcNow().ToUnixTimestamp() + Secs);
+            }
+            else if (K.Equals(TEXT("HttpOnly"), ESearchCase::IgnoreCase)) Out.bHttpOnly = true;
+            else if (K.Equals(TEXT("Secure"),   ESearchCase::IgnoreCase)) Out.bSecure   = true;
+            else if (K.Equals(TEXT("SameSite"), ESearchCase::IgnoreCase))
+            {
+                COREWEBVIEW2_COOKIE_SAME_SITE_KIND Kind = COREWEBVIEW2_COOKIE_SAME_SITE_KIND_LAX;
+                if      (V.Equals(TEXT("None"),   ESearchCase::IgnoreCase)) Kind = COREWEBVIEW2_COOKIE_SAME_SITE_KIND_NONE;
+                else if (V.Equals(TEXT("Strict"), ESearchCase::IgnoreCase)) Kind = COREWEBVIEW2_COOKIE_SAME_SITE_KIND_STRICT;
+                Out.SameSite = Kind;
+            }
+        }
+        return Out;
+    }
+}
+
+void FInoWebViewImpl_Windows_Composition::SetCookie(const FString& URL, const FString& Cookie)
+{
+    check(IsInGameThread());
+    if (!bReady)
+    {
+        Internal->PendingCookies.Add(FInternal::FPendingCookie{ URL, Cookie });
+        return;
+    }
+
+    ComPtr<ICoreWebView2_2> WebView2;
+    if (FAILED(Internal->WebView.As(&WebView2)) || !WebView2) return;
+
+    ComPtr<ICoreWebView2CookieManager> CookieMgr;
+    if (FAILED(WebView2->get_CookieManager(&CookieMgr)) || !CookieMgr) return;
+
+    InoWebUICompositionPriv::FParsedCookieC P =
+        InoWebUICompositionPriv::ParseHttpCookieC(Cookie);
+    if (!P.bValid) return;
+
+    FString Domain = P.Domain;
+    if (Domain.IsEmpty())
+    {
+        Domain = InoWebUICompositionPriv::ExtractHost(URL);
+    }
+
+    ComPtr<ICoreWebView2Cookie> NewCookie;
+    if (FAILED(CookieMgr->CreateCookie(*P.Name, *P.Value, *Domain, *P.Path, &NewCookie))
+        || !NewCookie)
+    {
+        return;
+    }
+
+    if (P.Expires.IsSet())  NewCookie->put_Expires(P.Expires.GetValue());
+    if (P.bHttpOnly)        NewCookie->put_IsHttpOnly(1);
+    if (P.bSecure)          NewCookie->put_IsSecure(1);
+    if (P.SameSite.IsSet()) NewCookie->put_SameSite(P.SameSite.GetValue());
+
+    CookieMgr->AddOrUpdateCookie(NewCookie.Get());
+}
+
+void FInoWebViewImpl_Windows_Composition::ClearAllData()
+{
+    check(IsInGameThread());
+    if (!bReady)
+    {
+        Internal->bPendingClearAllData = true;
+        return;
+    }
+
+    ComPtr<ICoreWebView2_13> WebView13;
+    if (SUCCEEDED(Internal->WebView.As(&WebView13)) && WebView13)
+    {
+        ComPtr<ICoreWebView2Profile> Profile;
+        if (SUCCEEDED(WebView13->get_Profile(&Profile)) && Profile)
+        {
+            ComPtr<ICoreWebView2Profile2> Profile2;
+            if (SUCCEEDED(Profile.As(&Profile2)) && Profile2)
+            {
+                TWeakPtr<int> WeakLifetime = Internal->LifetimeToken;
+                const HRESULT Hr = Profile2->ClearBrowsingData(
+                    COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_PROFILE,
+                    Callback<ICoreWebView2ClearBrowsingDataCompletedHandler>(
+                        [WeakLifetime](HRESULT) -> HRESULT { (void)WeakLifetime; return S_OK; }).Get());
+                if (SUCCEEDED(Hr)) return;
+            }
+        }
+    }
+
+    ClearAllCookies();
+    ExecuteJavaScript(TEXT("try{localStorage.clear();sessionStorage.clear();}catch(e){}"));
+}
+
+bool FInoWebViewImpl_Windows_Composition::CapturePreview(EInoImageFormat Format,
+                                                         const FString& OutFilePath)
+{
+    check(IsInGameThread());
+    if (!bReady || !Internal->WebView) return false;
+
+    IStream* MemStream = SHCreateMemStream(nullptr, 0);
+    if (!MemStream) return false;
+
+    const COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT Fmt =
+        (Format == EInoImageFormat::JPEG)
+        ? COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG
+        : COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
+
+    TWeakPtr<int> WeakLifetime = Internal->LifetimeToken;
+    const FString OutPathCopy = OutFilePath;
+
+    const HRESULT Hr = Internal->WebView->CapturePreview(
+        Fmt, MemStream,
+        Callback<ICoreWebView2CapturePreviewCompletedHandler>(
+            [this, WeakLifetime, MemStream, OutPathCopy](HRESULT Result) -> HRESULT
+            {
+                if (!WeakLifetime.IsValid())
+                {
+                    if (MemStream) MemStream->Release();
+                    return S_OK;
+                }
+
+                bool bSuccess = false;
+                if (SUCCEEDED(Result) && MemStream)
+                {
+                    LARGE_INTEGER LZero{}; LZero.QuadPart = 0;
+                    MemStream->Seek(LZero, STREAM_SEEK_SET, nullptr);
+
+                    TArray<uint8> Bytes;
+                    constexpr ULONG kChunk = 64 * 1024;
+                    uint8 Tmp[kChunk];
+                    while (true)
+                    {
+                        ULONG Got = 0;
+                        const HRESULT R = MemStream->Read(Tmp, kChunk, &Got);
+                        if (Got > 0) Bytes.Append(Tmp, Got);
+                        if (FAILED(R) || Got < kChunk) break;
+                    }
+
+                    if (Bytes.Num() > 0)
+                    {
+                        bSuccess = FFileHelper::SaveArrayToFile(Bytes, *OutPathCopy);
+                    }
+                }
+
+                if (MemStream) MemStream->Release();
+
+                if (OnCapturePreviewCompleteCallback)
+                {
+                    OnCapturePreviewCompleteCallback(bSuccess, OutPathCopy);
+                }
+                return S_OK;
+            }).Get());
+
+    if (FAILED(Hr))
+    {
+        if (MemStream) MemStream->Release();
+        return false;
+    }
+    return true;
+}
+
+void FInoWebViewImpl_Windows_Composition::LoadURLWithHeaders(const FString& URL,
+                                                              const TMap<FString, FString>& Headers)
+{
+    check(IsInGameThread());
+    if (!bReady)
+    {
+        Internal->PendingHeaderedLoad = FInternal::FPendingHeadered{ URL, Headers };
+        return;
+    }
+
+    ComPtr<ICoreWebView2Environment2> Env2;
+    ComPtr<ICoreWebView2_2> WebView2;
+    if (!Internal->Environment
+        || FAILED(Internal->Environment.As(&Env2)) || !Env2
+        || FAILED(Internal->WebView.As(&WebView2)) || !WebView2)
+    {
+        Navigate(URL);
+        return;
+    }
+
+    FString Joined;
+    for (const TPair<FString, FString>& KV : Headers)
+    {
+        Joined.Appendf(TEXT("%s: %s\r\n"), *KV.Key, *KV.Value);
+    }
+
+    ComPtr<ICoreWebView2WebResourceRequest> Request;
+    if (FAILED(Env2->CreateWebResourceRequest(*URL, TEXT("GET"), nullptr, *Joined, &Request))
+        || !Request)
+    {
+        Navigate(URL);
+        return;
+    }
+    WebView2->NavigateWithWebResourceRequest(Request.Get());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
