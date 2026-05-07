@@ -83,173 +83,8 @@ public class InoWebViewAndroid
     /** id → mutable Config. Parallel array to sWebViews. */
     private static final SparseArray<Config> sConfigs = new SparseArray<>();
 
-    /** Dev overlay — a floating circular dev-tools button in the bottom-right
-     *  corner of the page. Injected on every page load only when
-     *  config.devOverlayEnabled is true (which mirrors FInoWebViewConfig::
-     *  bEnableDevTools). If you modify this, ALSO update the identical copy
-     *  in InoWebViewImpl_Windows.cpp's GInoWebUIDevToolsOverlayScript. */
-    private static final String DEVTOOLS_OVERLAY_JS = String.join("\n",
-        "(function() {",
-        "  if (window.__inoDevOverlayLoaded) return;",
-        "  window.__inoDevOverlayLoaded = true;",
-        "  function detectPlatform(){",
-        "    if(window.chrome&&window.chrome.webview)return 'Windows (WebView2)';",
-        "    if(window._InoWebUIHost)return 'Android (WebView)';",
-        "    return 'Browser (no bridge)';",
-        "  }",
-        "  function showInfoModal(){",
-        "    var existing=document.getElementById('__ino-dev-info-modal');",
-        "    if(existing){existing.remove();return;}",
-        "    var info={",
-        "      'URL':location.href,",
-        "      'Title':document.title||'(none)',",
-        "      'Platform':detectPlatform(),",
-        "      'Viewport':window.innerWidth+' x '+window.innerHeight,",
-        "      'Screen':screen.width+' x '+screen.height,",
-        "      'Device Pixel Ratio':window.devicePixelRatio,",
-        "      'Language':navigator.language,",
-        "      'Online':navigator.onLine?'yes':'no',",
-        "      'Touch':('ontouchstart' in window)?'yes':'no',",
-        "      'InoWebUI bridge':window.InoWebUI?('loaded v'+window.InoWebUI.version):'NOT loaded',",
-        "      'User Agent':navigator.userAgent",
-        "    };",
-        "    var modal=document.createElement('div');",
-        "    modal.id='__ino-dev-info-modal';",
-        "    modal.style.cssText='position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,0.62);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;pointer-events:auto;padding:24px;font-family:-apple-system,BlinkMacSystemFont,\\\"Segoe UI\\\",Roboto,sans-serif;';",
-        "    var card=document.createElement('div');",
-        "    card.style.cssText=S('background:rgba(18,18,26,0.96);border:1px solid rgba(255,255,255,0.12);border-radius:14px;padding:20px 24px;max-width:560px;width:100%;color:#e7ecf3;font-size:13px;box-shadow:0 20px 60px rgba(0,0,0,0.5);');",
-        "    var header=document.createElement('div');",
-        "    header.style.cssText='display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;';",
-        "    var h=document.createElement('div');h.textContent='WebView Info';",
-        "    h.style.cssText='font-size:15px;font-weight:600;color:#fff;';",
-        "    var x=document.createElement('button');x.textContent='\\u00D7';",
-        "    x.style.cssText=S('background:transparent;border:0;color:rgba(255,255,255,0.6);font-size:22px;cursor:pointer;padding:0 4px;line-height:1;');",
-        "    header.appendChild(h);header.appendChild(x);card.appendChild(header);",
-        "    var table=document.createElement('div');",
-        "    table.style.cssText='display:grid;grid-template-columns:auto 1fr;gap:6px 14px;';",
-        "    Object.keys(info).forEach(function(k){",
-        "      var kEl=document.createElement('div');kEl.textContent=k;",
-        "      kEl.style.cssText='color:rgba(255,255,255,0.55);font-size:12px;';",
-        "      var vEl=document.createElement('div');vEl.textContent=info[k];",
-        "      vEl.style.cssText='font-family:monospace;font-size:12px;word-break:break-all;user-select:text;-webkit-user-select:text;';",
-        "      table.appendChild(kEl);table.appendChild(vEl);",
-        "    });",
-        "    card.appendChild(table);",
-        "    modal.appendChild(card);",
-        "    x.addEventListener('click',function(){modal.remove();});",
-        "    modal.addEventListener('click',function(e){if(e.target===modal)modal.remove();});",
-        "    document.body.appendChild(modal);",
-        "  }",
-        "  var ACTIONS = [",
-        "    { id: 'refresh',            icon: '\\u21BB', title: 'Refresh' },",
-        "    { id: 'openDevTools',       icon: '\\u2325', title: 'Open DevTools' },",
-        "    { id: 'clearData',          icon: '\\u232B', title: 'Clear Data' },",
-        "    { id: 'info',               icon: '\\u24D8', title: 'Info', handler: function(){showInfoModal();} },",
-        "    { id: 'toggleTransparency', icon: '\\u25C9', title: 'Toggle Transparency' },",
-        "    { id: 'hideWebUI',          icon: '\\u2298', title: 'Hide WebUI' },",
-        "    { id: 'devCallback',        icon: '\\u25C6', title: 'Dev Callback' }",
-        "  ];",
-        "  var POSITIONS = [",
-        "    { tx: 0, ty: -140 }, { tx: -36, ty: -135 },",
-        "    { tx: -70, ty: -121 }, { tx: -99, ty: -99 },",
-        "    { tx: -121, ty: -70 }, { tx: -135, ty: -36 },",
-        "    { tx: -140, ty: 0 }",
-        "  ];",
-        "  function S(x){return 'all:initial;font-family:-apple-system,BlinkMacSystemFont,\\\"Segoe UI\\\",Roboto,sans-serif;line-height:1;color:#fff;'+x;}",
-        "  function build(){",
-        "    var root=document.createElement('div');",
-        "    root.id='__ino-dev-overlay';",
-        "    root.style.cssText='position:fixed;bottom:16px;right:16px;width:180px;height:180px;pointer-events:none;z-index:2147483647;';",
-        "    var main=document.createElement('button');",
-        "    main.textContent='\\u2699';",
-        "    main.style.cssText=S('position:absolute;bottom:0;right:0;width:52px;height:52px;border-radius:50%;background:rgba(20,20,28,0.82);border:1px solid rgba(255,255,255,0.18);box-shadow:0 6px 24px rgba(0,0,0,0.4);cursor:pointer;pointer-events:auto;display:flex;align-items:center;justify-content:center;font-size:24px;transition:transform 0.2s,background 0.2s;');",
-        "    root.appendChild(main);",
-        "    var children=[];",
-        "    ACTIONS.forEach(function(a,i){",
-        "      var pos=POSITIONS[i];",
-        "      var btn=document.createElement('button');",
-        "      btn.textContent=a.icon;",
-        "      btn.title=a.title;",
-        "      btn.style.cssText=S('position:absolute;bottom:6px;right:6px;width:40px;height:40px;border-radius:50%;background:rgba(20,20,28,0.9);border:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 12px rgba(0,0,0,0.4);cursor:pointer;pointer-events:none;display:flex;align-items:center;justify-content:center;font-size:18px;opacity:0;transform:translate(0,0) scale(0.3);transition:transform 0.25s cubic-bezier(0.175,0.885,0.32,1.275),opacity 0.2s,background 0.15s;');",
-        "      btn.addEventListener('click',function(e){",
-        "        e.stopPropagation();",
-        "        collapse();",
-        "        if(a.handler){a.handler();return;}",
-        "        if(window.InoWebUI&&typeof window.InoWebUI.send==='function'){",
-        "          try{window.InoWebUI.send('_devtools.'+a.id,{});}catch(err){console.error('InoDevOverlay:',err);}",
-        "        }",
-        "      });",
-        "      btn.addEventListener('mouseenter',function(){",
-        "        if(expanded){btn.style.transform='translate('+pos.tx+'px,'+pos.ty+'px) scale(1.12)';btn.style.background='rgba(60,60,80,0.95)';}",
-        "      });",
-        "      btn.addEventListener('mouseleave',function(){",
-        "        if(expanded){btn.style.transform='translate('+pos.tx+'px,'+pos.ty+'px) scale(1)';btn.style.background='rgba(20,20,28,0.9)';}",
-        "      });",
-        "      root.appendChild(btn);",
-        "      children.push({btn:btn,pos:pos});",
-        "    });",
-        "    var expanded=false;",
-        "    function expand(){",
-        "      expanded=true;",
-        "      main.style.transform='rotate(45deg)';",
-        "      main.style.background='rgba(60,60,80,0.92)';",
-        "      children.forEach(function(c){",
-        "        c.btn.style.opacity='1';c.btn.style.pointerEvents='auto';",
-        "        c.btn.style.transform='translate('+c.pos.tx+'px,'+c.pos.ty+'px) scale(1)';",
-        "      });",
-        "    }",
-        "    function collapse(){",
-        "      expanded=false;",
-        "      main.style.transform='rotate(0deg)';",
-        "      main.style.background='rgba(20,20,28,0.82)';",
-        "      children.forEach(function(c){",
-        "        c.btn.style.opacity='0';c.btn.style.pointerEvents='none';",
-        "        c.btn.style.transform='translate(0,0) scale(0.3)';",
-        "      });",
-        "    }",
-        "    main.addEventListener('click',function(e){e.stopPropagation();if(expanded)collapse();else expand();});",
-        "    main.addEventListener('mouseenter',function(){if(!expanded)main.style.transform='scale(1.08)';});",
-        "    main.addEventListener('mouseleave',function(){if(!expanded)main.style.transform='scale(1)';});",
-        "    document.addEventListener('click',function(e){if(expanded&&!root.contains(e.target))collapse();});",
-        "    return root;",
-        "  }",
-        "  function mount(){if(document.body)document.body.appendChild(build());else document.addEventListener('DOMContentLoaded',mount);}",
-        "  mount();",
-        "})();"
-    );
-
-    /** Bridge JS injected on every page load when messagingEnabled. Matches
-     *  the Windows-side window.InoWebUI API exactly: send / on / off. */
-    private static final String BRIDGE_JS =
-        "(function(){"
-        + "if(window.InoWebUI)return;"
-        + "var listeners={};"
-        + "window.InoWebUI={version:'1.0',"
-        + "  send:function(channel,payload){"
-        + "    try{window._InoWebUIHost.receive(JSON.stringify({channel:String(channel),payload:payload}));}"
-        + "    catch(e){console.error('InoWebUI.send failed:',e);}"
-        + "  },"
-        + "  on:function(channel,handler){"
-        + "    if(typeof handler!=='function')return;"
-        + "    if(!listeners[channel])listeners[channel]=[];"
-        + "    listeners[channel].push(handler);"
-        + "  },"
-        + "  off:function(channel,handler){"
-        + "    var a=listeners[channel];if(!a)return;"
-        + "    var i=a.indexOf(handler);if(i>=0)a.splice(i,1);"
-        + "  }"
-        + "};"
-        + "window._InoWebUIDispatch=function(env){"
-        + "  try{"
-        + "    if(typeof env==='string')env=JSON.parse(env);"
-        + "    if(!env||typeof env.channel!=='string')return;"
-        + "    var a=listeners[env.channel];if(!a)return;"
-        + "    for(var i=0;i<a.length;i++){"
-        + "      try{a[i](env.payload);}catch(e){console.error('InoWebUI handler error:',e);}"
-        + "    }"
-        + "  }catch(e){console.error('InoWebUI receive error:',e);}"
-        + "};"
-        + "})();";
+    // BRIDGE_JS and DEVTOOLS_OVERLAY_JS live in InoWebUIScripts.java —
+    // generated from Source/InoWebUI/JS/*.js by GenerateJSConstants.ps1.
 
     private static Activity getActivity()
     {
@@ -324,13 +159,13 @@ public class InoWebViewAndroid
             // rely on window.InoWebUI being present.
             if (c.messagingEnabled)
             {
-                view.evaluateJavascript(BRIDGE_JS, null);
+                view.evaluateJavascript(InoWebUIScripts.BRIDGE_JS, null);
             }
             // Dev overlay runs AFTER the bridge because its buttons call
             // window.InoWebUI.send(...).
             if (c.devOverlayEnabled)
             {
-                view.evaluateJavascript(DEVTOOLS_OVERLAY_JS, null);
+                view.evaluateJavascript(InoWebUIScripts.DEVTOOLS_OVERLAY_JS, null);
             }
         }
 
