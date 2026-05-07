@@ -594,12 +594,48 @@ public class InoWebViewAndroid
                 WebView wv = sWebViews.get(id);
                 if (wv == null) return;
 
-                // JSON is a subset of JS expression syntax, so we can inline
-                // the envelope directly — no additional escaping needed.
-                wv.evaluateJavascript("window._InoWebUIDispatch && window._InoWebUIDispatch("
-                        + envelopeJson + ")", null);
+                // Wrap the envelope in a JS string literal so the host->JS path
+                // can't be broken by U+2028 / U+2029 (legal in JSON, illegal
+                // in pre-ES2019 JS string literals) or by other unicode that
+                // is valid JSON but invalid as a raw JS expression. The
+                // bridge's dispatcher takes either a string (JSON.parse) or
+                // an object — passing a string keeps both platforms uniform.
+                String jsLiteral = jsStringLiteral(envelopeJson);
+                wv.evaluateJavascript(
+                    "window._InoWebUIDispatch && window._InoWebUIDispatch(" + jsLiteral + ")",
+                    null);
             }
         });
+    }
+
+    /** Encode a string as a JS string literal (with surrounding quotes) safe
+     *  to inline into a JS expression. Escapes everything that would break a
+     *  pre-ES2019 string literal, including U+2028 / U+2029. */
+    private static String jsStringLiteral(String s) {
+        StringBuilder sb = new StringBuilder(s.length() + 16);
+        sb.append('"');
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '\\': sb.append("\\\\"); break;
+                case '"':  sb.append("\\\""); break;
+                case '\n': sb.append("\\n");  break;
+                case '\r': sb.append("\\r");  break;
+                case '\t': sb.append("\\t");  break;
+                case '\b': sb.append("\\b");  break;
+                case '\f': sb.append("\\f");  break;
+                case 0x2028: sb.append("\\u2028"); break;
+                case 0x2029: sb.append("\\u2029"); break;
+                default:
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+            }
+        }
+        sb.append('"');
+        return sb.toString();
     }
 
     // ─────────────────────────────────────────────────────────────────────
