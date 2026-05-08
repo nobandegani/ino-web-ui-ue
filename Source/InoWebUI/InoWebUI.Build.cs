@@ -63,6 +63,19 @@ public class InoWebUI : ModuleRules
         // explicitly). Module-scoped flag, doesn't affect any other code.
         bEnableObjCAutomaticReferenceCounting = true;
 
+        // ARC must match the PCH it consumes. The project-wide shared PCH
+        // (SharedPCH.Slate.Project...) is compiled WITHOUT ARC, so any module
+        // that enables ARC and reuses that PCH fails with:
+        //
+        //   "Objective-C automated reference counting was disabled in
+        //    precompiled file 'SharedPCH...gch' but is currently enabled"
+        //
+        // Force a module-private PCH on iOS so this module compiles its own
+        // PCH with ARC enabled. Adds a small one-time compile cost
+        // (a few seconds) and only on iOS — Win64 / Android still use the
+        // shared PCH per the constructor's UseExplicitOrSharedPCHs default.
+        PCHUsage = PCHUsageMode.NoSharedPCHs;
+
         // No UPL/IPL needed for the core WKWebView display path — Apple does
         // NOT require any Info.plist additions for inline WKWebView use.
         // (Network features like ATS exceptions remain the consumer project's
