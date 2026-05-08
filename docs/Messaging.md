@@ -76,11 +76,14 @@ script runs**:
 
 - Windows: via `ICoreWebView2::AddScriptToExecuteOnDocumentCreated`.
 - Android: via `WebViewClient.onPageStarted` injection.
+- iOS: via `WKUserScript` with `WKUserScriptInjectionTimeAtDocumentStart`.
 
 The shim source-of-truth is
 [`Source/InoWebUI/JS/bridge.js`](../Source/InoWebUI/JS/bridge.js).
 `Scripts/GenerateJSConstants.ps1` regenerates the platform-specific
-constants from it — never edit the generated copies directly.
+constants from it — never edit the generated copies directly. Three
+outputs are emitted: a C++ TCHAR header (Windows), a Java class
+(Android), and an Objective-C++ NSString header (iOS).
 
 ```js
 // Send UE <- JS
@@ -130,6 +133,10 @@ All messaging runs on the **game thread**.
 - Android marshals incoming messages onto the game thread via
   `AsyncTask(ENamedThreads::GameThread, ...)` before invoking the user's
   delegate, so the user-facing contract is identical.
+- iOS: `WKScriptMessageHandler` callbacks fire on the iOS main thread
+  (which is NOT UE's game thread on iOS); the plugin marshals onto the
+  game thread via `AsyncTask` before invoking the user's delegate, same
+  shape as Android.
 - UE Blueprint dynamic multicast delegates broadcast on the calling
   thread, so user BP graphs run on the game thread with no surprises.
 

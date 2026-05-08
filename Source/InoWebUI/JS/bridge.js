@@ -4,8 +4,9 @@
 // to regenerate the C++/Java constants.
 //
 // Detects transport at runtime:
-//   • window.chrome.webview        → Windows (WebView2)
-//   • window._InoWebUIHost         → Android (addJavascriptInterface)
+//   • window.chrome.webview                                → Windows (WebView2)
+//   • window.webkit.messageHandlers._InoWebUIHost          → iOS (WKWebView)
+//   • window._InoWebUIHost                                 → Android (addJavascriptInterface)
 //
 // Public API exposed to page scripts (identical on every platform):
 //   window.InoWebUI.send(channel, payload)        — fire-and-forget UE→JS post
@@ -35,6 +36,22 @@
         });
       }
     };
+  } else if (window.webkit && window.webkit.messageHandlers
+                            && window.webkit.messageHandlers._InoWebUIHost) {
+    // iOS (WKWebView). Note: _InoWebUIHost on Apple lives under
+    // window.webkit.messageHandlers, NOT as a window-level global, so it
+    // never collides with the Android branch below — both can use the same
+    // logical name. Tested order matters anyway: this branch is checked
+    // BEFORE the bare window._InoWebUIHost check.
+    transport = {
+      send: function(json) {
+        window.webkit.messageHandlers._InoWebUIHost.postMessage(json);
+      },
+      install: function(dispatch) {
+        // Native side calls this global after evaluateJavaScript("...").
+        window._InoWebUIDispatch = function(env) { dispatch(env); };
+      }
+    };
   } else if (window._InoWebUIHost) {
     transport = {
       send: function(json) { window._InoWebUIHost.receive(json); },
@@ -48,7 +65,8 @@
     // makes the situation obvious instead of silently dropping all sends.
     if (typeof console !== 'undefined' && console.warn) {
       console.warn('InoWebUI: no host bridge detected '
-                 + '(window.chrome.webview / window._InoWebUIHost both absent). '
+                 + '(window.chrome.webview / window.webkit.messageHandlers._InoWebUIHost / '
+                 + 'window._InoWebUIHost all absent). '
                  + 'send/on are no-ops in this environment.');
     }
     return;

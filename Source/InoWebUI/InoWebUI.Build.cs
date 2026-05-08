@@ -33,6 +33,40 @@ public class InoWebUI : ModuleRules
         {
             SetupAndroid(Target);
         }
+        else if (Target.Platform == UnrealTargetPlatform.IOS)
+        {
+            SetupIOS(Target);
+        }
+    }
+
+    // ── iOS ──────────────────────────────────────────────────────────────────
+    void SetupIOS(ReadOnlyTargetRules Target)
+    {
+        // Launch gives us [IOSAppDelegate GetDelegate] (RootView, IOSView, etc.).
+        // ApplicationCore is already in the list above.
+        PrivateDependencyModuleNames.Add("Launch");
+
+        // System frameworks: WKWebView lives in WebKit; UIKit is needed for the
+        // RootView, frame, snapshot UIImage, etc.; Foundation is implicit but
+        // kept explicit for self-documentation.
+        PublicFrameworks.AddRange(new string[]
+        {
+            "WebKit",
+            "UIKit",
+            "Foundation",
+        });
+
+        // Enable Objective-C Automatic Reference Counting for the .mm in this
+        // module. UBT's default for game/plugin modules is MRR (manual retain
+        // / release); the iOS impl is written assuming ARC semantics
+        // (NSString*/UIView*/WKWebView* members of FInternal don't retain
+        // explicitly). Module-scoped flag, doesn't affect any other code.
+        bEnableObjCAutomaticReferenceCounting = true;
+
+        // No UPL/IPL needed for the core WKWebView display path — Apple does
+        // NOT require any Info.plist additions for inline WKWebView use.
+        // (Network features like ATS exceptions remain the consumer project's
+        // call, exactly like https requirements on the other platforms.)
     }
 
     // ── Android (MVP) ─────────────────────────────────────────────────────────

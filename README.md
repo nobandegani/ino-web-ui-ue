@@ -10,8 +10,8 @@ SurfaceFlinger on Android) blends them. Unreal renders the 3D scene; the
 WebView renders your UI; transparent pixels in your HTML reveal the game
 underneath.
 
-Platforms: **Windows (WebView2)**, **Android (android.webkit.WebView)**.
-macOS (`WKWebView`) is planned.
+Platforms: **Windows (WebView2)**, **Android (android.webkit.WebView)**,
+**iOS (`WKWebView`)**. macOS (`WKWebView`) is planned.
 
 ---
 
@@ -25,7 +25,7 @@ InoWebUI skips all of that:
 | | UE `WebBrowser` | **InoWebUI** |
 |---|---|---|
 | Rendering model | Render-to-texture (GPU copy per frame) | Native OS window, zero copy |
-| Chromium version | Shipped with the engine (old) | System WebView2 / Android WebView (evergreen) |
+| Chromium version | Shipped with the engine (old) | System WebView2 / Android WebView / iOS WKWebView (evergreen) |
 | Transparency | Via UMG alpha | True OS compositor alpha |
 | Input | Slate → WebView shim | Native, direct |
 | Cost | Steady per-frame GPU + CPU overhead | Effectively free |
@@ -47,29 +47,32 @@ overlay window becomes invisible. Set `FullscreenMode=1` in
 
 ## Feature matrix
 
-| Feature | Windows | Android |
-|---|:-:|:-:|
-| Overlay create / destroy | ✔ | ✔ |
-| URL / local file / virtual-host loading | ✔ | ✔ |
-| Show / Hide / Reload / SyncBounds | ✔ | ✔ |
-| Transparent background | ✔ | ✔ |
-| Two-way messaging (`window.InoWebUI` + `once`) | ✔ | ✔ |
-| Navigation lockdown (whitelist) | ✔ | ✔ |
-| JS dialog suppression (`alert`/`confirm`/`prompt`) | ✔ | ✔ |
-| `window.open` blocking | ✔ | ✔ |
-| Navigation + title + focus events | ✔ | ✔ |
-| Browser-style nav (`GoBack` / `GoForward` / `CanGo*`) | ✔ | ✔ |
-| State getters (`GetURL` / `GetTitle` / `IsLoading`) | ✔ | ✔ |
-| `StopLoading` / `LoadHTMLString` / `LoadURLWithHeaders` | ✔ | ✔ |
-| `SetCookie`, `ClearAllCookies`, `ClearAllData`, crash event | ✔ | ✔ |
-| Screenshot to file (`CapturePreview`, PNG / JPEG) | ✔ | ✔ |
-| Manual sub-region bounds (`SetBounds` / `SetBoundsAuto`) | ✔ | ✔ |
-| Zoom factor (`SetZoomFactor`) | ✔ | ✔ |
-| DevTools | In-process panel (F12) | Remote via `chrome://inspect` |
-| ExecuteJavaScript, UA override, context-menu + accelerator toggles | ✔ | ✔ |
-| Audio mute (`SetMuted`) | ✔ | — (not supported by Android WebView) |
-| Web Bundle asset type | ✔ | ✔ |
-| Dev-tools floating overlay | ✔ | ✔ |
+| Feature | Windows | Android | iOS |
+|---|:-:|:-:|:-:|
+| Overlay create / destroy | ✔ | ✔ | ✔ |
+| URL / local file / virtual-host loading | ✔ | ✔ | ✔ (1) |
+| Show / Hide / Reload / SyncBounds | ✔ | ✔ | ✔ |
+| Transparent background | ✔ | ✔ | ✔ |
+| Two-way messaging (`window.InoWebUI` + `once`) | ✔ | ✔ | ✔ |
+| Navigation lockdown (whitelist) | ✔ | ✔ | ✔ |
+| JS dialog suppression (`alert`/`confirm`/`prompt`) | ✔ | ✔ | ✔ |
+| `window.open` blocking | ✔ | ✔ | ✔ |
+| Navigation + title + focus events | ✔ | ✔ | ✔ |
+| Browser-style nav (`GoBack` / `GoForward` / `CanGo*`) | ✔ | ✔ | ✔ |
+| State getters (`GetURL` / `GetTitle` / `IsLoading`) | ✔ | ✔ | ✔ |
+| `StopLoading` / `LoadHTMLString` / `LoadURLWithHeaders` | ✔ | ✔ | ✔ |
+| `SetCookie`, `ClearAllCookies`, `ClearAllData`, crash event | ✔ | ✔ | ✔ |
+| Screenshot to file (`CapturePreview`, PNG / JPEG) | ✔ | ✔ | ✔ |
+| Manual sub-region bounds (`SetBounds` / `SetBoundsAuto`) | ✔ | ✔ | ✔ |
+| Zoom factor (`SetZoomFactor`) | ✔ | ✔ | ✔ (CSS zoom) |
+| DevTools | In-process panel (F12) | Remote via `chrome://inspect` | Remote via Safari Web Inspector |
+| ExecuteJavaScript, UA override, context-menu + accelerator toggles | ✔ | ✔ | ✔ (UA + JS) |
+| Audio mute (`SetMuted`) | ✔ | — | partial (best-effort JS walk) |
+| Web Bundle asset type | ✔ | ✔ | ✔ |
+| Dev-tools floating overlay | ✔ | ✔ | ✔ |
+
+(1) iOS uses a custom `inoweb://` scheme for the virtual host instead of
+`https://` — see [`docs/iOS.md`](docs/iOS.md) for the divergence.
 
 ---
 
@@ -155,6 +158,7 @@ Both directions use a fixed JSON envelope:
 | [`docs/WebBundle.md`](docs/WebBundle.md) | `UInoWebBundle` asset — bundling web content into a UE asset, extract-on-demand |
 | [`docs/DevToolsOverlay.md`](docs/DevToolsOverlay.md) | The floating in-game dev-tools panel |
 | [`docs/Android.md`](docs/Android.md) | Android specifics — JNI bridge, lifecycle, logcat filter, remote DevTools |
+| [`docs/iOS.md`](docs/iOS.md) | iOS specifics — `WKWebView`, custom-scheme virtual host, Safari Web Inspector |
 | [`docs/Troubleshooting.md`](docs/Troubleshooting.md) | Common pitfalls and their fixes |
 | [`docs/Contributing.md`](docs/Contributing.md) | How to contribute, CLA, coding conventions |
 
@@ -176,7 +180,8 @@ Both directions use a fixed JSON envelope:
 | 10 | JS source dedup — single `bridge.js` / `dev_overlay.js` + build-time codegen | done |
 | 11 | Bridge hardening (`once`, iteration safety, `Object.create(null)`, U+2028 fix) | done |
 | 12 | Browser API completeness (back/forward, state getters, capture, headers, sub-region bounds) | done |
-| 13 | macOS implementation (`WKWebView`) | planned |
+| 13 | iOS implementation (`WKWebView`) | done |
+| 14 | macOS implementation (`WKWebView`) | planned |
 
 ---
 

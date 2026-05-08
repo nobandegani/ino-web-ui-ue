@@ -159,6 +159,49 @@ step-by-step checklist.
 
 ---
 
+## iOS: how do I open DevTools against a `WKWebView`?
+
+There is no in-process DevTools on iOS — Apple does not expose it.
+`UInoWebView::OpenDevTools()` logs the path; the actual workflow uses
+**Safari Web Inspector** on a connected Mac:
+
+1. On the iOS device: Settings → Safari → Advanced → enable
+   **Web Inspector**.
+2. On the Mac: Safari → Settings → Advanced → enable
+   **Show features for web developers** (older macOS: "Show Develop
+   menu").
+3. Connect the device via USB and trust the computer.
+4. In Safari on the Mac: **Develop → \<DeviceName\> → \<Your WebView page\>**.
+
+You'll get the full Safari Web Inspector against the live page:
+console, sources, breakpoints, network, etc. The plugin's
+`bEnableDevTools` toggle is honoured for parity (it gates the floating
+dev-tools overlay) but does not change Apple's policy on inline
+DevTools.
+
+---
+
+## iOS: "page didn't load — `inoweb://my-host/index.html`"
+
+iOS does not allow intercepting `https://` requests in `WKWebView`. The
+iOS impl uses a custom **`inoweb`** URL scheme for virtual-host serving
+instead. If your `Config.InitialURL` is `https://<host>/...`, the page
+won't load on iOS — translate to `inoweb://<host>/...` for the iOS code
+path. See `iOS.md` for the divergence details.
+
+If you ship the same `FInoWebViewConfig` to multiple platforms, gate the
+URL with `#if PLATFORM_IOS`:
+
+```cpp
+#if PLATFORM_IOS
+Config.InitialURL = TEXT("inoweb://my-host/index.html");
+#else
+Config.InitialURL = TEXT("https://my-host/index.html");
+#endif
+```
+
+---
+
 ## Verbose logging
 
 Set the log category to verbose in `Engine.ini`:

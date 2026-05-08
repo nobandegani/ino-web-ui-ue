@@ -8,6 +8,8 @@
 #include "Windows/InoWebViewImpl_Windows_Composition.h"
 #elif PLATFORM_ANDROID
 #include "Android/InoWebViewImpl_Android.h"
+#elif PLATFORM_IOS
+#include "iOS/InoWebViewImpl_iOS.h"
 #endif
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -52,6 +54,10 @@ TUniquePtr<IInoWebViewImpl> CreateInoWebViewImpl()
     return MakeUnique<FInoWebViewImpl_Windows>();
 #elif PLATFORM_ANDROID
     return MakeUnique<FInoWebViewImpl_Android>();
+#elif PLATFORM_IOS
+    UE_LOG(LogInoWebUI, Verbose,
+        TEXT("CreateInoWebViewImpl: using WKWebView impl."));
+    return MakeUnique<FInoWebViewImpl_iOS>();
 #else
     UE_LOG(LogInoWebUI, Warning,
         TEXT("CreateInoWebViewImpl: no implementation for this platform. "

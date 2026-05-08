@@ -1,0 +1,1395 @@
+// Copyright Inoland. All Rights Reserved.
+
+#include "InoWebViewImpl_iOS.h"
+
+#if PLATFORM_IOS
+
+#include "InoWebUILog.h"
+#include "HAL/ThreadSafeCounter.h"
+#include "HAL/CriticalSection.h"
+#include "Async/Async.h"
+#include "Misc/Paths.h"
+#include "Misc/FileHelper.h"
+#include "Generated/InoWebUIScripts_iOS.generated.h"
+
+#import <UIKit/UIKit.h>
+#import <WebKit/WebKit.h>
+#import <Foundation/Foundation.h>
+
+#import "IOS/IOSAppDelegate.h"
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Process-unique instance id generator. Crosses into Obj-C as a plain int
+//  and keys our impl registry. Atomic so CreateWebView is safe even if it
+//  ever moves off the game thread in the future.
+// ─────────────────────────────────────────────────────────────────────────────
+static FThreadSafeCounter GInstanceIdGenerator(0);
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Impl registry — lets Obj-C delegate callbacks (which fire on the iOS main
+//  thread) find the right C++ impl by ID. Registered in Initialize,
+//  unregistered in Shutdown. Held under a lock because callbacks may queue
+//  game-thread tasks that race with Shutdown.
+// ─────────────────────────────────────────────────────────────────────────────
+static FCriticalSection                       GRegistryLock;
+static TMap<int32, FInoWebViewImpl_iOS*>      GImplRegistry;
+
+// Custom scheme used to bridge VirtualHost → folder. WKWebView does NOT allow
+// intercepting https:// (security), so we register our own scheme handler and
+// translate inoweb://<host>/<path> requests into local-file reads.
+//
+// Documented divergence: on iOS the user's Config.VirtualHostName is reachable
+// via  inoweb://<VirtualHostName>/...  not  https://<VirtualHostName>/...
+// Lockdown matching has to whitelist the `inoweb` scheme.
+static NSString* const kInoVirtualScheme = @"inoweb";
+
+// JS-message handler name (matches the JS bridge: window.webkit.messageHandlers._InoWebUIHost).
+static NSString* const kInoMessageHandler = @"_InoWebUIHost";
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Helpers — string conversion + game-thread dispatch (mirrors Android)
+// ─────────────────────────────────────────────────────────────────────────────
+static FString FStringFromNSString(NSString* S)
+{
+    if (S == nil) return FString();
+    return FString(UTF8_TO_TCHAR([S UTF8String]));
+}
+
+static NSString* NSStringFromFString(const FString& S)
+{
+    return [NSString stringWithUTF8String:TCHAR_TO_UTF8(*S)];
+}
+
+template <typename FLambda>
+static void DispatchOnGameThread(int32 Id, FLambda&& Action)
+{
+    const int32 LocalId = Id;
+    AsyncTask(ENamedThreads::GameThread,
+        [LocalId, Action = Forward<FLambda>(Action)]() mutable
+        {
+            FScopeLock Lock(&GRegistryLock);
+            if (FInoWebViewImpl_iOS** Found = GImplRegistry.Find(LocalId))
+            {
+                if (FInoWebViewImpl_iOS* Impl = *Found)
+                {
+                    Action(Impl);
+                }
+            }
+        });
+}
+
+// Encode an FString as a JS string literal (with surrounding quotes) safe to
+// inline into a JS expression. Same shape as the Java side's jsStringLiteral —
+// keeps both transports symmetric so PostMessageJson lands as JSON.parse(...)
+// without breakage from U+2028/U+2029 or other oddities.
+static NSString* InoJSStringLiteral(const FString& S)
+{
+    NSMutableString* Out = [NSMutableString stringWithCapacity:S.Len() + 16];
+    [Out appendString:@"\""];
+    for (int32 i = 0; i < S.Len(); ++i)
+    {
+        const TCHAR C = S[i];
+        switch (C)
+        {
+            case TEXT('\\'): [Out appendString:@"\\\\"]; break;
+            case TEXT('"'):  [Out appendString:@"\\\""]; break;
+            case TEXT('\n'): [Out appendString:@"\\n"];  break;
+            case TEXT('\r'): [Out appendString:@"\\r"];  break;
+            case TEXT('\t'): [Out appendString:@"\\t"];  break;
+            case TEXT('\b'): [Out appendString:@"\\b"];  break;
+            case TEXT('\f'): [Out appendString:@"\\f"];  break;
+            default:
+            {
+                if (C == 0x2028)      { [Out appendString:@"\\u2028"]; }
+                else if (C == 0x2029) { [Out appendString:@"\\u2029"]; }
+                else if (C < 0x20)    { [Out appendFormat:@"\\u%04x", (unsigned)C]; }
+                else
+                {
+                    unichar Ch = (unichar)C;
+                    [Out appendString:[NSString stringWithCharacters:&Ch length:1]];
+                }
+                break;
+            }
+        }
+    }
+    [Out appendString:@"\""];
+    return Out;
+}
+
+// UE-style wildcard match: "*" = any run, "?" = single char.
+// Same semantics as FString::MatchesWildcard / Java matchesWildcard.
+static bool InoMatchesWildcard(const FString& S, const FString& Pattern)
+{
+    return S.MatchesWildcard(Pattern);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Forward decls of the Obj-C classes — defined further down the file.
+// ─────────────────────────────────────────────────────────────────────────────
+@class InoWebViewBridge_iOS;
+@class InoWebViewSchemeHandler_iOS;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  FInternal — opaque state owned by FInoWebViewImpl_iOS. Lives inside the
+//  .mm so WebKit/UIKit types stay out of the public header.
+// ─────────────────────────────────────────────────────────────────────────────
+struct FInoWebViewImpl_iOS_Internal
+{
+    // Explicit __strong qualifiers because ARC requires ownership annotations
+    // on Obj-C pointer members of a C++ struct. Members are released when
+    // FInoWebViewImpl_iOS deletes the struct, freeing every WK* + bridge.
+    __strong WKWebView*                       WebView          = nil;
+    __strong WKWebViewConfiguration*          Configuration    = nil;
+    __strong InoWebViewBridge_iOS*            Bridge           = nil;  // delegates + script handler
+    __strong InoWebViewSchemeHandler_iOS*     SchemeHandler    = nil;  // optional, only when vhost set
+
+    /** Resolved absolute folder for the virtual host, if configured. */
+    __strong NSString*                        VirtualHostFolder = nil;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  InoWebViewSchemeHandler_iOS
+//
+//  Implements WKURLSchemeHandler for the custom "inoweb" scheme. Handles any
+//  inoweb://<host>/<path> request by mapping it under the resolved folder.
+//
+//  This is the iOS equivalent of WebView2's SetVirtualHostNameToFolderMapping
+//  and Android's WebViewClient.shouldInterceptRequest. Unlike those, we can't
+//  intercept https:// in WKWebView (Apple won't allow it), hence the custom
+//  scheme. Symmetry with the other platforms lives at the bridge.js layer —
+//  user code uses window.InoWebUI the same way regardless of how the page
+//  was actually served.
+// ─────────────────────────────────────────────────────────────────────────────
+@interface InoWebViewSchemeHandler_iOS : NSObject <WKURLSchemeHandler>
+@property (nonatomic, copy) NSString* RootFolder; // absolute, no trailing slash
+@property (nonatomic, copy) NSString* HostName;   // case-folded virtual host
+@end
+
+@implementation InoWebViewSchemeHandler_iOS
+
+- (void)webView:(WKWebView*)webView startURLSchemeTask:(id<WKURLSchemeTask>)task
+{
+    NSURL* URL = task.request.URL;
+    NSString* Host = [URL.host lowercaseString];
+    if (self.HostName.length > 0
+        && Host != nil
+        && ![Host isEqualToString:self.HostName])
+    {
+        // Host doesn't match — 404, not a security error.
+        [self failTask:task withCode:404 reason:@"host mismatch"];
+        return;
+    }
+
+    NSString* Path = URL.path;
+    if (Path.length == 0 || [Path isEqualToString:@"/"]) { Path = @"/index.html"; }
+    // URL path is already percent-decoded for componentsWithURL — but iOS keeps
+    // it as the encoded form, so decode here.
+    NSString* DecodedPath = [Path stringByRemovingPercentEncoding];
+    if (DecodedPath == nil) { DecodedPath = Path; }
+
+    // Reject path traversal.
+    if ([DecodedPath rangeOfString:@".."].location != NSNotFound)
+    {
+        [self failTask:task withCode:403 reason:@"path traversal rejected"];
+        return;
+    }
+
+    NSString* AbsPath = [self.RootFolder stringByAppendingString:DecodedPath];
+    NSData* Data = [NSData dataWithContentsOfFile:AbsPath];
+    if (Data == nil)
+    {
+        [self failTask:task withCode:404 reason:@"file not found"];
+        return;
+    }
+
+    NSString* MimeType = [self mimeTypeForPath:AbsPath];
+    NSURLResponse* Response = [[NSHTTPURLResponse alloc]
+        initWithURL:URL
+        statusCode:200
+        HTTPVersion:@"HTTP/1.1"
+        headerFields:@{
+            @"Content-Type":   MimeType,
+            @"Content-Length": [NSString stringWithFormat:@"%lu", (unsigned long)Data.length],
+            @"Cache-Control":  @"no-cache"
+        }];
+
+    [task didReceiveResponse:Response];
+    [task didReceiveData:Data];
+    [task didFinish];
+}
+
+- (void)webView:(WKWebView*)webView stopURLSchemeTask:(id<WKURLSchemeTask>)task
+{
+    // No-op. WKWebView calls this to signal cancellation; since our reads are
+    // synchronous (NSData dataWithContentsOfFile), there's nothing to abort.
+}
+
+- (void)failTask:(id<WKURLSchemeTask>)task withCode:(NSInteger)code reason:(NSString*)reason
+{
+    NSError* Err = [NSError errorWithDomain:@"InoWebUIScheme"
+                                       code:code
+                                   userInfo:@{NSLocalizedDescriptionKey: reason}];
+    [task didFailWithError:Err];
+}
+
+- (NSString*)mimeTypeForPath:(NSString*)Path
+{
+    NSString* Ext = [[Path pathExtension] lowercaseString];
+    if ([Ext isEqualToString:@"html"] || [Ext isEqualToString:@"htm"]) return @"text/html";
+    if ([Ext isEqualToString:@"js"]   || [Ext isEqualToString:@"mjs"]) return @"application/javascript";
+    if ([Ext isEqualToString:@"css"])    return @"text/css";
+    if ([Ext isEqualToString:@"json"])   return @"application/json";
+    if ([Ext isEqualToString:@"svg"])    return @"image/svg+xml";
+    if ([Ext isEqualToString:@"png"])    return @"image/png";
+    if ([Ext isEqualToString:@"jpg"]
+     || [Ext isEqualToString:@"jpeg"])   return @"image/jpeg";
+    if ([Ext isEqualToString:@"gif"])    return @"image/gif";
+    if ([Ext isEqualToString:@"webp"])   return @"image/webp";
+    if ([Ext isEqualToString:@"woff"])   return @"font/woff";
+    if ([Ext isEqualToString:@"woff2"])  return @"font/woff2";
+    if ([Ext isEqualToString:@"wasm"])   return @"application/wasm";
+    return @"application/octet-stream";
+}
+
+@end
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  InoWebViewBridge_iOS
+//
+//  One Obj-C delegate object per WKWebView, wired up at create time. Hosts
+//  every WebKit callback we need:
+//   • <WKScriptMessageHandler>    — JS → native bridge
+//   • <WKNavigationDelegate>      — nav events + lockdown + crash
+//   • <WKUIDelegate>              — JS dialogs + window.open
+//
+//  Owns the Instance ID for re-entry into C++ via DispatchOnGameThread.
+// ─────────────────────────────────────────────────────────────────────────────
+@interface InoWebViewBridge_iOS : NSObject <
+    WKScriptMessageHandler,
+    WKNavigationDelegate,
+    WKUIDelegate>
+@property (nonatomic, assign) int32 InstanceId;
+@end
+
+@implementation InoWebViewBridge_iOS
+
+// ── WKScriptMessageHandler ───────────────────────────────────────────────────
+- (void)userContentController:(WKUserContentController*)userContentController
+      didReceiveScriptMessage:(WKScriptMessage*)message
+{
+    if (![message.name isEqualToString:kInoMessageHandler]) return;
+    if (![message.body isKindOfClass:[NSString class]])     return;
+    NSString* Body = (NSString*)message.body;
+    const FString Envelope = FStringFromNSString(Body);
+    DispatchOnGameThread(self.InstanceId, [Envelope](FInoWebViewImpl_iOS* Impl)
+    {
+        if (Impl->OnMessageReceivedJson) Impl->OnMessageReceivedJson(Envelope);
+    });
+}
+
+// ── WKNavigationDelegate ─────────────────────────────────────────────────────
+- (void)webView:(WKWebView*)webView
+        decidePolicyForNavigationAction:(WKNavigationAction*)navigationAction
+                        decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
+{
+    NSString* URLStr = navigationAction.request.URL.absoluteString;
+    if (URLStr == nil) URLStr = @"";
+    const FString URI = FStringFromNSString(URLStr);
+
+    // Lockdown — same rule as the other platforms. ShouldAllowURI runs on the
+    // game thread normally; here we read the cached config fields synchronously
+    // off the impl, which is safe because they're only mutated during
+    // Initialize (before the WebView ever navigates).
+    bool bAllowed = true;
+    {
+        FScopeLock Lock(&GRegistryLock);
+        if (FInoWebViewImpl_iOS** Found = GImplRegistry.Find(self.InstanceId))
+        {
+            if (FInoWebViewImpl_iOS* Impl = *Found)
+            {
+                bAllowed = Impl->ShouldAllowURI(URI);
+            }
+        }
+    }
+
+    DispatchOnGameThread(self.InstanceId, [URI](FInoWebViewImpl_iOS* Impl)
+    {
+        if (Impl->OnNavigationStartingCallback) Impl->OnNavigationStartingCallback(URI);
+        Impl->SetCachedLoading(true);
+    });
+
+    if (!bAllowed)
+    {
+        UE_LOG(LogInoWebUI, Warning, TEXT("Navigation blocked by lockdown: %s"), *URI);
+        decisionHandler(WKNavigationActionPolicyCancel);
+        return;
+    }
+    decisionHandler(WKNavigationActionPolicyAllow);
+}
+
+- (void)webView:(WKWebView*)webView didFinishNavigation:(WKNavigation*)navigation
+{
+    NSString* URLStr = webView.URL.absoluteString;
+    if (URLStr == nil) URLStr = @"";
+    const FString URI = FStringFromNSString(URLStr);
+    NSString* TitleStr = webView.title;
+    const FString Title = FStringFromNSString(TitleStr ?: @"");
+    const bool bBack    = webView.canGoBack;
+    const bool bForward = webView.canGoForward;
+
+    DispatchOnGameThread(self.InstanceId,
+        [URI, Title, bBack, bForward](FInoWebViewImpl_iOS* Impl)
+    {
+        Impl->SetCachedURL(URI);
+        if (!Title.IsEmpty()) Impl->SetCachedTitle(Title);
+        Impl->SetCachedLoading(false);
+        Impl->SetCachedNavState(bBack, bForward);
+        if (Impl->OnNavigationCompletedCallback) Impl->OnNavigationCompletedCallback(true, URI);
+    });
+}
+
+- (void)webView:(WKWebView*)webView didFailNavigation:(WKNavigation*)navigation
+       withError:(NSError*)error
+{
+    NSString* URLStr = webView.URL.absoluteString;
+    if (URLStr == nil) URLStr = @"";
+    const FString URI = FStringFromNSString(URLStr);
+    DispatchOnGameThread(self.InstanceId, [URI](FInoWebViewImpl_iOS* Impl)
+    {
+        Impl->SetCachedLoading(false);
+        if (Impl->OnNavigationCompletedCallback) Impl->OnNavigationCompletedCallback(false, URI);
+    });
+}
+
+- (void)webView:(WKWebView*)webView didFailProvisionalNavigation:(WKNavigation*)navigation
+       withError:(NSError*)error
+{
+    NSString* URLStr = (error.userInfo[NSURLErrorFailingURLStringErrorKey]
+                        ?: webView.URL.absoluteString) ?: @"";
+    const FString URI = FStringFromNSString(URLStr);
+    DispatchOnGameThread(self.InstanceId, [URI](FInoWebViewImpl_iOS* Impl)
+    {
+        Impl->SetCachedLoading(false);
+        if (Impl->OnNavigationCompletedCallback) Impl->OnNavigationCompletedCallback(false, URI);
+    });
+}
+
+- (void)webView:(WKWebView*)webView
+      didCommitNavigation:(WKNavigation*)navigation
+{
+    // Title may have changed mid-navigation; broadcast asynchronously. The
+    // canonical "title set" event is tracked via KVO below.
+}
+
+- (void)webViewWebContentProcessDidTerminate:(WKWebView*)webView
+{
+    DispatchOnGameThread(self.InstanceId, [](FInoWebViewImpl_iOS* Impl)
+    {
+        if (Impl->OnProcessFailedCallback)
+            Impl->OnProcessFailedCallback(TEXT("WKWebView content process terminated"));
+    });
+}
+
+// ── WKUIDelegate ─────────────────────────────────────────────────────────────
+- (void)webView:(WKWebView*)webView
+       runJavaScriptAlertPanelWithMessage:(NSString*)message
+                          initiatedByFrame:(WKFrameInfo*)frame
+                          completionHandler:(void (^)(void))completionHandler
+{
+    const FString Msg = FStringFromNSString(message ?: @"");
+    DispatchOnGameThread(self.InstanceId, [Msg](FInoWebViewImpl_iOS* Impl)
+    {
+        if (Impl->OnScriptDialogCallback)
+            Impl->OnScriptDialogCallback(EInoScriptDialogKind::Alert, Msg);
+    });
+    // alert() has no return value — the only difference between
+    // bAllowScriptDialogs on/off is whether the user briefly sees a real
+    // UIAlertController. We suppress in both cases since iOS doesn't have a
+    // standardized in-game presentation surface; the OnScriptDialog observer
+    // lets consumer code show its own alert if needed.
+    completionHandler();
+}
+
+- (void)webView:(WKWebView*)webView
+       runJavaScriptConfirmPanelWithMessage:(NSString*)message
+                            initiatedByFrame:(WKFrameInfo*)frame
+                            completionHandler:(void (^)(BOOL result))completionHandler
+{
+    const FString Msg = FStringFromNSString(message ?: @"");
+    bool bAllow = false;
+    {
+        FScopeLock Lock(&GRegistryLock);
+        if (FInoWebViewImpl_iOS** Found = GImplRegistry.Find(self.InstanceId))
+        {
+            if (FInoWebViewImpl_iOS* Impl = *Found)
+            {
+                // Mirror Android: bAllowScriptDialogs=true makes confirm() return
+                // true (i.e. user pretends to click OK) without showing UI.
+                // bAllowScriptDialogs=false makes confirm() return false (cancel).
+                bAllow = (Impl->bAllowScriptDialogs);
+            }
+        }
+    }
+    DispatchOnGameThread(self.InstanceId, [Msg](FInoWebViewImpl_iOS* Impl)
+    {
+        if (Impl->OnScriptDialogCallback)
+            Impl->OnScriptDialogCallback(EInoScriptDialogKind::Confirm, Msg);
+    });
+    completionHandler(bAllow ? YES : NO);
+}
+
+- (void)webView:(WKWebView*)webView
+       runJavaScriptTextInputPanelWithPrompt:(NSString*)prompt
+                                  defaultText:(NSString*)defaultText
+                              initiatedByFrame:(WKFrameInfo*)frame
+                              completionHandler:(void (^)(NSString* result))completionHandler
+{
+    const FString Msg = FStringFromNSString(prompt ?: @"");
+    bool bAllow = false;
+    {
+        FScopeLock Lock(&GRegistryLock);
+        if (FInoWebViewImpl_iOS** Found = GImplRegistry.Find(self.InstanceId))
+        {
+            if (FInoWebViewImpl_iOS* Impl = *Found)
+            {
+                bAllow = (Impl->bAllowScriptDialogs);
+            }
+        }
+    }
+    DispatchOnGameThread(self.InstanceId, [Msg](FInoWebViewImpl_iOS* Impl)
+    {
+        if (Impl->OnScriptDialogCallback)
+            Impl->OnScriptDialogCallback(EInoScriptDialogKind::Prompt, Msg);
+    });
+    if (bAllow)
+    {
+        // Mirror Android: prompt() returns the default text instead of null
+        // when bAllowScriptDialogs is true (no UI shown either way).
+        completionHandler(defaultText ?: @"");
+    }
+    else
+    {
+        completionHandler(nil);
+    }
+}
+
+- (WKWebView*)webView:(WKWebView*)webView
+        createWebViewWithConfiguration:(WKWebViewConfiguration*)configuration
+                  forNavigationAction:(WKNavigationAction*)navigationAction
+                       windowFeatures:(WKWindowFeatures*)windowFeatures
+{
+    NSString* URLStr = navigationAction.request.URL.absoluteString ?: @"";
+    const FString URI = FStringFromNSString(URLStr);
+    bool bAllow = false;
+    {
+        FScopeLock Lock(&GRegistryLock);
+        if (FInoWebViewImpl_iOS** Found = GImplRegistry.Find(self.InstanceId))
+        {
+            if (FInoWebViewImpl_iOS* Impl = *Found)
+            {
+                bAllow = (Impl->bAllowNewWindows);
+            }
+        }
+    }
+    DispatchOnGameThread(self.InstanceId, [URI](FInoWebViewImpl_iOS* Impl)
+    {
+        if (Impl->OnNewWindowRequestedCallback) Impl->OnNewWindowRequestedCallback(URI);
+    });
+    // bAllowNewWindows=true: redirect into the same frame (parity with the
+    // Windows / Android default-block behavior). bAllowNewWindows=false: just
+    // block — the page can still observe via OnNewWindowRequested.
+    if (bAllow && navigationAction.request != nil)
+    {
+        [webView loadRequest:navigationAction.request];
+    }
+    return nil;
+}
+
+@end
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Construction / destruction
+// ─────────────────────────────────────────────────────────────────────────────
+FInoWebViewImpl_iOS::FInoWebViewImpl_iOS()
+{
+    InstanceId = GInstanceIdGenerator.Increment();
+    InternalPtr = (void*)new FInoWebViewImpl_iOS_Internal();
+}
+
+FInoWebViewImpl_iOS::~FInoWebViewImpl_iOS()
+{
+    Shutdown();
+    if (InternalPtr)
+    {
+        delete static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+        InternalPtr = nullptr;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Initialize
+// ─────────────────────────────────────────────────────────────────────────────
+bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
+                                     const FInoWebViewConfig& Config)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return false;
+
+    // Cache lockdown / hardening config so the Obj-C delegate can read it
+    // without crossing the registry on every nav event.
+    bLockToVirtualHost = Config.bLockToVirtualHost;
+    bAllowScriptDialogs = Config.bAllowScriptDialogs;
+    bAllowNewWindows    = Config.bAllowNewWindows;
+    VirtualHostName     = Config.VirtualHostName.ToLower();
+    AllowedURIPatterns  = Config.AllowedURIPatterns;
+
+    // Resolve VirtualHostFolder to absolute (Project Content rooted) the same
+    // way the Windows / Android impls do.
+    FString AbsoluteFolder;
+    if (!Config.VirtualHostName.IsEmpty() && !Config.VirtualHostFolder.IsEmpty())
+    {
+        AbsoluteFolder = FPaths::IsRelative(Config.VirtualHostFolder)
+            ? FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir() / Config.VirtualHostFolder)
+            : FPaths::ConvertRelativePathToFull(Config.VirtualHostFolder);
+    }
+
+    // Register in the global impl registry first so any callbacks that fire
+    // before Initialize returns can find us. (Won't happen in practice — we
+    // create the WebView synchronously below — but cheap insurance.)
+    {
+        FScopeLock Lock(&GRegistryLock);
+        GImplRegistry.Add(InstanceId, this);
+    }
+
+    const int32 LocalId = InstanceId;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return false;
+
+    NSString* AbsoluteFolderNS = AbsoluteFolder.IsEmpty()
+        ? nil : NSStringFromFString(AbsoluteFolder);
+    NSString* VirtualHostNS = Config.VirtualHostName.IsEmpty()
+        ? nil : [NSStringFromFString(Config.VirtualHostName) lowercaseString];
+    NSString* InitialURLNS = Config.InitialURL.IsEmpty()
+        ? nil : NSStringFromFString(Config.InitialURL);
+    NSString* UserAgentNS = Config.UserAgentOverride.IsEmpty()
+        ? nil : NSStringFromFString(Config.UserAgentOverride);
+
+    const bool bTransparent      = Config.bTransparentBackground;
+    const bool bVisibleOnCreate  = Config.bVisibleOnCreate;
+    const bool bDevToolsEnabled  = Config.bEnableDevTools;
+    const bool bMutedOnStart     = Config.bStartMuted;
+    Internal->VirtualHostFolder  = AbsoluteFolderNS;
+
+    // Build the WKWebView on the iOS main thread synchronously — we want IsReady
+    // to be true by the time Initialize returns. dispatch_sync from the game
+    // thread to main is safe (no deadlock risk: main is not the game thread).
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        // Configuration
+        WKWebViewConfiguration* Configuration = [[WKWebViewConfiguration alloc] init];
+
+        // Suppress autoplay restrictions for game UI use cases.
+        Configuration.allowsInlineMediaPlayback = YES;
+        if (@available(iOS 10.0, *))
+        {
+            Configuration.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
+        }
+
+        // Bridge object — handles JS messages + nav delegate + UI delegate.
+        InoWebViewBridge_iOS* Bridge = [[InoWebViewBridge_iOS alloc] init];
+        Bridge.InstanceId = LocalId;
+
+        // Custom scheme for virtual host. Must be set BEFORE the WKWebView is
+        // created — WKWebViewConfiguration's scheme handlers are immutable
+        // once a WebView has been initialized with it.
+        if (AbsoluteFolderNS != nil && VirtualHostNS != nil)
+        {
+            InoWebViewSchemeHandler_iOS* SchemeHandler = [[InoWebViewSchemeHandler_iOS alloc] init];
+            SchemeHandler.RootFolder = AbsoluteFolderNS;
+            SchemeHandler.HostName   = VirtualHostNS;
+            [Configuration setURLSchemeHandler:SchemeHandler forURLScheme:kInoVirtualScheme];
+            Internal->SchemeHandler = SchemeHandler;
+        }
+
+        // User-content controller — one place to add scripts + message handlers.
+        WKUserContentController* UCC = Configuration.userContentController;
+
+        // window.webkit.messageHandlers._InoWebUIHost.postMessage(...) → bridge
+        [UCC addScriptMessageHandler:Bridge name:kInoMessageHandler];
+
+        // Inject the bridge.js shim before any user script runs.
+        WKUserScript* BridgeScript =
+            [[WKUserScript alloc] initWithSource:GInoWebUIBridgeScript
+                                   injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                forMainFrameOnly:YES];
+        [UCC addUserScript:BridgeScript];
+
+        // Dev overlay (gated by the same flag as the other platforms).
+        if (bDevToolsEnabled)
+        {
+            WKUserScript* DevOverlay =
+                [[WKUserScript alloc] initWithSource:GInoWebUIDevToolsOverlayScript
+                                       injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
+                                    forMainFrameOnly:YES];
+            [UCC addUserScript:DevOverlay];
+        }
+
+        // ── Initial cookies ─────────────────────────────────────────────
+        // WKWebsiteDataStore.httpCookieStore is async; we fire-and-forget here.
+        // Order is preserved (FIFO completion handlers) so the navigation
+        // request below sees the cookies in place. If reliability becomes an
+        // issue we can dispatch_group_wait, but Apple's contract is good enough
+        // for game UI sessions.
+        WKWebsiteDataStore* DataStore = WKWebsiteDataStore.defaultDataStore;
+        for (const FInoInitialCookie& C : Config.InitialCookies)
+        {
+            // We can't call SetCookie here directly (impl is mid-init); inline
+            // the parse to avoid a re-entrant dispatch.
+            NSString* URLString    = NSStringFromFString(C.URL);
+            NSString* CookieString = NSStringFromFString(C.Cookie);
+            NSURL* URLObj = [NSURL URLWithString:URLString];
+            if (URLObj == nil) continue;
+
+            // Parse "name=value; Path=/; ..." into NSHTTPCookie properties.
+            NSMutableDictionary* Props = [NSMutableDictionary dictionary];
+            NSArray<NSString*>* Parts = [CookieString componentsSeparatedByString:@";"];
+            BOOL bGotNameValue = NO;
+            for (NSString* RawPart in Parts)
+            {
+                NSString* Part = [RawPart stringByTrimmingCharactersInSet:
+                                  [NSCharacterSet whitespaceCharacterSet]];
+                if (Part.length == 0) continue;
+                NSRange Eq = [Part rangeOfString:@"="];
+                NSString* K = (Eq.location == NSNotFound) ? Part : [Part substringToIndex:Eq.location];
+                NSString* V = (Eq.location == NSNotFound) ? @""  : [Part substringFromIndex:Eq.location + 1];
+                if (!bGotNameValue)
+                {
+                    Props[NSHTTPCookieName]   = K;
+                    Props[NSHTTPCookieValue]  = V;
+                    bGotNameValue = YES;
+                }
+                else
+                {
+                    NSString* KLow = [K lowercaseString];
+                    if      ([KLow isEqualToString:@"path"])    Props[NSHTTPCookiePath]    = V;
+                    else if ([KLow isEqualToString:@"domain"])  Props[NSHTTPCookieDomain]  = V;
+                    else if ([KLow isEqualToString:@"expires"]) Props[NSHTTPCookieExpires] = V;
+                    else if ([KLow isEqualToString:@"secure"])  Props[NSHTTPCookieSecure]  = @YES;
+                }
+            }
+            if (Props[NSHTTPCookieDomain] == nil) Props[NSHTTPCookieDomain] = URLObj.host ?: @"";
+            if (Props[NSHTTPCookiePath]   == nil) Props[NSHTTPCookiePath]   = @"/";
+            NSHTTPCookie* Cookie = [NSHTTPCookie cookieWithProperties:Props];
+            if (Cookie != nil)
+            {
+                [DataStore.httpCookieStore setCookie:Cookie completionHandler:nil];
+            }
+        }
+
+        // Determine the parent view (auto-rotating UIView). Add the WKWebView
+        // as a sibling subview ON TOP of it so the OS compositor blends.
+        IOSAppDelegate* AppDelegate = [IOSAppDelegate GetDelegate];
+        UIView* ParentView = AppDelegate.RootView;
+        if (ParentView == nil)
+        {
+            // Fall back to the key window; very early-create case.
+            ParentView = AppDelegate.Window;
+        }
+        const CGRect InitialFrame = (ParentView != nil)
+            ? ParentView.bounds
+            : [UIScreen mainScreen].bounds;
+
+        WKWebView* WebView = [[WKWebView alloc] initWithFrame:InitialFrame
+                                                configuration:Configuration];
+        WebView.navigationDelegate = Bridge;
+        WebView.UIDelegate         = Bridge;
+        WebView.hidden             = !bVisibleOnCreate;
+        WebView.allowsBackForwardNavigationGestures = NO; // game UI; we control nav
+
+        // Background opacity — match the FInoWebViewConfig contract.
+        if (bTransparent)
+        {
+            WebView.opaque = NO;
+            WebView.backgroundColor = UIColor.clearColor;
+            if ([WebView.scrollView respondsToSelector:@selector(setBackgroundColor:)])
+            {
+                WebView.scrollView.backgroundColor = UIColor.clearColor;
+            }
+        }
+        else
+        {
+            WebView.opaque = YES;
+            WebView.backgroundColor = UIColor.whiteColor;
+        }
+
+        // User-Agent override.
+        if (UserAgentNS != nil) { WebView.customUserAgent = UserAgentNS; }
+
+        // bStartMuted: WKWebView has no first-class audio mute. Best we can do
+        // is JS — see SetMuted() docs. We schedule one on first navigation if
+        // needed.
+        if (bMutedOnStart)
+        {
+            WKUserScript* MuteScript =
+                [[WKUserScript alloc] initWithSource:
+                    @"(function(){try{document.querySelectorAll('audio,video').forEach(function(m){m.muted=true;});}catch(e){}})();"
+                                       injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
+                                    forMainFrameOnly:NO];
+            [UCC addUserScript:MuteScript];
+        }
+
+        // Layout: autoresize to follow the parent's bounds in auto-mode. The
+        // C++ side flips between auto/manual via SetBoundsMode + SyncBounds.
+        WebView.autoresizingMask = UIViewAutoresizingFlexibleWidth
+                                 | UIViewAutoresizingFlexibleHeight;
+
+        // Add as a sibling subview ABOVE the FIOSView (the Metal-layer game
+        // surface). The OS compositor blends the two; transparent pixels in
+        // the WebView's background reveal the UE scene.
+        if (ParentView != nil)
+        {
+            [ParentView addSubview:WebView];
+        }
+        else
+        {
+            UE_LOG(LogInoWebUI, Error, TEXT("FInoWebViewImpl_iOS::Initialize: no RootView available"));
+        }
+
+        Internal->Configuration = Configuration;
+        Internal->Bridge        = Bridge;
+        Internal->WebView       = WebView;
+
+        // Initial navigation.
+        if (InitialURLNS != nil)
+        {
+            // Use LoadURLWithHeaders if any configured — same shape as the
+            // other platforms.
+            if (Config.InitialHeaders.Num() > 0)
+            {
+                NSURL* URLObj = [NSURL URLWithString:InitialURLNS];
+                if (URLObj != nil)
+                {
+                    NSMutableURLRequest* Req = [NSMutableURLRequest requestWithURL:URLObj];
+                    for (const TPair<FString, FString>& KV : Config.InitialHeaders)
+                    {
+                        [Req setValue:NSStringFromFString(KV.Value)
+                            forHTTPHeaderField:NSStringFromFString(KV.Key)];
+                    }
+                    [WebView loadRequest:Req];
+                }
+            }
+            else
+            {
+                NSURL* URLObj = [NSURL URLWithString:InitialURLNS];
+                if (URLObj != nil)
+                {
+                    [WebView loadRequest:[NSURLRequest requestWithURL:URLObj]];
+                }
+            }
+        }
+    });
+
+    if (!Config.InitialURL.IsEmpty())
+    {
+        CachedURL = Config.InitialURL;
+    }
+    bReady = true;
+
+    UE_LOG(LogInoWebUI, Log,
+        TEXT("FInoWebViewImpl_iOS[%d] Initialize  url='%s'  transparent=%d  visible=%d  vhost='%s'"),
+        InstanceId, *Config.InitialURL,
+        Config.bTransparentBackground ? 1 : 0,
+        Config.bVisibleOnCreate ? 1 : 0,
+        *VirtualHostName);
+
+    if (OnReadyCallback)
+    {
+        OnReadyCallback();
+    }
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Lockdown
+// ─────────────────────────────────────────────────────────────────────────────
+bool FInoWebViewImpl_iOS::ShouldAllowURI(const FString& URI) const
+{
+    if (URI.IsEmpty()) return true;
+    if (URI.StartsWith(TEXT("about:"))
+     || URI.StartsWith(TEXT("data:"))
+     || URI.StartsWith(TEXT("blob:")))
+    {
+        return true;
+    }
+    // Custom virtual-host scheme is always allowed (parity with virtual-host-
+    // whole-host on Windows/Android). Use the bare scheme prefix; the host
+    // match below covers the same logical case for any other scheme.
+    if (URI.StartsWith(TEXT("inoweb:"))) return true;
+
+    if (!bLockToVirtualHost) return true;
+
+    // Whole-host match against VirtualHostName, case-insensitive.
+    if (!VirtualHostName.IsEmpty())
+    {
+        // Extract host from URI (same shape as Java extractHost / Windows IsURIAllowed).
+        const int32 SchemeEnd = URI.Find(TEXT("://"));
+        if (SchemeEnd != INDEX_NONE)
+        {
+            FString Rest = URI.Mid(SchemeEnd + 3);
+            int32 At = INDEX_NONE;
+            if (Rest.FindChar(TEXT('@'), At))
+            {
+                Rest = Rest.Mid(At + 1);
+            }
+            int32 End = Rest.Len();
+            for (TCHAR Ch : { TEXT('/'), TEXT('?'), TEXT('#'), TEXT(':') })
+            {
+                int32 Idx = INDEX_NONE;
+                if (Rest.FindChar(Ch, Idx) && Idx < End)
+                {
+                    End = Idx;
+                }
+            }
+            const FString Host = Rest.Left(End).ToLower();
+            if (Host == VirtualHostName) return true;
+        }
+    }
+
+    for (const FString& Pattern : AllowedURIPatterns)
+    {
+        if (InoMatchesWildcard(URI, Pattern)) return true;
+    }
+    return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Navigation / visibility / bounds
+// ─────────────────────────────────────────────────────────────────────────────
+void FInoWebViewImpl_iOS::Navigate(const FString& URL)
+{
+    check(IsInGameThread());
+    if (!bReady || bDestroyed) return;
+
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    NSString* URLStr = NSStringFromFString(URL);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (Internal->WebView == nil) return;
+        NSURL* URLObj = [NSURL URLWithString:URLStr];
+        if (URLObj == nil) return;
+        [Internal->WebView loadRequest:[NSURLRequest requestWithURL:URLObj]];
+    });
+    bCachedLoading = true;
+}
+
+void FInoWebViewImpl_iOS::Reload()
+{
+    check(IsInGameThread());
+    if (!bReady || bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (Internal->WebView != nil) [Internal->WebView reload];
+    });
+}
+
+void FInoWebViewImpl_iOS::SetVisible(bool bVisible)
+{
+    check(IsInGameThread());
+    if (!bReady || bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (Internal->WebView != nil) Internal->WebView.hidden = !bVisible;
+    });
+}
+
+void FInoWebViewImpl_iOS::SyncBounds(int32 ScreenX, int32 ScreenY,
+                                     int32 Width, int32 Height)
+{
+    check(IsInGameThread());
+    if (!bReady || bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    const bool bManual = bManualBounds;
+    const int32 X = ScreenX, Y = ScreenY, W = Width, H = Height;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView == nil) return;
+
+        if (!bManual)
+        {
+            // Auto mode — follow the parent's bounds. autoresizingMask handles
+            // the per-frame case; here we re-sync explicitly so a config change
+            // (orientation, split-view) propagates without waiting for a layout
+            // pass.
+            UIView* Parent = WebView.superview;
+            if (Parent != nil)
+            {
+                WebView.frame = Parent.bounds;
+            }
+            return;
+        }
+
+        // Manual mode — UE pixels → UIKit points via the screen scale.
+        const CGFloat Scale = [UIScreen mainScreen].scale;
+        if (Scale <= 0.0)
+        {
+            WebView.frame = CGRectMake(X, Y, W, H);
+            return;
+        }
+        WebView.frame = CGRectMake((CGFloat)X / Scale,
+                                   (CGFloat)Y / Scale,
+                                   (CGFloat)W / Scale,
+                                   (CGFloat)H / Scale);
+    });
+}
+
+void FInoWebViewImpl_iOS::SetBoundsMode(bool bManual)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    bManualBounds = bManual;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView == nil) return;
+        // In auto mode, restore autoresizing so the frame tracks the parent.
+        // In manual mode, drop autoresizing so SyncBounds fully owns frame.
+        WebView.autoresizingMask = bManual
+            ? UIViewAutoresizingNone
+            : (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight);
+        if (!bManual && WebView.superview != nil)
+        {
+            WebView.frame = WebView.superview.bounds;
+        }
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Shutdown
+// ─────────────────────────────────────────────────────────────────────────────
+void FInoWebViewImpl_iOS::Shutdown()
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    bDestroyed = true;
+    bReady     = false;
+
+    // Unregister BEFORE tearing down the WKWebView so any in-flight
+    // delegate callback that lands on the game thread post-Shutdown sees
+    // an empty registry and silently no-ops.
+    {
+        FScopeLock Lock(&GRegistryLock);
+        GImplRegistry.Remove(InstanceId);
+    }
+
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    // dispatch_sync (not _async) here for two reasons:
+    //  1) Drain any earlier dispatch_async blocks that may still hold the
+    //     pre-shutdown WebView pointer — the runloop is FIFO so by the time
+    //     this sync block runs, every prior queued block has run.
+    //  2) Once Shutdown returns to the game thread, the destructor will
+    //     `delete InternalPtr`. We MUST be done with main-thread work before
+    //     that or the freed struct gets dereferenced.
+    // Game thread != main thread on iOS, so this can't deadlock.
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView != nil)
+        {
+            WebView.navigationDelegate = nil;
+            WebView.UIDelegate         = nil;
+            [WebView stopLoading];
+            [WebView removeFromSuperview];
+
+            // Drop the script-message handler so the bridge doesn't leak.
+            if (Internal->Configuration.userContentController != nil)
+            {
+                [Internal->Configuration.userContentController
+                    removeScriptMessageHandlerForName:kInoMessageHandler];
+            }
+        }
+        Internal->WebView       = nil;
+        Internal->Bridge        = nil;
+        Internal->SchemeHandler = nil;
+        Internal->Configuration = nil;
+    });
+
+    UE_LOG(LogInoWebUI, Log, TEXT("FInoWebViewImpl_iOS[%d] Shutdown"), InstanceId);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Phase 2 messaging
+// ─────────────────────────────────────────────────────────────────────────────
+void FInoWebViewImpl_iOS::PostMessageJson(const FString& Json)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    NSString* JSLiteral = InoJSStringLiteral(Json);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView == nil) return;
+        NSString* Script =
+            [NSString stringWithFormat:@"window._InoWebUIDispatch && window._InoWebUIDispatch(%@)", JSLiteral];
+        [WebView evaluateJavaScript:Script completionHandler:nil];
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Phase 3 polish
+// ─────────────────────────────────────────────────────────────────────────────
+void FInoWebViewImpl_iOS::OpenDevTools()
+{
+    UE_LOG(LogInoWebUI, Log,
+        TEXT("OpenDevTools on iOS: connect this device via USB to a Mac, open Safari, "
+             "enable the Develop menu (Safari → Settings → Advanced → Show features for web developers), "
+             "and pick this WKWebView from Develop → <DeviceName>. "
+             "Inline DevTools is not available on iOS."));
+}
+
+void FInoWebViewImpl_iOS::ExecuteJavaScript(const FString& Code)
+{
+    check(IsInGameThread());
+    if (bDestroyed || Code.IsEmpty()) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    NSString* CodeNS = NSStringFromFString(Code);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView == nil) return;
+        [WebView evaluateJavaScript:CodeNS completionHandler:nil];
+    });
+}
+
+void FInoWebViewImpl_iOS::SetMuted(bool bMuted)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    // WKWebView has no first-class audio mute. Closest thing: walk every
+    // <audio>/<video> element and flip .muted. New media added afterward
+    // won't pick this up — same constraint as the Android side. Logged so
+    // users know not to expect strict-app-mute semantics.
+    UE_LOG(LogInoWebUI, Warning,
+        TEXT("SetMuted on iOS: WKWebView has no first-class mute API. "
+             "Walking <audio>/<video>.muted via JS as a best-effort approximation."));
+
+    NSString* Script = bMuted
+        ? @"(function(){try{document.querySelectorAll('audio,video').forEach(function(m){m.muted=true;});}catch(e){}})();"
+        : @"(function(){try{document.querySelectorAll('audio,video').forEach(function(m){m.muted=false;});}catch(e){}})();";
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView != nil) [WebView evaluateJavaScript:Script completionHandler:nil];
+    });
+}
+
+void FInoWebViewImpl_iOS::FocusWebView()
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView != nil) [WebView becomeFirstResponder];
+    });
+}
+
+void FInoWebViewImpl_iOS::SetZoomFactor(float Factor)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    CachedZoomFactor = Factor;
+
+    // WKWebView has no native zoomFactor; CSS zoom is the most reliable
+    // cross-platform path that doesn't reflow scrolling weirdly.
+    NSString* Script = [NSString stringWithFormat:
+        @"(function(){try{document.body.style.zoom = %f;}catch(e){}})();",
+        (double)Factor];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView != nil) [WebView evaluateJavaScript:Script completionHandler:nil];
+    });
+}
+
+void FInoWebViewImpl_iOS::ClearAllCookies()
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSSet* Types = [NSSet setWithObject:WKWebsiteDataTypeCookies];
+        [WKWebsiteDataStore.defaultDataStore
+            removeDataOfTypes:Types
+                modifiedSince:[NSDate distantPast]
+            completionHandler:^{}];
+    });
+}
+
+void FInoWebViewImpl_iOS::SetBackgroundOpaque(bool bOpaque)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView == nil) return;
+        if (bOpaque)
+        {
+            WebView.opaque = YES;
+            WebView.backgroundColor = UIColor.whiteColor;
+            if ([WebView.scrollView respondsToSelector:@selector(setBackgroundColor:)])
+            {
+                WebView.scrollView.backgroundColor = UIColor.whiteColor;
+            }
+        }
+        else
+        {
+            WebView.opaque = NO;
+            WebView.backgroundColor = UIColor.clearColor;
+            if ([WebView.scrollView respondsToSelector:@selector(setBackgroundColor:)])
+            {
+                WebView.scrollView.backgroundColor = UIColor.clearColor;
+            }
+        }
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Browser-style nav
+// ─────────────────────────────────────────────────────────────────────────────
+void FInoWebViewImpl_iOS::GoBack()
+{
+    check(IsInGameThread());
+    if (!bReady || bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView != nil && WebView.canGoBack) [WebView goBack];
+    });
+}
+
+void FInoWebViewImpl_iOS::GoForward()
+{
+    check(IsInGameThread());
+    if (!bReady || bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView != nil && WebView.canGoForward) [WebView goForward];
+    });
+}
+
+bool FInoWebViewImpl_iOS::CanGoBack() const
+{
+    if (!bReady || bDestroyed) return false;
+    return bCachedCanGoBack;
+}
+
+bool FInoWebViewImpl_iOS::CanGoForward() const
+{
+    if (!bReady || bDestroyed) return false;
+    return bCachedCanGoForward;
+}
+
+void FInoWebViewImpl_iOS::StopLoading()
+{
+    check(IsInGameThread());
+    if (!bReady || bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (Internal->WebView != nil) [Internal->WebView stopLoading];
+    });
+}
+
+void FInoWebViewImpl_iOS::LoadHTMLString(const FString& HTML, const FString& BaseURI)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    NSString* HtmlNS = NSStringFromFString(HTML);
+    NSString* BaseNS = BaseURI.IsEmpty() ? nil : NSStringFromFString(BaseURI);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView == nil) return;
+        NSURL* BaseURL = (BaseNS != nil) ? [NSURL URLWithString:BaseNS] : nil;
+        [WebView loadHTMLString:HtmlNS baseURL:BaseURL];
+    });
+    bCachedLoading = true;
+}
+
+void FInoWebViewImpl_iOS::SetCookie(const FString& URL, const FString& Cookie)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+
+    NSString* URLString    = NSStringFromFString(URL);
+    NSString* CookieString = NSStringFromFString(Cookie);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSURL* URLObj = [NSURL URLWithString:URLString];
+        if (URLObj == nil) return;
+
+        // Same parsing shape as Initialize's seed-cookie loop.
+        NSMutableDictionary* Props = [NSMutableDictionary dictionary];
+        NSArray<NSString*>* Parts = [CookieString componentsSeparatedByString:@";"];
+        BOOL bGotNameValue = NO;
+        for (NSString* RawPart in Parts)
+        {
+            NSString* Part = [RawPart stringByTrimmingCharactersInSet:
+                              [NSCharacterSet whitespaceCharacterSet]];
+            if (Part.length == 0) continue;
+            NSRange Eq = [Part rangeOfString:@"="];
+            NSString* K = (Eq.location == NSNotFound) ? Part : [Part substringToIndex:Eq.location];
+            NSString* V = (Eq.location == NSNotFound) ? @""  : [Part substringFromIndex:Eq.location + 1];
+            if (!bGotNameValue)
+            {
+                Props[NSHTTPCookieName]   = K;
+                Props[NSHTTPCookieValue]  = V;
+                bGotNameValue = YES;
+            }
+            else
+            {
+                NSString* KLow = [K lowercaseString];
+                if      ([KLow isEqualToString:@"path"])    Props[NSHTTPCookiePath]    = V;
+                else if ([KLow isEqualToString:@"domain"])  Props[NSHTTPCookieDomain]  = V;
+                else if ([KLow isEqualToString:@"expires"]) Props[NSHTTPCookieExpires] = V;
+                else if ([KLow isEqualToString:@"secure"])  Props[NSHTTPCookieSecure]  = @YES;
+            }
+        }
+        if (Props[NSHTTPCookieDomain] == nil) Props[NSHTTPCookieDomain] = URLObj.host ?: @"";
+        if (Props[NSHTTPCookiePath]   == nil) Props[NSHTTPCookiePath]   = @"/";
+        NSHTTPCookie* CookieObj = [NSHTTPCookie cookieWithProperties:Props];
+        if (CookieObj != nil)
+        {
+            [WKWebsiteDataStore.defaultDataStore.httpCookieStore
+                setCookie:CookieObj completionHandler:nil];
+        }
+    });
+}
+
+void FInoWebViewImpl_iOS::ClearAllData()
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSSet* AllTypes = [WKWebsiteDataStore allWebsiteDataTypes];
+        [WKWebsiteDataStore.defaultDataStore
+            removeDataOfTypes:AllTypes
+                modifiedSince:[NSDate distantPast]
+            completionHandler:^{}];
+    });
+}
+
+bool FInoWebViewImpl_iOS::CapturePreview(EInoImageFormat Format, const FString& OutFilePath)
+{
+    check(IsInGameThread());
+    if (!bReady || bDestroyed) return false;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return false;
+
+    const int32 LocalId = InstanceId;
+    NSString* OutPathNS = NSStringFromFString(OutFilePath);
+    const bool bJpeg = (Format == EInoImageFormat::JPEG);
+    const FString Path = OutFilePath;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView == nil)
+        {
+            DispatchOnGameThread(LocalId, [Path](FInoWebViewImpl_iOS* Impl)
+            {
+                if (Impl->OnCapturePreviewCompleteCallback)
+                    Impl->OnCapturePreviewCompleteCallback(false, Path);
+            });
+            return;
+        }
+
+        WKSnapshotConfiguration* SnapConfig = [[WKSnapshotConfiguration alloc] init];
+        [WebView takeSnapshotWithConfiguration:SnapConfig completionHandler:^(UIImage* Image, NSError* Err) {
+            bool bSuccess = false;
+            if (Image != nil && Err == nil)
+            {
+                NSData* Data = bJpeg
+                    ? UIImageJPEGRepresentation(Image, 0.9)
+                    : UIImagePNGRepresentation(Image);
+                if (Data != nil)
+                {
+                    NSError* WriteErr = nil;
+                    bSuccess = [Data writeToFile:OutPathNS
+                                         options:NSDataWritingAtomic
+                                           error:&WriteErr];
+                    if (!bSuccess && WriteErr != nil)
+                    {
+                        UE_LOG(LogInoWebUI, Warning,
+                            TEXT("CapturePreview write failed: %s"),
+                            *FStringFromNSString(WriteErr.localizedDescription));
+                    }
+                }
+            }
+            DispatchOnGameThread(LocalId, [bSuccess, Path](FInoWebViewImpl_iOS* Impl)
+            {
+                if (Impl->OnCapturePreviewCompleteCallback)
+                    Impl->OnCapturePreviewCompleteCallback(bSuccess, Path);
+            });
+        }];
+    });
+    return true;
+}
+
+void FInoWebViewImpl_iOS::LoadURLWithHeaders(const FString& URL,
+                                              const TMap<FString, FString>& Headers)
+{
+    check(IsInGameThread());
+    if (bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
+
+    NSString* URLStr = NSStringFromFString(URL);
+    NSMutableDictionary* HeadersNS = [NSMutableDictionary dictionaryWithCapacity:Headers.Num()];
+    for (const TPair<FString, FString>& KV : Headers)
+    {
+        HeadersNS[NSStringFromFString(KV.Key)] = NSStringFromFString(KV.Value);
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView == nil) return;
+        NSURL* URLObj = [NSURL URLWithString:URLStr];
+        if (URLObj == nil) return;
+        NSMutableURLRequest* Req = [NSMutableURLRequest requestWithURL:URLObj];
+        [HeadersNS enumerateKeysAndObjectsUsingBlock:^(NSString* K, NSString* V, BOOL* Stop) {
+            [Req setValue:V forHTTPHeaderField:K];
+        }];
+        [WebView loadRequest:Req];
+    });
+    bCachedLoading = true;
+}
+
+#endif // PLATFORM_IOS

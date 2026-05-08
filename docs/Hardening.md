@@ -41,6 +41,12 @@ https://cdn.jsdelivr.net/*       a specific CDN
 | `bEnableContextMenus`    | `false` | Right-click is a no-op inside the WebView. |
 | `bEnableAcceleratorKeys` | `false` | F5, F12, Ctrl+F, Ctrl+P, ... pass through to the game. |
 
+### Per-platform implementation notes
+
+- **Windows.** Lockdown applied through `ICoreWebView2.NavigationStarting` (cancel + log). Dialog suppression through `ScriptDialogOpening`. `window.open` through `NewWindowRequested.put_Handled(TRUE)`.
+- **Android.** Lockdown applied through `WebViewClient.shouldOverrideUrlLoading`. Dialog suppression through the `WebChromeClient.onJsAlert/Confirm/Prompt/BeforeUnload` callbacks calling `result.cancel()`. `window.open` through `WebChromeClient.onCreateWindow` plus the transport-WebView trick to extract the URL.
+- **iOS.** Lockdown applied through `WKNavigationDelegate.decidePolicyForNavigationAction:` (`.cancel`). Dialog suppression through `WKUIDelegate.runJavaScriptAlert/Confirm/TextInputPanel...:` calling completion immediately with cancel/null. `window.open` through `WKUIDelegate.createWebViewWithConfiguration:...` returning `nil`. The internal-scheme allowlist on iOS extends to the custom `inoweb:` scheme used for the virtual host (see `iOS.md`).
+
 ## Navigation events (BP delegates on `UInoWebView`)
 
 | Delegate | Signature | Fires when |
