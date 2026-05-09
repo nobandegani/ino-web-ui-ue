@@ -729,14 +729,23 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
         // normally; only the elastic past-the-edge bounce is gated.
         WebView.scrollView.bounces = Config.View.bAllowBounceOnScroll ? YES : NO;
 
-        // bAllowZoom (default false) → clamp zoom to 1.0 so pinch / double-tap
-        // and the input-focus auto-zoom can't drift the page. True restores
-        // the WKWebView default zoom range.
+        // bAllowZoom (default false) → kill pinch / double-tap zoom natively.
+        //   • min/max=1.0 clamps the scrollView zoom range. This alone is
+        //     fragile — iOS re-derives the range from the page's viewport
+        //     meta tag on every navigation, so the clamp can quietly drift.
+        //   • pinchGestureRecognizer.enabled=NO is the robust line: once
+        //     disabled, iOS doesn't re-enable it across page loads.
+        // Note: this does NOT prevent the iOS input-focus auto-zoom — that's
+        // a separate WebKit viewport-scaling mechanism. The reliable fix for
+        // input auto-zoom is HTML-side: either a viewport meta tag with
+        // `maximum-scale=1, user-scalable=no`, or CSS `input { font-size:16px }`
+        // (iOS only auto-zooms when the focused input's font-size < 16px).
         if (!Config.View.bAllowZoom)
         {
             WebView.scrollView.minimumZoomScale = 1.0;
             WebView.scrollView.maximumZoomScale = 1.0;
             WebView.scrollView.bouncesZoom      = NO;
+            WebView.scrollView.pinchGestureRecognizer.enabled = NO;
         }
 
         // bShowScrollBars (default false) → hide the scroll indicators.

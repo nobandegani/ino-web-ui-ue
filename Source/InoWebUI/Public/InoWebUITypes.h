@@ -125,15 +125,25 @@ struct INOWEBUI_API FInoWebViewSettings
     bool bEnableAcceleratorKeys = false;
 
     /**
-     * If false (default), pinch zoom, double-tap zoom, and (on iOS) the
-     * input-focus auto-zoom are all suppressed — the page renders at 100%
-     * and stays there. Game UI almost always wants this off; flip true for
-     * a docs / browser-style WebView where users may want to zoom in.
+     * If false (default), pinch zoom and double-tap zoom are suppressed —
+     * the page renders at 100% and stays there. Game UI almost always wants
+     * this off; flip true for a docs / browser-style WebView where users
+     * may want to zoom in.
      *
      * Applied via pure native APIs on every platform — no JS / CSS injection:
-     *   • iOS: scrollView.minimumZoomScale / maximumZoomScale = 1
+     *   • iOS: scrollView.min/maxZoomScale = 1 + pinchGestureRecognizer.enabled = NO
      *   • Android: WebSettings.setSupportZoom + setBuiltInZoomControls
      *   • Windows: ICoreWebView2Settings5.IsPinchZoomEnabled
+     *
+     * iOS gotcha — input auto-zoom is NOT covered. iOS focuses inputs by
+     * scaling the WebKit viewport (a separate mechanism from the scrollView
+     * zoom this flag controls), and there's no native API to disable it.
+     * If the page focuses an `<input>` whose CSS font-size is below 16px,
+     * iOS will still auto-zoom in. Two HTML-side fixes:
+     *   • <meta name="viewport" content="width=device-width, initial-scale=1,
+     *     maximum-scale=1, user-scalable=no"> in the page <head>, OR
+     *   • CSS `input, textarea, select { font-size: 16px; }`.
+     * Either of those, plus this flag, fully kills zoom on iOS.
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
     bool bAllowZoom = false;
