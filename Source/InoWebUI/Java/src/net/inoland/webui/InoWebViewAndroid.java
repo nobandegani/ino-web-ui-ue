@@ -813,6 +813,42 @@ public class InoWebViewAndroid
     }
 
     /**
+     * Allow / disallow pinch + double-tap zoom on the WebView. When false
+     * (default in InoWebUI), supportZoom + builtInZoomControls are both off.
+     * displayZoomControls is always off (we never want the on-screen +/-
+     * UI even if zoom itself is on, that's a browser concept).
+     */
+    public static void setAllowZoom(final int id, final boolean allow)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv == null) return;
+                wv.getSettings().setSupportZoom(allow);
+                wv.getSettings().setBuiltInZoomControls(allow);
+                wv.getSettings().setDisplayZoomControls(false);
+            }
+        });
+    }
+
+    /** Show / hide both scroll indicators. Scrolling itself still works. */
+    public static void setShowScrollBars(final int id, final boolean show)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv == null) return;
+                wv.setVerticalScrollBarEnabled(show);
+                wv.setHorizontalScrollBarEnabled(show);
+            }
+        });
+    }
+
+    /**
      * Allow / disallow HTML5 media to start without a user gesture. When true,
      * setMediaPlaybackRequiresUserGesture(false) — the page can autoplay
      * audio / video. When false, the user must tap before playback begins

@@ -729,6 +729,21 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
         // normally; only the elastic past-the-edge bounce is gated.
         WebView.scrollView.bounces = Config.View.bAllowBounceOnScroll ? YES : NO;
 
+        // bAllowZoom (default false) → clamp zoom to 1.0 so pinch / double-tap
+        // and the input-focus auto-zoom can't drift the page. True restores
+        // the WKWebView default zoom range.
+        if (!Config.View.bAllowZoom)
+        {
+            WebView.scrollView.minimumZoomScale = 1.0;
+            WebView.scrollView.maximumZoomScale = 1.0;
+            WebView.scrollView.bouncesZoom      = NO;
+        }
+
+        // bShowScrollBars (default false) → hide the scroll indicators.
+        // Scrolling itself stays enabled.
+        WebView.scrollView.showsVerticalScrollIndicator   = Config.View.bShowScrollBars ? YES : NO;
+        WebView.scrollView.showsHorizontalScrollIndicator = Config.View.bShowScrollBars ? YES : NO;
+
         // Background opacity — match the FInoWebViewConfig contract.
         if (bTransparent)
         {

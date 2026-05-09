@@ -52,6 +52,8 @@ namespace InoWebUIJNI
     static jmethodID MSetContextMenusEnabled = nullptr;
     static jmethodID MSetBackgroundOpaque    = nullptr;
     static jmethodID MSetAllowMediaAutoplay  = nullptr;
+    static jmethodID MSetAllowZoom           = nullptr;
+    static jmethodID MSetShowScrollBars      = nullptr;
     // ── New ops ───────────────────────────────────────────────────────────
     static jmethodID MGoBack             = nullptr;
     static jmethodID MGoForward          = nullptr;
@@ -113,6 +115,8 @@ namespace InoWebUIJNI
         MSetContextMenusEnabled = Env->GetStaticMethodID(JavaClass, "setContextMenusEnabled","(IZ)V");
         MSetBackgroundOpaque    = Env->GetStaticMethodID(JavaClass, "setBackgroundOpaque",   "(IZ)V");
         MSetAllowMediaAutoplay  = Env->GetStaticMethodID(JavaClass, "setAllowMediaAutoplay", "(IZ)V");
+        MSetAllowZoom           = Env->GetStaticMethodID(JavaClass, "setAllowZoom",          "(IZ)V");
+        MSetShowScrollBars      = Env->GetStaticMethodID(JavaClass, "setShowScrollBars",     "(IZ)V");
 
         MGoBack             = Env->GetStaticMethodID(JavaClass, "goBack",             "(I)V");
         MGoForward          = Env->GetStaticMethodID(JavaClass, "goForward",          "(I)V");
@@ -131,6 +135,7 @@ namespace InoWebUIJNI
             || !MSetDevToolsEnabled || !MExecuteJavaScript || !MSetUserAgent
             || !MSetContextMenusEnabled || !MSetBackgroundOpaque
             || !MSetAllowMediaAutoplay
+            || !MSetAllowZoom || !MSetShowScrollBars
             || !MGoBack || !MGoForward || !MStopLoading || !MLoadHTMLString
             || !MSetCookie || !MClearAllData || !MCapturePreview
             || !MLoadURLWithHeaders || !MSetBoundsMode)
@@ -260,6 +265,17 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetAllowMediaAutoplay,
         static_cast<jint>(InstanceId),
         static_cast<jboolean>(Config.View.bAllowMediaAutoplay ? JNI_TRUE : JNI_FALSE));
+
+    // Pinch / double-tap zoom control. Default false — game UI doesn't
+    // want users zooming the page.
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetAllowZoom,
+        static_cast<jint>(InstanceId),
+        static_cast<jboolean>(Config.View.bAllowZoom ? JNI_TRUE : JNI_FALSE));
+
+    // Scroll-indicator visibility. Default false — clean overlay look.
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetShowScrollBars,
+        static_cast<jint>(InstanceId),
+        static_cast<jboolean>(Config.View.bShowScrollBars ? JNI_TRUE : JNI_FALSE));
 
     if (!Config.View.UserAgentOverride.IsEmpty())
     {

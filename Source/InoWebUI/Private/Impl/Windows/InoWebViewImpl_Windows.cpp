@@ -685,6 +685,15 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
                     Internal->Config.View.bEnableAcceleratorKeys ? 1 : 0);
             }
 
+            // Settings5 — pinch zoom. Runtime 91+. Silent no-op on older
+            // runtimes (the QI fails and we fall through).
+            ComPtr<ICoreWebView2Settings5> Settings5;
+            if (SUCCEEDED(Settings.As(&Settings5)))
+            {
+                Settings5->put_IsPinchZoomEnabled(
+                    Internal->Config.View.bAllowZoom ? 1 : 0);
+            }
+
             // Settings2 — UserAgent override. Runtime 86+.
             if (!Internal->Config.View.UserAgentOverride.IsEmpty())
             {

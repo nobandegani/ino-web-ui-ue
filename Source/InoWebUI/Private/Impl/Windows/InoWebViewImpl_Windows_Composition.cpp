@@ -968,6 +968,15 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
                     Internal->Config.View.bEnableAcceleratorKeys ? 1 : 0);
             }
 
+            // Settings5 — pinch zoom. Runtime 91+. Silent no-op on older
+            // runtimes.
+            ComPtr<ICoreWebView2Settings5> Settings5;
+            if (SUCCEEDED(Settings.As(&Settings5)))
+            {
+                Settings5->put_IsPinchZoomEnabled(
+                    Internal->Config.View.bAllowZoom ? 1 : 0);
+            }
+
             if (!Internal->Config.View.UserAgentOverride.IsEmpty())
             {
                 ComPtr<ICoreWebView2Settings2> Settings2;

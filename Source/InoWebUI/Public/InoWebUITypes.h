@@ -124,6 +124,35 @@ struct INOWEBUI_API FInoWebViewSettings
               meta = (DisplayName = "Enable Accelerator Keys (Windows)"))
     bool bEnableAcceleratorKeys = false;
 
+    /**
+     * If false (default), pinch zoom, double-tap zoom, and (on iOS) the
+     * input-focus auto-zoom are all suppressed — the page renders at 100%
+     * and stays there. Game UI almost always wants this off; flip true for
+     * a docs / browser-style WebView where users may want to zoom in.
+     *
+     * Applied via pure native APIs on every platform — no JS / CSS injection:
+     *   • iOS: scrollView.minimumZoomScale / maximumZoomScale = 1
+     *   • Android: WebSettings.setSupportZoom + setBuiltInZoomControls
+     *   • Windows: ICoreWebView2Settings5.IsPinchZoomEnabled
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    bool bAllowZoom = false;
+
+    /**
+     * If false (default), the WebView's vertical / horizontal scroll
+     * indicators are hidden. Scrolling itself still works — only the
+     * gutter-style scrollbar visual is suppressed. Game UI almost always
+     * wants the cleaner no-scrollbar look.
+     *
+     * Applied natively on iOS / Android (UIScrollView / WebView properties).
+     * Windows / WebView2 has no native API to hide scrollbars; the flag is
+     * a no-op there, and HTML can hide them with CSS
+     * `::-webkit-scrollbar { display: none }` if needed.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View",
+              meta = (DisplayName = "Show Scroll Bars (iOS, Android)"))
+    bool bShowScrollBars = false;
+
     // ── Media ──────────────────────────────────────────────────────────────
 
     /** Audio output from the page is muted on creation when true. */
