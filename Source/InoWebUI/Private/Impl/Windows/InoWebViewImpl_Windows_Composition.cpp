@@ -567,8 +567,8 @@ bool FInoWebViewImpl_Windows_Composition::Initialize(void* ParentNativeHandle, c
         }
         CachedURL = Config.InitialURL;
     }
-    Internal->PendingVisible = Config.bVisibleOnCreate;
-    Internal->bUserVisible   = Config.bVisibleOnCreate;
+    Internal->PendingVisible = Config.View.bVisibleOnCreate;
+    Internal->bUserVisible   = Config.View.bVisibleOnCreate;
 
     // Verify WebView2 runtime.
     {
@@ -741,7 +741,7 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
     Internal->WebView->AddScriptToExecuteOnDocumentCreated(
         GInoWebUIBridgeScript, nullptr);
 
-    if (Internal->Config.bEnableDevTools)
+    if (Internal->Config.View.bEnableDevTools)
     {
         Internal->WebView->AddScriptToExecuteOnDocumentCreated(
             GInoWebUIDevToolsOverlayScript, nullptr);
@@ -942,7 +942,7 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
     }
 
     // ── Transparent background ──────────────────────────────────────────────
-    if (Internal->Config.bTransparentBackground)
+    if (Internal->Config.View.bTransparentBackground)
     {
         ComPtr<ICoreWebView2Controller2> Ctrl2;
         if (SUCCEEDED(Internal->Controller.As(&Ctrl2)))
@@ -957,28 +957,28 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
         ComPtr<ICoreWebView2Settings> Settings;
         if (SUCCEEDED(Internal->WebView->get_Settings(&Settings)))
         {
-            Settings->put_AreDefaultContextMenusEnabled(Internal->Config.bEnableContextMenus ? 1 : 0);
-            Settings->put_AreDevToolsEnabled          (Internal->Config.bEnableDevTools      ? 1 : 0);
-            Settings->put_IsStatusBarEnabled          (Internal->Config.bShowStatusBar       ? 1 : 0);
+            Settings->put_AreDefaultContextMenusEnabled(Internal->Config.View.bEnableContextMenus ? 1 : 0);
+            Settings->put_AreDevToolsEnabled          (Internal->Config.View.bEnableDevTools      ? 1 : 0);
+            Settings->put_IsStatusBarEnabled          (Internal->Config.View.bShowStatusBar       ? 1 : 0);
 
             ComPtr<ICoreWebView2Settings3> Settings3;
             if (SUCCEEDED(Settings.As(&Settings3)))
             {
                 Settings3->put_AreBrowserAcceleratorKeysEnabled(
-                    Internal->Config.bEnableAcceleratorKeys ? 1 : 0);
+                    Internal->Config.View.bEnableAcceleratorKeys ? 1 : 0);
             }
 
-            if (!Internal->Config.UserAgentOverride.IsEmpty())
+            if (!Internal->Config.View.UserAgentOverride.IsEmpty())
             {
                 ComPtr<ICoreWebView2Settings2> Settings2;
                 if (SUCCEEDED(Settings.As(&Settings2)))
                 {
-                    Settings2->put_UserAgent(*Internal->Config.UserAgentOverride);
+                    Settings2->put_UserAgent(*Internal->Config.View.UserAgentOverride);
                 }
             }
         }
 
-        if (Internal->Config.bStartMuted)
+        if (Internal->Config.View.bStartMuted)
         {
             ComPtr<ICoreWebView2_8> WebView8;
             if (SUCCEEDED(Internal->WebView.As(&WebView8)))
@@ -1171,7 +1171,7 @@ void FInoWebViewImpl_Windows_Composition::OpenDevTools()
     check(IsInGameThread());
     if (!bReady) return;
 
-    if (!Internal->Config.bEnableDevTools)
+    if (!Internal->Config.View.bEnableDevTools)
     {
         UE_LOG(LogInoWebUI, Warning,
             TEXT("OpenDevTools called but bEnableDevTools was false."));

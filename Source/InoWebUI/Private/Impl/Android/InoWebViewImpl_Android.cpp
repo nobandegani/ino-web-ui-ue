@@ -51,6 +51,7 @@ namespace InoWebUIJNI
     static jmethodID MSetUserAgent       = nullptr;
     static jmethodID MSetContextMenusEnabled = nullptr;
     static jmethodID MSetBackgroundOpaque    = nullptr;
+    static jmethodID MSetAllowMediaAutoplay  = nullptr;
     // ── New ops ───────────────────────────────────────────────────────────
     static jmethodID MGoBack             = nullptr;
     static jmethodID MGoForward          = nullptr;
@@ -111,6 +112,7 @@ namespace InoWebUIJNI
         MSetUserAgent           = Env->GetStaticMethodID(JavaClass, "setUserAgent",          "(ILjava/lang/String;)V");
         MSetContextMenusEnabled = Env->GetStaticMethodID(JavaClass, "setContextMenusEnabled","(IZ)V");
         MSetBackgroundOpaque    = Env->GetStaticMethodID(JavaClass, "setBackgroundOpaque",   "(IZ)V");
+        MSetAllowMediaAutoplay  = Env->GetStaticMethodID(JavaClass, "setAllowMediaAutoplay", "(IZ)V");
 
         MGoBack             = Env->GetStaticMethodID(JavaClass, "goBack",             "(I)V");
         MGoForward          = Env->GetStaticMethodID(JavaClass, "goForward",          "(I)V");
@@ -128,6 +130,7 @@ namespace InoWebUIJNI
             || !MFocusWebView || !MSetZoomFactor || !MClearAllCookies
             || !MSetDevToolsEnabled || !MExecuteJavaScript || !MSetUserAgent
             || !MSetContextMenusEnabled || !MSetBackgroundOpaque
+            || !MSetAllowMediaAutoplay
             || !MGoBack || !MGoForward || !MStopLoading || !MLoadHTMLString
             || !MSetCookie || !MClearAllData || !MCapturePreview
             || !MLoadURLWithHeaders || !MSetBoundsMode)
@@ -183,8 +186,8 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
     Env->CallStaticVoidMethod(
         InoWebUIJNI::JavaClass, InoWebUIJNI::MCreate,
         static_cast<jint>(InstanceId),
-        static_cast<jboolean>(Config.bTransparentBackground ? JNI_TRUE : JNI_FALSE),
-        static_cast<jboolean>(Config.bVisibleOnCreate        ? JNI_TRUE : JNI_FALSE));
+        static_cast<jboolean>(Config.View.bTransparentBackground ? JNI_TRUE : JNI_FALSE),
+        static_cast<jboolean>(Config.View.bVisibleOnCreate        ? JNI_TRUE : JNI_FALSE));
 
     // Step 2: virtual host. Installs a WebViewClient.shouldInterceptRequest
     // handler that serves files from the resolved folder when the page
@@ -245,15 +248,22 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
     // Step 2e: Phase 3 polish — dev tools, context menus, user agent.
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetDevToolsEnabled,
         static_cast<jint>(InstanceId),
-        static_cast<jboolean>(Config.bEnableDevTools ? JNI_TRUE : JNI_FALSE));
+        static_cast<jboolean>(Config.View.bEnableDevTools ? JNI_TRUE : JNI_FALSE));
 
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetContextMenusEnabled,
         static_cast<jint>(InstanceId),
-        static_cast<jboolean>(Config.bEnableContextMenus ? JNI_TRUE : JNI_FALSE));
+        static_cast<jboolean>(Config.View.bEnableContextMenus ? JNI_TRUE : JNI_FALSE));
 
-    if (!Config.UserAgentOverride.IsEmpty())
+    // Newly exposed view setting (was hardcoded to allow before; default now
+    // matches that behaviour). When false, Android requires a user gesture
+    // before HTML5 audio / video can begin playback.
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetAllowMediaAutoplay,
+        static_cast<jint>(InstanceId),
+        static_cast<jboolean>(Config.View.bAllowMediaAutoplay ? JNI_TRUE : JNI_FALSE));
+
+    if (!Config.View.UserAgentOverride.IsEmpty())
     {
-        jstring JUA = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.UserAgentOverride));
+        jstring JUA = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.View.UserAgentOverride));
         Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetUserAgent,
             static_cast<jint>(InstanceId), JUA);
         Env->DeleteLocalRef(JUA);
@@ -301,7 +311,7 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
     UE_LOG(LogInoWebUI, Log,
         TEXT("FInoWebViewImpl_Android[%d] Initialize  url='%s'  transparent=%d  visible=%d"),
         InstanceId, *Config.InitialURL,
-        Config.bTransparentBackground ? 1 : 0, Config.bVisibleOnCreate ? 1 : 0);
+        Config.View.bTransparentBackground ? 1 : 0, Config.View.bVisibleOnCreate ? 1 : 0);
 
     // Fire the one-shot ready signal. The owner (UInoWebView) wraps this
     // in AsyncTask(GameThread), so even though we're calling synchronously
@@ -596,7 +606,7 @@ void FInoWebViewImpl_Android::OpenDevTools()
 {
     // Android WebView has no programmatic DevTools window. Remote debugging
     // is the equivalent: set WebContentsDebuggingEnabled (done at Initialize
-    // via Config.bEnableDevTools) and connect chrome://inspect from a
+    // via Config.View.bEnableDevTools) and connect chrome://inspect from a
     // desktop Chrome on the same machine via adb.
     UE_LOG(LogInoWebUI, Log,
         TEXT("OpenDevTools on Android: connect this device to a desktop via USB, "

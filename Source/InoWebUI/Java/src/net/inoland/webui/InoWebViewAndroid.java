@@ -812,6 +812,25 @@ public class InoWebViewAndroid
         });
     }
 
+    /**
+     * Allow / disallow HTML5 media to start without a user gesture. When true,
+     * setMediaPlaybackRequiresUserGesture(false) — the page can autoplay
+     * audio / video. When false, the user must tap before playback begins
+     * (matches Chrome's default policy). Mirrors FInoWebViewSettings::
+     * bAllowMediaAutoplay.
+     */
+    public static void setAllowMediaAutoplay(final int id, final boolean allow)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv != null) wv.getSettings().setMediaPlaybackRequiresUserGesture(!allow);
+            }
+        });
+    }
+
     /** Toggle the WebView's background between transparent and opaque at
      *  runtime. Useful for the dev overlay's "Toggle transparency" button. */
     public static void setBackgroundOpaque(final int id, final boolean opaque)

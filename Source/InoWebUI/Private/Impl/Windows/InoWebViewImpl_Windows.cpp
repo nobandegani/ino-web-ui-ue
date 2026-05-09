@@ -241,7 +241,7 @@ bool FInoWebViewImpl_Windows::Initialize(void* ParentNativeHandle, const FInoWeb
         // NavigationCompleted fires.
         CachedURL = Config.InitialURL;
     }
-    Internal->PendingVisible = Config.bVisibleOnCreate;
+    Internal->PendingVisible = Config.View.bVisibleOnCreate;
 
     // Verify the WebView2 Runtime is installed (Edge on Win10+ normally provides this).
     {
@@ -380,7 +380,7 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
     }
 
     // ── Dev overlay — only when the user opted in via config ────────────────
-    if (Internal->Config.bEnableDevTools)
+    if (Internal->Config.View.bEnableDevTools)
     {
         Internal->WebView->AddScriptToExecuteOnDocumentCreated(
             GInoWebUIDevToolsOverlayScript,
@@ -651,7 +651,7 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
     }
 
     // Transparent background (ICoreWebView2Controller2 was added in Runtime 90+).
-    if (Internal->Config.bTransparentBackground)
+    if (Internal->Config.View.bTransparentBackground)
     {
         ComPtr<ICoreWebView2Controller2> Ctrl2;
         if (SUCCEEDED(Internal->Controller.As(&Ctrl2)))
@@ -673,33 +673,33 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
         ComPtr<ICoreWebView2Settings> Settings;
         if (SUCCEEDED(Internal->WebView->get_Settings(&Settings)))
         {
-            Settings->put_AreDefaultContextMenusEnabled(Internal->Config.bEnableContextMenus   ? 1 : 0);
-            Settings->put_AreDevToolsEnabled          (Internal->Config.bEnableDevTools         ? 1 : 0);
-            Settings->put_IsStatusBarEnabled          (Internal->Config.bShowStatusBar          ? 1 : 0);
+            Settings->put_AreDefaultContextMenusEnabled(Internal->Config.View.bEnableContextMenus   ? 1 : 0);
+            Settings->put_AreDevToolsEnabled          (Internal->Config.View.bEnableDevTools         ? 1 : 0);
+            Settings->put_IsStatusBarEnabled          (Internal->Config.View.bShowStatusBar          ? 1 : 0);
 
             // Settings3 — browser accelerator keys (F5/F12/Ctrl+F/…). Runtime 89+.
             ComPtr<ICoreWebView2Settings3> Settings3;
             if (SUCCEEDED(Settings.As(&Settings3)))
             {
                 Settings3->put_AreBrowserAcceleratorKeysEnabled(
-                    Internal->Config.bEnableAcceleratorKeys ? 1 : 0);
+                    Internal->Config.View.bEnableAcceleratorKeys ? 1 : 0);
             }
 
             // Settings2 — UserAgent override. Runtime 86+.
-            if (!Internal->Config.UserAgentOverride.IsEmpty())
+            if (!Internal->Config.View.UserAgentOverride.IsEmpty())
             {
                 ComPtr<ICoreWebView2Settings2> Settings2;
                 if (SUCCEEDED(Settings.As(&Settings2)))
                 {
-                    Settings2->put_UserAgent(*Internal->Config.UserAgentOverride);
+                    Settings2->put_UserAgent(*Internal->Config.View.UserAgentOverride);
                     UE_LOG(LogInoWebUI, Verbose, TEXT("UserAgent override applied: %s"),
-                        *Internal->Config.UserAgentOverride);
+                        *Internal->Config.View.UserAgentOverride);
                 }
             }
         }
 
         // Mute at startup if requested. ICoreWebView2_8 — Runtime 88+.
-        if (Internal->Config.bStartMuted)
+        if (Internal->Config.View.bStartMuted)
         {
             ComPtr<ICoreWebView2_8> WebView8;
             if (SUCCEEDED(Internal->WebView.As(&WebView8)))
@@ -959,7 +959,7 @@ void FInoWebViewImpl_Windows::OpenDevTools()
             TEXT("OpenDevTools called before WebView is ready; ignored."));
         return;
     }
-    if (!Internal->Config.bEnableDevTools)
+    if (!Internal->Config.View.bEnableDevTools)
     {
         UE_LOG(LogInoWebUI, Warning,
             TEXT("OpenDevTools called but bEnableDevTools was false at construction. "

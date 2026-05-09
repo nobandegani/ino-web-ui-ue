@@ -576,13 +576,13 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
     const FString RewrittenInitialURL = RewriteForVHost(Config.InitialURL);
     NSString* InitialURLNS = RewrittenInitialURL.IsEmpty()
         ? nil : NSStringFromFString(RewrittenInitialURL);
-    NSString* UserAgentNS = Config.UserAgentOverride.IsEmpty()
-        ? nil : NSStringFromFString(Config.UserAgentOverride);
+    NSString* UserAgentNS = Config.View.UserAgentOverride.IsEmpty()
+        ? nil : NSStringFromFString(Config.View.UserAgentOverride);
 
-    const bool bTransparent      = Config.bTransparentBackground;
-    const bool bVisibleOnCreate  = Config.bVisibleOnCreate;
-    const bool bDevToolsEnabled  = Config.bEnableDevTools;
-    const bool bMutedOnStart     = Config.bStartMuted;
+    const bool bTransparent      = Config.View.bTransparentBackground;
+    const bool bVisibleOnCreate  = Config.View.bVisibleOnCreate;
+    const bool bDevToolsEnabled  = Config.View.bEnableDevTools;
+    const bool bMutedOnStart     = Config.View.bStartMuted;
     Internal->VirtualHostFolder  = AbsoluteFolderNS;
 
     // Build the WKWebView on the iOS main thread synchronously — we want IsReady
@@ -592,11 +592,15 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
         // Configuration
         WKWebViewConfiguration* Configuration = [[WKWebViewConfiguration alloc] init];
 
-        // Suppress autoplay restrictions for game UI use cases.
-        Configuration.allowsInlineMediaPlayback = YES;
+        // Inline media + autoplay — gated on the new view-settings flags.
+        // Defaults match the previous hardcoded behaviour (inline=YES,
+        // autoplay=allowed) so no observable change unless the user opts out.
+        Configuration.allowsInlineMediaPlayback = Config.View.bAllowInlineMediaPlayback ? YES : NO;
         if (@available(iOS 10.0, *))
         {
-            Configuration.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
+            Configuration.mediaTypesRequiringUserActionForPlayback = Config.View.bAllowMediaAutoplay
+                ? WKAudiovisualMediaTypeNone
+                : WKAudiovisualMediaTypeAll;
         }
 
         // Bridge object — handles JS messages + nav delegate + UI delegate.
@@ -715,7 +719,7 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
         // indicator. False → Automatic (the standard inset-by-safe-area).
         if (@available(iOS 11.0, *))
         {
-            WebView.scrollView.contentInsetAdjustmentBehavior = Config.bExtendUnderSafeArea
+            WebView.scrollView.contentInsetAdjustmentBehavior = Config.View.bExtendUnderSafeArea
                 ? UIScrollViewContentInsetAdjustmentNever
                 : UIScrollViewContentInsetAdjustmentAutomatic;
         }
@@ -723,7 +727,7 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
         // bAllowBounceOnScroll (default false) → suppress the iOS rubber-band
         // over-scroll effect. Scrolling within the content range still works
         // normally; only the elastic past-the-edge bounce is gated.
-        WebView.scrollView.bounces = Config.bAllowBounceOnScroll ? YES : NO;
+        WebView.scrollView.bounces = Config.View.bAllowBounceOnScroll ? YES : NO;
 
         // Background opacity — match the FInoWebViewConfig contract.
         if (bTransparent)
@@ -819,8 +823,8 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
     UE_LOG(LogInoWebUI, Log,
         TEXT("FInoWebViewImpl_iOS[%d] Initialize  url='%s'  transparent=%d  visible=%d  vhost='%s'"),
         InstanceId, *Config.InitialURL,
-        Config.bTransparentBackground ? 1 : 0,
-        Config.bVisibleOnCreate ? 1 : 0,
+        Config.View.bTransparentBackground ? 1 : 0,
+        Config.View.bVisibleOnCreate ? 1 : 0,
         *VirtualHostName);
 
     if (OnReadyCallback)

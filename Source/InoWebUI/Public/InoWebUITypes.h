@@ -50,11 +50,157 @@ enum class EInoImageFormat : uint8
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  FInoWebViewSettings
+//
+//  View-level appearance / behavior toggles. Embedded inside FInoWebViewConfig
+//  as the `View` field (shown flat in the Details panel via
+//  ShowOnlyInnerProperties). Defaults are tuned for "locked-down game UI"
+//  rather than browser-like behaviour — most flags ship false / off so a
+//  fresh CreateWebView produces a focused overlay rather than a Safari tab.
+// ─────────────────────────────────────────────────────────────────────────────
+
+USTRUCT(BlueprintType)
+struct INOWEBUI_API FInoWebViewSettings
+{
+    GENERATED_BODY()
+
+    /**
+     * If true (default), the WebView renders with a fully transparent
+     * background so the Unreal 3D scene shows through the HTML's empty areas.
+     * If false, the WebView paints an opaque white background (standard web).
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    bool bTransparentBackground = true;
+
+    /**
+     * Whether the WebView is visible immediately on creation.
+     * You can flip this later via UInoWebView::Show / Hide.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    bool bVisibleOnCreate = true;
+
+    // ── Dev / debug ─────────────────────────────────────────────────────────
+
+    /**
+     * Enable the Chromium DevTools panel (Windows) / chrome://inspect remote
+     * debugging (Android) / Safari Web Inspector hint (iOS). Open
+     * programmatically with UInoWebView::OpenDevTools(), or with F12 if
+     * bEnableAcceleratorKeys is also true on Windows. Usually enabled in
+     * dev builds, disabled in shipping.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    bool bEnableDevTools = false;
+
+    /**
+     * If false (default), the WebView's status bar — the small floating
+     * label that shows a link's URL when you hover over it — is hidden.
+     * Game UI almost never wants this; flip true for browser-style flows
+     * where seeing destinations on hover is helpful (e.g., dev menus).
+     * Windows-only — Android / iOS WebViews have no equivalent.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    bool bShowStatusBar = false;
+
+    // ── Interaction ─────────────────────────────────────────────────────────
+
+    /**
+     * If false, right-clicking inside the WebView does nothing (the browser
+     * "Save image as…/Inspect element" menu is suppressed). Recommended
+     * for game UI. Default false.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    bool bEnableContextMenus = false;
+
+    /**
+     * If false, browser-level accelerator keys like F5 (reload), F12
+     * (devtools), Ctrl+F (find in page), Ctrl+P (print) are suppressed.
+     * Recommended for game UI so those keys remain available to the game.
+     * Default false. NOTE: disabling accelerators also disables F12 as a
+     * way to open DevTools — use OpenDevTools() programmatically instead.
+     * Windows-only concept.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    bool bEnableAcceleratorKeys = false;
+
+    // ── Media ──────────────────────────────────────────────────────────────
+
+    /** Audio output from the page is muted on creation when true. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    bool bStartMuted = false;
+
+    /**
+     * If true (default), HTML5 video plays inline within the page instead
+     * of being forced into the system fullscreen player. Game UI almost
+     * always wants inline. iOS-specific — Android and Windows always play
+     * inline regardless. Maps to WKWebViewConfiguration.allowsInlineMediaPlayback.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    bool bAllowInlineMediaPlayback = true;
+
+    /**
+     * If true (default), HTML5 audio / video can start playing without a
+     * user gesture (tap / click). Game UI typically wants autoplay enabled
+     * — the user opening the menu IS the gesture. iOS + Android.
+     *   • iOS: WKWebViewConfiguration.mediaTypesRequiringUserActionForPlayback
+     *   • Android: WebSettings.setMediaPlaybackRequiresUserGesture
+     * Windows / Edge respects its own browser-level autoplay policy and
+     * doesn't expose this as a per-WebView setting; flag is no-op there.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    bool bAllowMediaAutoplay = true;
+
+    // ── Layout (iOS-specific) ──────────────────────────────────────────────
+
+    /**
+     * If true (default), the WebView extends edge-to-edge under the iOS
+     * notch / home indicator. The page can use the standard CSS env vars
+     * (env(safe-area-inset-top) etc.) to keep tappable elements clear of
+     * those areas — same model native iOS apps use.
+     *
+     * If false, the WebView is inset to respect the safe area; nothing
+     * draws under the notch.
+     *
+     * iOS-only. Android handles display cutouts at the activity / manifest
+     * level (UE's default GameActivity already extends under cutouts);
+     * the flag is no-op on Android. Windows has no notch concept.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    bool bExtendUnderSafeArea = true;
+
+    /**
+     * If false (default), the iOS rubber-band / elastic scroll effect at
+     * the top and bottom of the page is suppressed — when the user scrolls
+     * past the content edge, the page stops instead of bouncing the whole
+     * UI. Scrolling itself still works normally; only the over-scroll
+     * bounce is disabled.
+     *
+     * If true, the WebView bounces like a regular Safari page.
+     *
+     * iOS-only. Android does not bounce by default (it shows an edge-glow
+     * effect that is unrelated). Windows has no equivalent. Maps to
+     * scrollView.bounces on iOS.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    bool bAllowBounceOnScroll = false;
+
+    // ── Identity ───────────────────────────────────────────────────────────
+
+    /**
+     * When non-empty, overrides navigator.userAgent inside the WebView.
+     * Useful for Unreal-specific page branches, e.g.:
+     *   if (navigator.userAgent.includes('Unreal')) { ... }
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    FString UserAgentOverride;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  FInoWebViewConfig
 //
-//  Passed to UInoWebUISubsystem::CreateWebView. Describes how a single WebView
-//  should be constructed. Designed as a struct (not N function arguments) so
-//  that adding options in future phases never breaks existing call sites.
+//  Passed to UInoWebUISubsystem::CreateWebView. Top-level container for
+//  everything a WebView needs to start: what to load, where it loads from,
+//  what's allowed, what initial state to seed. View-level appearance /
+//  behavior toggles live in the embedded FInoWebViewSettings (see View).
 // ─────────────────────────────────────────────────────────────────────────────
 
 USTRUCT(BlueprintType)
@@ -73,111 +219,25 @@ struct INOWEBUI_API FInoWebViewConfig
     FString InitialURL;
 
     /**
-     * If true (default), the WebView renders with a fully transparent
-     * background so the Unreal 3D scene shows through the HTML's empty areas.
-     * If false, the WebView paints an opaque white background (standard web).
-     */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
-    bool bTransparentBackground = true;
-
-    /**
-     * Whether the WebView is visible immediately on creation.
-     * You can flip this later via UInoWebView::Show / Hide.
-     */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
-    bool bVisibleOnCreate = true;
-
-    /**
      * Subfolder under Saved/ where WebView2 persists user data
      * (cookies, localStorage, cache). One folder per WebView keeps state
      * isolated; shared folders let WebViews share a login session.
+     * Windows-only — Android / iOS use the system-default WebView storage.
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
     FString UserDataSubfolder = TEXT("WebViewData");
 
-    // ── Phase 3 — runtime polish & debugging ────────────────────────────────
-
     /**
-     * Enable the Chromium DevTools panel. Open programmatically with
-     * UInoWebView::OpenDevTools(), or with F12 if bEnableAcceleratorKeys
-     * is also true. Usually enabled in dev builds, disabled in shipping.
+     * View-level appearance and behavior toggles (transparency, dev tools,
+     * context menus, media, safe-area, scroll bounce, user agent, ...).
+     * Shown flat in the Details panel — fields appear at the same level as
+     * the parent's siblings here.
      */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
-    bool bEnableDevTools = false;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI",
+              meta = (ShowOnlyInnerProperties))
+    FInoWebViewSettings View;
 
-    /**
-     * If false, right-clicking inside the WebView does nothing (the browser
-     * "Save image as…/Inspect element" menu is suppressed). Recommended
-     * for game UI. Default false.
-     */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
-    bool bEnableContextMenus = false;
-
-    /**
-     * If false, browser-level accelerator keys like F5 (reload), F12
-     * (devtools), Ctrl+F (find in page), Ctrl+P (print) are suppressed.
-     * Recommended for game UI so those keys remain available to the game.
-     * Default false. NOTE: disabling accelerators also disables F12 as a
-     * way to open DevTools — use OpenDevTools() programmatically instead.
-     */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
-    bool bEnableAcceleratorKeys = false;
-
-    /** Audio output from the page is muted on creation when true. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
-    bool bStartMuted = false;
-
-    /**
-     * If false (default), the WebView's status bar — the small floating
-     * label that shows a link's URL when you hover over it — is hidden.
-     * Game UI almost never wants this; flip true for browser-style flows
-     * where seeing destinations on hover is helpful (e.g., dev menus).
-     * Windows-only — Android WebView has no equivalent.
-     */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
-    bool bShowStatusBar = false;
-
-    /**
-     * If true (default), the WebView extends edge-to-edge under the iOS
-     * notch / home indicator. The page can use the standard CSS env vars
-     * (env(safe-area-inset-top) etc.) to keep tappable elements clear of
-     * those areas — same model native iOS apps use.
-     *
-     * If false, the WebView is inset to respect the safe area; nothing
-     * draws under the notch.
-     *
-     * iOS-only. Android handles display cutouts at the activity / manifest
-     * level (UE's default GameActivity already extends under cutouts);
-     * the flag is no-op on Android. Windows has no notch concept.
-     */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
-    bool bExtendUnderSafeArea = true;
-
-    /**
-     * If false (default), the iOS rubber-band / elastic scroll effect at
-     * the top and bottom of the page is suppressed — when the user scrolls
-     * past the content edge, the page stops instead of bouncing the whole
-     * UI. Scrolling itself still works normally; only the over-scroll
-     * bounce is disabled.
-     *
-     * If true, the WebView bounces like a regular Safari page.
-     *
-     * iOS-only. Android does not bounce by default (it shows an edge-glow
-     * effect that is unrelated). Windows has no equivalent. Maps to
-     * scrollView.bounces on iOS.
-     */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
-    bool bAllowBounceOnScroll = false;
-
-    /**
-     * When non-empty, overrides navigator.userAgent inside the WebView.
-     * Useful for Unreal-specific page branches, e.g.:
-     *   if (navigator.userAgent.includes('Unreal')) { ... }
-     */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
-    FString UserAgentOverride;
-
-    // ── Phase 4 — local content serving ─────────────────────────────────────
+    // ── Local content serving (virtual host) ────────────────────────────────
 
     /**
      * Virtual host name that will be mapped to VirtualHostFolder. When both
@@ -209,7 +269,7 @@ struct INOWEBUI_API FInoWebViewConfig
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
     FString VirtualHostFolder;
 
-    // ── Phase 5 — hardening / lockdown ──────────────────────────────────────
+    // ── Hardening / lockdown ────────────────────────────────────────────────
 
     /**
      * If true (default), the WebView refuses to navigate anywhere except:
@@ -259,7 +319,7 @@ struct INOWEBUI_API FInoWebViewConfig
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
     bool bAllowNewWindows = false;
 
-    // ── Initial-load convenience fields ─────────────────────────────────────
+    // ── Initial-load state (headers / cookies) ──────────────────────────────
 
     /**
      * Extra HTTP headers attached to the INITIAL navigation only. Sub-resource
