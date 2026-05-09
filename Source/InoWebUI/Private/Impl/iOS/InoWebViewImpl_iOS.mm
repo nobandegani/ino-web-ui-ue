@@ -356,11 +356,36 @@ struct FInoWebViewImpl_iOS_Internal
             [webView.scrollView setZoomScale:1.0 animated:NO];
         }
 
+        // Aggressive pass: WKWebView attaches its OWN gesture recognizers to
+        // itself (not just its scrollView), and on some iOS versions one of
+        // those handles pinch independently of scrollView.pinchGestureRecognizer.
+        // Walk both lists, find every UIPinchGestureRecognizer, and disable it.
+        int32 DisabledOnWebView = 0;
+        int32 DisabledOnScroll  = 0;
+        for (UIGestureRecognizer* GR in webView.gestureRecognizers)
+        {
+            if ([GR isKindOfClass:[UIPinchGestureRecognizer class]] && GR.enabled)
+            {
+                GR.enabled = NO;
+                ++DisabledOnWebView;
+            }
+        }
+        for (UIGestureRecognizer* GR in webView.scrollView.gestureRecognizers)
+        {
+            if ([GR isKindOfClass:[UIPinchGestureRecognizer class]] && GR.enabled)
+            {
+                GR.enabled = NO;
+                ++DisabledOnScroll;
+            }
+        }
+
         UE_LOG(LogInoWebUI, Log,
             TEXT("FInoWebViewImpl_iOS[%d] didFinishNavigation: re-applied zoom lock "
-                 "(was: pinch=%d min=%.3f max=%.3f scale=%.3f -> now all clamped to 1.0)"),
+                 "(was: pinch=%d min=%.3f max=%.3f scale=%.3f -> now all clamped to 1.0; "
+                 "extra pinch recognizers disabled on webView=%d, scrollView=%d)"),
             (int32)self.InstanceId,
-            (int)bWasPinchEnabled, (double)WasMinZoom, (double)WasMaxZoom, (double)WasZoomScale);
+            (int)bWasPinchEnabled, (double)WasMinZoom, (double)WasMaxZoom, (double)WasZoomScale,
+            DisabledOnWebView, DisabledOnScroll);
     }
 
     NSString* URLStr = webView.URL.absoluteString;
@@ -781,6 +806,20 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
             WebView.scrollView.maximumZoomScale = 1.0;
             WebView.scrollView.bouncesZoom      = NO;
             WebView.scrollView.pinchGestureRecognizer.enabled = NO;
+
+            // Disable any other UIPinchGestureRecognizer on the WebView
+            // itself or its scrollView. WKWebView sometimes attaches its
+            // own pinch handlers independent of scrollView.pinch.
+            for (UIGestureRecognizer* GR in WebView.gestureRecognizers)
+            {
+                if ([GR isKindOfClass:[UIPinchGestureRecognizer class]])
+                    GR.enabled = NO;
+            }
+            for (UIGestureRecognizer* GR in WebView.scrollView.gestureRecognizers)
+            {
+                if ([GR isKindOfClass:[UIPinchGestureRecognizer class]])
+                    GR.enabled = NO;
+            }
         }
 
         // bShowScrollBars (default false) → hide the scroll indicators.
