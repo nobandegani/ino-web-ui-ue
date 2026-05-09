@@ -269,6 +269,11 @@ struct FInoWebViewImpl_iOS_Internal
     WKNavigationDelegate,
     WKUIDelegate>
 @property (nonatomic, assign) int32 InstanceId;
+/** Mirrors !FInoWebViewSettings::bAllowZoom from Initialize. When YES, the
+ *  navigation delegate re-applies the scrollView zoom clamp + pinch
+ *  recognizer disable after every page load — iOS otherwise re-derives the
+ *  zoom range from the page's viewport meta and silently re-enables pinch. */
+@property (nonatomic, assign) BOOL ShouldLockZoom;
 @end
 
 @implementation InoWebViewBridge_iOS
@@ -329,6 +334,24 @@ struct FInoWebViewImpl_iOS_Internal
 
 - (void)webView:(WKWebView*)webView didFinishNavigation:(WKNavigation*)navigation
 {
+    // Re-assert the zoom-lock if the user disabled zoom in Config. iOS
+    // re-derives scrollView.minimum/maximumZoomScale from the page's
+    // viewport meta tag during navigation, and may also re-enable
+    // pinchGestureRecognizer. Without this re-application, pinch quietly
+    // works again the moment the first page finishes loading.
+    if (self.ShouldLockZoom)
+    {
+        webView.scrollView.minimumZoomScale = 1.0;
+        webView.scrollView.maximumZoomScale = 1.0;
+        webView.scrollView.bouncesZoom      = NO;
+        webView.scrollView.pinchGestureRecognizer.enabled = NO;
+        // If iOS already moved the zoom scale, snap it back.
+        if (webView.scrollView.zoomScale != 1.0)
+        {
+            [webView.scrollView setZoomScale:1.0 animated:NO];
+        }
+    }
+
     NSString* URLStr = webView.URL.absoluteString;
     if (URLStr == nil) URLStr = @"";
     const FString URI = FStringFromNSString(URLStr);
@@ -605,7 +628,8 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
 
         // Bridge object — handles JS messages + nav delegate + UI delegate.
         InoWebViewBridge_iOS* Bridge = [[InoWebViewBridge_iOS alloc] init];
-        Bridge.InstanceId = LocalId;
+        Bridge.InstanceId    = LocalId;
+        Bridge.ShouldLockZoom = Config.View.bAllowZoom ? NO : YES;
 
         // Custom scheme for virtual host. Must be set BEFORE the WKWebView is
         // created — WKWebViewConfiguration's scheme handlers are immutable
