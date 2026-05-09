@@ -19,8 +19,7 @@ $JavaOut    = Join-Path $PluginRoot 'Source/InoWebUI/Java/src/net/inoland/webui/
 
 $Bundles = @(
     @{ File = 'bridge.js';      CppName = 'GInoWebUIBridgeScript';          JavaName = 'BRIDGE_JS';            ObjCName = 'GInoWebUIBridgeScript' },
-    @{ File = 'dev_overlay.js'; CppName = 'GInoWebUIDevToolsOverlayScript'; JavaName = 'DEVTOOLS_OVERLAY_JS';  ObjCName = 'GInoWebUIDevToolsOverlayScript' },
-    @{ File = 'lock_scroll.js'; CppName = 'GInoWebUILockScrollScript';      JavaName = 'LOCK_SCROLL_JS';       ObjCName = 'GInoWebUILockScrollScript' }
+    @{ File = 'dev_overlay.js'; CppName = 'GInoWebUIDevToolsOverlayScript'; JavaName = 'DEVTOOLS_OVERLAY_JS';  ObjCName = 'GInoWebUIDevToolsOverlayScript' }
 )
 
 # MSVC's hard limit on a single string-literal token is 16380 chars. We chunk

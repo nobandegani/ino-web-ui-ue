@@ -746,11 +746,6 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
         Internal->WebView->AddScriptToExecuteOnDocumentCreated(
             GInoWebUIDevToolsOverlayScript, nullptr);
     }
-    if (!Internal->Config.bAllowOuterScroll)
-    {
-        Internal->WebView->AddScriptToExecuteOnDocumentCreated(
-            GInoWebUILockScrollScript, nullptr);
-    }
 
     // ── Navigation events ───────────────────────────────────────────────────
     {

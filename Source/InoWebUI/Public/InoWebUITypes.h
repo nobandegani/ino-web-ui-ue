@@ -154,22 +154,6 @@ struct INOWEBUI_API FInoWebViewConfig
     bool bExtendUnderSafeArea = true;
 
     /**
-     * If false (default), the WebView itself does NOT scroll on touch /
-     * mouse-wheel drag. Long content should put the scrollable region in
-     * a CSS overflow:auto container (overflow:auto on a div) — so the
-     * outer game-UI page stays put and only the intended panel scrolls.
-     *
-     * If true, the WebView scrolls and bounces like a normal browser
-     * page.
-     *
-     * Honoured on every platform: iOS via scrollView.scrollEnabled +
-     * bounces, Android + Windows via injected CSS that sets
-     * html/body { overflow:hidden } on every page load.
-     */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
-    bool bAllowOuterScroll = false;
-
-    /**
      * When non-empty, overrides navigator.userAgent inside the WebView.
      * Useful for Unreal-specific page branches, e.g.:
      *   if (navigator.userAgent.includes('Unreal')) { ... }

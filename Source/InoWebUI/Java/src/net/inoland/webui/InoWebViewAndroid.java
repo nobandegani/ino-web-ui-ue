@@ -75,12 +75,6 @@ public class InoWebViewAndroid
         // Dev overlay (the floating circular dev-tools button)
         boolean devOverlayEnabled;
 
-        // Outer-scroll lock (mirrors !FInoWebViewConfig::bAllowOuterScroll). When
-        // true (the default), the unified WebViewClient injects LOCK_SCROLL_JS
-        // on every page load to pin html / body to overflow:hidden so vertical
-        // drag inside the WebView doesn't drift the whole page.
-        boolean lockOuterScroll = true;
-
         // Manual bounds — when true, syncBounds applies the supplied X/Y/W/H
         // (with DP scaling) instead of forcing MATCH_PARENT. Default false.
         boolean manualBounds;
@@ -195,13 +189,6 @@ public class InoWebViewAndroid
             if (c.devOverlayEnabled)
             {
                 view.evaluateJavascript(InoWebUIScripts.DEVTOOLS_OVERLAY_JS, null);
-            }
-            // Lock outer scroll (game-UI default). Matches the Windows /
-            // iOS injection behaviour so a single config produces the same
-            // user-visible result on every platform.
-            if (c.lockOuterScroll)
-            {
-                view.evaluateJavascript(InoWebUIScripts.LOCK_SCROLL_JS, null);
             }
         }
 
@@ -767,30 +754,6 @@ public class InoWebViewAndroid
                 CookieManager.getInstance().removeAllCookies(null);
                 CookieManager.getInstance().flush();
                 Log.debug("clearAllCookies(" + id + ")");
-            }
-        });
-    }
-
-    /**
-     * Lock or unlock the outer-page scroll. When locked (the default), the
-     * unified WebViewClient injects LOCK_SCROLL_JS on every page load to
-     * pin html / body to overflow:hidden, and we also flip the View's
-     * overScrollMode off so the edge-glow effect is gone. Mirrors the
-     * iOS / Windows behaviour so one config produces the same result
-     * across every platform.
-     */
-    public static void setLockOuterScroll(final int id, final boolean locked)
-    {
-        final Activity activity = getActivity();
-        if (activity == null) return;
-        activity.runOnUiThread(new Runnable() {
-            @Override public void run() {
-                getOrCreateConfig(id).lockOuterScroll = locked;
-                WebView wv = sWebViews.get(id);
-                if (wv != null) {
-                    wv.setOverScrollMode(locked ? View.OVER_SCROLL_NEVER
-                                                : View.OVER_SCROLL_IF_CONTENT_SCROLLS);
-                }
             }
         });
     }
