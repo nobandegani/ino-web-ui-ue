@@ -356,9 +356,9 @@ struct FInoWebViewImpl_iOS_Internal
             [webView.scrollView setZoomScale:1.0 animated:NO];
         }
 
-        UE_LOG(LogInoWebUI, Verbose,
+        UE_LOG(LogInoWebUI, Log,
             TEXT("FInoWebViewImpl_iOS[%d] didFinishNavigation: re-applied zoom lock "
-                 "(was: pinch=%d min=%.3f max=%.3f scale=%.3f → now all clamped to 1.0)"),
+                 "(was: pinch=%d min=%.3f max=%.3f scale=%.3f -> now all clamped to 1.0)"),
             (int32)self.InstanceId,
             (int)bWasPinchEnabled, (double)WasMinZoom, (double)WasMaxZoom, (double)WasZoomScale);
     }
