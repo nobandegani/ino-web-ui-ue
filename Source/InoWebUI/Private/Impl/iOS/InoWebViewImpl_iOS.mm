@@ -710,6 +710,24 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
         WebView.hidden             = !bVisibleOnCreate;
         WebView.allowsBackForwardNavigationGestures = NO; // game UI; we control nav
 
+        // Game-UI defaults for the inner UIScrollView:
+        //   • contentInsetAdjustmentBehavior=Never  → content extends edge-to-
+        //     edge under the notch / home indicator instead of being inset by
+        //     the safe area. The HTML uses env(safe-area-inset-*) if it wants
+        //     to keep buttons clear of the notch — same model as native iOS apps.
+        //   • scrollEnabled=NO + bounces=NO        → vertical drag inside the
+        //     overlay no longer drifts the whole page up / down. Long pages
+        //     should use a CSS-scrollable inner element (overflow:auto on a div)
+        //     instead of relying on the WebView's outer scroll.
+        // If a future use case wants the opposite, gate these on FInoWebViewConfig.
+        if (@available(iOS 11.0, *))
+        {
+            WebView.scrollView.contentInsetAdjustmentBehavior =
+                UIScrollViewContentInsetAdjustmentNever;
+        }
+        WebView.scrollView.scrollEnabled = NO;
+        WebView.scrollView.bounces       = NO;
+
         // Background opacity — match the FInoWebViewConfig contract.
         if (bTransparent)
         {
