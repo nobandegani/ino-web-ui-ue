@@ -569,8 +569,13 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
         ? nil : NSStringFromFString(AbsoluteFolder);
     NSString* VirtualHostNS = Config.VirtualHostName.IsEmpty()
         ? nil : [NSStringFromFString(Config.VirtualHostName) lowercaseString];
-    NSString* InitialURLNS = Config.InitialURL.IsEmpty()
-        ? nil : NSStringFromFString(Config.InitialURL);
+
+    // Cross-platform UX: if the user passed https://<vhost>/... in the
+    // config (the canonical form for Win64 / Android), translate to
+    // inoweb://<vhost>/... here so it actually loads on iOS.
+    const FString RewrittenInitialURL = RewriteForVHost(Config.InitialURL);
+    NSString* InitialURLNS = RewrittenInitialURL.IsEmpty()
+        ? nil : NSStringFromFString(RewrittenInitialURL);
     NSString* UserAgentNS = Config.UserAgentOverride.IsEmpty()
         ? nil : NSStringFromFString(Config.UserAgentOverride);
 
@@ -790,7 +795,9 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
 
     if (!Config.InitialURL.IsEmpty())
     {
-        CachedURL = Config.InitialURL;
+        // Cache the URL we actually loaded — post-rewrite — so GetURL()
+        // matches the WebView's location.href once the page is up.
+        CachedURL = RewrittenInitialURL;
     }
     bReady = true;
 
@@ -811,6 +818,37 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
 // ─────────────────────────────────────────────────────────────────────────────
 //  Lockdown
 // ─────────────────────────────────────────────────────────────────────────────
+FString FInoWebViewImpl_iOS::RewriteForVHost(const FString& URL) const
+{
+    if (VirtualHostName.IsEmpty()) return URL;
+
+    auto Try = [&](const TCHAR* Scheme) -> FString
+    {
+        const FString Prefix = FString(Scheme) + VirtualHostName;
+        if (!URL.StartsWith(Prefix, ESearchCase::IgnoreCase)) return FString();
+        // Boundary: end-of-string, '/', '?', '#', or ':' (port). Otherwise we'd
+        // wrongly rewrite e.g. "https://ino.local.attacker.com/..." when the
+        // configured vhost is "ino.local".
+        const int32 N = Prefix.Len();
+        if (URL.Len() != N)
+        {
+            const TCHAR C = URL[N];
+            if (C != TEXT('/') && C != TEXT('?') && C != TEXT('#') && C != TEXT(':'))
+                return FString();
+        }
+        return FString(TEXT("inoweb://")) + VirtualHostName + URL.Mid(N);
+    };
+
+    FString R = Try(TEXT("https://"));
+    if (R.IsEmpty()) R = Try(TEXT("http://"));
+    if (R.IsEmpty()) return URL;
+
+    UE_LOG(LogInoWebUI, Verbose,
+        TEXT("FInoWebViewImpl_iOS[%d]: rewrote '%s' -> '%s' (vhost auto-translation)"),
+        InstanceId, *URL, *R);
+    return R;
+}
+
 bool FInoWebViewImpl_iOS::ShouldAllowURI(const FString& URI) const
 {
     if (URI.IsEmpty()) return true;
@@ -872,7 +910,10 @@ void FInoWebViewImpl_iOS::Navigate(const FString& URL)
     auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
     if (!Internal) return;
 
-    NSString* URLStr = NSStringFromFString(URL);
+    // Cross-platform UX: rewrite https://<vhost>/... → inoweb://<vhost>/...
+    // so the same FString URL works across all three platforms.
+    const FString Rewritten = RewriteForVHost(URL);
+    NSString* URLStr = NSStringFromFString(Rewritten);
     dispatch_async(dispatch_get_main_queue(), ^{
         if (Internal->WebView == nil) return;
         NSURL* URLObj = [NSURL URLWithString:URLStr];
@@ -1235,7 +1276,10 @@ void FInoWebViewImpl_iOS::LoadHTMLString(const FString& HTML, const FString& Bas
     if (!Internal) return;
 
     NSString* HtmlNS = NSStringFromFString(HTML);
-    NSString* BaseNS = BaseURI.IsEmpty() ? nil : NSStringFromFString(BaseURI);
+    // Rewrite the base URI through the vhost helper too — if the user passes
+    // https://<vhost>/, it becomes inoweb://<vhost>/ so relative links inside
+    // the HTML resolve through the scheme handler.
+    NSString* BaseNS = BaseURI.IsEmpty() ? nil : NSStringFromFString(RewriteForVHost(BaseURI));
     dispatch_async(dispatch_get_main_queue(), ^{
         WKWebView* WebView = Internal->WebView;
         if (WebView == nil) return;
@@ -1371,7 +1415,8 @@ void FInoWebViewImpl_iOS::LoadURLWithHeaders(const FString& URL,
     auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
     if (!Internal) return;
 
-    NSString* URLStr = NSStringFromFString(URL);
+    // Cross-platform UX: rewrite https://<vhost>/... → inoweb://<vhost>/...
+    NSString* URLStr = NSStringFromFString(RewriteForVHost(URL));
     NSMutableDictionary* HeadersNS = [NSMutableDictionary dictionaryWithCapacity:Headers.Num()];
     for (const TPair<FString, FString>& KV : Headers)
     {

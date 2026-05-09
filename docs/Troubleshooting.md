@@ -181,24 +181,27 @@ DevTools.
 
 ---
 
-## iOS: "page didn't load — `inoweb://my-host/index.html`"
+## iOS: "page didn't load even though Windows / Android work"
 
 iOS does not allow intercepting `https://` requests in `WKWebView`. The
 iOS impl uses a custom **`inoweb`** URL scheme for virtual-host serving
-instead. If your `Config.InitialURL` is `https://<host>/...`, the page
-won't load on iOS — translate to `inoweb://<host>/...` for the iOS code
-path. See `iOS.md` for the divergence details.
+instead. The plugin auto-rewrites `https://<vhost>/...` →
+`inoweb://<vhost>/...` at every navigation boundary, so a single
+cross-platform config (`Config.InitialURL = "https://my-host/index.html"`)
+works as-is on iOS — no `#if PLATFORM_IOS` needed.
 
-If you ship the same `FInoWebViewConfig` to multiple platforms, gate the
-URL with `#if PLATFORM_IOS`:
+If a page still fails to load:
 
-```cpp
-#if PLATFORM_IOS
-Config.InitialURL = TEXT("inoweb://my-host/index.html");
-#else
-Config.InitialURL = TEXT("https://my-host/index.html");
-#endif
-```
+1. Make sure `Config.VirtualHostName` exactly matches the host portion
+   of `Config.InitialURL` (e.g. both `my-host`). The auto-rewrite only
+   fires when the URL's host equals the configured vhost.
+2. Set `LogInoWebUI=Verbose` and look for the line
+   `rewrote 'https://...' -> 'inoweb://...'` to confirm the rewrite
+   happened.
+3. Confirm `Config.VirtualHostFolder` resolves to a folder that actually
+   contains the files at runtime — for packaged iOS builds the folder
+   is most often delivered through a `UInoWebBundle` asset rather than
+   loose files. See `WebBundle.md`.
 
 ---
 

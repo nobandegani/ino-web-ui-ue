@@ -100,6 +100,16 @@ public:
     // ── Lockdown helpers used by the Obj-C navigation delegate ─────────────
     bool ShouldAllowURI(const FString& URI) const;
 
+    /**
+     * If URL is `http(s)://<VirtualHostName>[...]`, rewrite to
+     * `inoweb://<VirtualHostName>[...]` so the configured custom-scheme handler
+     * can serve it. WKWebView refuses to intercept https, so the user's
+     * cross-platform `https://<vhost>/index.html` config gets transparently
+     * mapped to the iOS-only scheme. URLs whose host doesn't match the
+     * configured VirtualHostName pass through unchanged.
+     */
+    FString RewriteForVHost(const FString& URL) const;
+
     // ── Hardening flags read by the Obj-C UI delegate ──────────────────────
     // Public because the Obj-C bridge class lives in the same .mm and acts
     // as an extension of this impl. Set once during Initialize, read on

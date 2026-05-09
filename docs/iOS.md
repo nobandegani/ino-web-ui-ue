@@ -82,24 +82,28 @@ scheme:
 
 - Configure `VirtualHostName` and `VirtualHostFolder` exactly as on the
   other platforms.
-- Set `InitialURL = TEXT("inoweb://<VirtualHostName>/index.html")`.
 - The plugin registers a `WKURLSchemeHandler` for the `inoweb` scheme
   and translates each request into a local-file read.
 
-This is the only behavioural divergence from Windows / Android.
-Consumer code that ships the same config to all three platforms needs
-a small `#if PLATFORM_IOS` swap on `InitialURL` (or on the entire
-host portion of any link the page loads).
+### Cross-platform config — no `#if PLATFORM_IOS` needed
+
+Pass your `InitialURL` (and any later `LoadURL` / `LoadURLWithHeaders` /
+`LoadHTMLString` base URI) using the canonical `https://<vhost>/...`
+form you already use on Win64 and Android. The iOS impl auto-rewrites
+`http://<vhost>/...` and `https://<vhost>/...` to `inoweb://<vhost>/...`
+at the navigation boundary — host has to match the configured
+`VirtualHostName` exactly (case-insensitive whole-host); other URLs pass
+through untouched. So this works on every platform with one config:
 
 ```cpp
-#if PLATFORM_IOS
-Config.InitialURL = TEXT("inoweb://my-ui.local/index.html");
-#else
-Config.InitialURL = TEXT("https://my-ui.local/index.html");
-#endif
+Config.InitialURL        = TEXT("https://my-ui.local/index.html");
 Config.VirtualHostName   = TEXT("my-ui.local");
 Config.VirtualHostFolder = TEXT("WebUI/dist");
 ```
+
+You can still pass `inoweb://my-ui.local/index.html` explicitly if you
+prefer — the rewrite is a no-op on URLs that already use the custom
+scheme.
 
 The `bLockToVirtualHost` lockdown rule on iOS allows the `inoweb:`
 scheme as an internal scheme (always passes), in addition to whole-host
