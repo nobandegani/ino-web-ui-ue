@@ -98,7 +98,8 @@ struct INOWEBUI_API FInoWebViewSettings
      * where seeing destinations on hover is helpful (e.g., dev menus).
      * Windows-only — Android / iOS WebViews have no equivalent.
      */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View",
+              meta = (DisplayName = "Show Status Bar (Windows)"))
     bool bShowStatusBar = false;
 
     // ── Interaction ─────────────────────────────────────────────────────────
@@ -119,7 +120,8 @@ struct INOWEBUI_API FInoWebViewSettings
      * way to open DevTools — use OpenDevTools() programmatically instead.
      * Windows-only concept.
      */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View",
+              meta = (DisplayName = "Enable Accelerator Keys (Windows)"))
     bool bEnableAcceleratorKeys = false;
 
     // ── Media ──────────────────────────────────────────────────────────────
@@ -134,7 +136,8 @@ struct INOWEBUI_API FInoWebViewSettings
      * always wants inline. iOS-specific — Android and Windows always play
      * inline regardless. Maps to WKWebViewConfiguration.allowsInlineMediaPlayback.
      */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View",
+              meta = (DisplayName = "Allow Inline Media Playback (iOS)"))
     bool bAllowInlineMediaPlayback = true;
 
     /**
@@ -146,7 +149,8 @@ struct INOWEBUI_API FInoWebViewSettings
      * Windows / Edge respects its own browser-level autoplay policy and
      * doesn't expose this as a per-WebView setting; flag is no-op there.
      */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View",
+              meta = (DisplayName = "Allow Media Autoplay (iOS, Android)"))
     bool bAllowMediaAutoplay = true;
 
     // ── Layout (iOS-specific) ──────────────────────────────────────────────
@@ -164,7 +168,8 @@ struct INOWEBUI_API FInoWebViewSettings
      * level (UE's default GameActivity already extends under cutouts);
      * the flag is no-op on Android. Windows has no notch concept.
      */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View",
+              meta = (DisplayName = "Extend Under Safe Area (iOS)"))
     bool bExtendUnderSafeArea = true;
 
     /**
@@ -180,7 +185,8 @@ struct INOWEBUI_API FInoWebViewSettings
      * effect that is unrelated). Windows has no equivalent. Maps to
      * scrollView.bounces on iOS.
      */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View",
+              meta = (DisplayName = "Allow Bounce On Scroll (iOS)"))
     bool bAllowBounceOnScroll = false;
 
     // ── Identity ───────────────────────────────────────────────────────────
