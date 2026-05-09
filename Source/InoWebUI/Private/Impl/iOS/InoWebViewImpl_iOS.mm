@@ -720,6 +720,11 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
                 : UIScrollViewContentInsetAdjustmentAutomatic;
         }
 
+        // bAllowBounceOnScroll (default false) → suppress the iOS rubber-band
+        // over-scroll effect. Scrolling within the content range still works
+        // normally; only the elastic past-the-edge bounce is gated.
+        WebView.scrollView.bounces = Config.bAllowBounceOnScroll ? YES : NO;
+
         // Background opacity — match the FInoWebViewConfig contract.
         if (bTransparent)
         {

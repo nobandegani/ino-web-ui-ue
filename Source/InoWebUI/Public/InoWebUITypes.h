@@ -154,6 +154,22 @@ struct INOWEBUI_API FInoWebViewConfig
     bool bExtendUnderSafeArea = true;
 
     /**
+     * If false (default), the iOS rubber-band / elastic scroll effect at
+     * the top and bottom of the page is suppressed — when the user scrolls
+     * past the content edge, the page stops instead of bouncing the whole
+     * UI. Scrolling itself still works normally; only the over-scroll
+     * bounce is disabled.
+     *
+     * If true, the WebView bounces like a regular Safari page.
+     *
+     * iOS-only. Android does not bounce by default (it shows an edge-glow
+     * effect that is unrelated). Windows has no equivalent. Maps to
+     * scrollView.bounces on iOS.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    bool bAllowBounceOnScroll = false;
+
+    /**
      * When non-empty, overrides navigator.userAgent inside the WebView.
      * Useful for Unreal-specific page branches, e.g.:
      *   if (navigator.userAgent.includes('Unreal')) { ... }
