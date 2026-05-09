@@ -387,6 +387,17 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
             /*completed handler=*/ nullptr);
     }
 
+    // ── Outer-scroll lock — game-UI default. Inject CSS that pins
+    //    html/body to overflow:hidden so vertical drag (touch on a
+    //    Surface, mouse-wheel on a desktop) doesn't drift the whole
+    //    page. Long content uses an inner overflow:auto container. ────────
+    if (!Internal->Config.bAllowOuterScroll)
+    {
+        Internal->WebView->AddScriptToExecuteOnDocumentCreated(
+            GInoWebUILockScrollScript,
+            /*completed handler=*/ nullptr);
+    }
+
     // ── Hook navigation events (Phase 5) ────────────────────────────────────
     // NavigationStarting is where lockdown lives: we cancel if the target
     // URI isn't whitelisted. The BP-visible delegate always fires for

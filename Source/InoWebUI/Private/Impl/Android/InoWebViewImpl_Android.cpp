@@ -47,6 +47,7 @@ namespace InoWebUIJNI
     static jmethodID MSetZoomFactor      = nullptr;
     static jmethodID MClearAllCookies    = nullptr;
     static jmethodID MSetDevToolsEnabled = nullptr;
+    static jmethodID MSetLockOuterScroll = nullptr;
     static jmethodID MExecuteJavaScript  = nullptr;
     static jmethodID MSetUserAgent       = nullptr;
     static jmethodID MSetContextMenusEnabled = nullptr;
@@ -107,6 +108,7 @@ namespace InoWebUIJNI
         MSetZoomFactor          = Env->GetStaticMethodID(JavaClass, "setZoomFactor",         "(IF)V");
         MClearAllCookies        = Env->GetStaticMethodID(JavaClass, "clearAllCookies",       "(I)V");
         MSetDevToolsEnabled     = Env->GetStaticMethodID(JavaClass, "setDevToolsEnabled",    "(IZ)V");
+        MSetLockOuterScroll     = Env->GetStaticMethodID(JavaClass, "setLockOuterScroll",    "(IZ)V");
         MExecuteJavaScript      = Env->GetStaticMethodID(JavaClass, "executeJavaScript",     "(ILjava/lang/String;)V");
         MSetUserAgent           = Env->GetStaticMethodID(JavaClass, "setUserAgent",          "(ILjava/lang/String;)V");
         MSetContextMenusEnabled = Env->GetStaticMethodID(JavaClass, "setContextMenusEnabled","(IZ)V");
@@ -126,7 +128,7 @@ namespace InoWebUIJNI
             || !MSyncBounds || !MSetVirtualHost || !MSetupMessaging || !MPostMessage
             || !MConfigureLockdown || !MConfigureDialogs
             || !MFocusWebView || !MSetZoomFactor || !MClearAllCookies
-            || !MSetDevToolsEnabled || !MExecuteJavaScript || !MSetUserAgent
+            || !MSetDevToolsEnabled || !MSetLockOuterScroll || !MExecuteJavaScript || !MSetUserAgent
             || !MSetContextMenusEnabled || !MSetBackgroundOpaque
             || !MGoBack || !MGoForward || !MStopLoading || !MLoadHTMLString
             || !MSetCookie || !MClearAllData || !MCapturePreview
@@ -246,6 +248,15 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetDevToolsEnabled,
         static_cast<jint>(InstanceId),
         static_cast<jboolean>(Config.bEnableDevTools ? JNI_TRUE : JNI_FALSE));
+
+    // Outer-scroll lock — bAllowOuterScroll inverted (config name says "allow",
+    // Java side stores "lock" so the sense matches the JS injection in
+    // onPageStarted). bExtendUnderSafeArea is iOS-only; on Android display
+    // cutouts are handled by the activity's manifest and we don't need to
+    // do anything here.
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetLockOuterScroll,
+        static_cast<jint>(InstanceId),
+        static_cast<jboolean>(Config.bAllowOuterScroll ? JNI_FALSE : JNI_TRUE));
 
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetContextMenusEnabled,
         static_cast<jint>(InstanceId),

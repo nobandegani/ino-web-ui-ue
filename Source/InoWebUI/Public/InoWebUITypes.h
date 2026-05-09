@@ -138,6 +138,38 @@ struct INOWEBUI_API FInoWebViewConfig
     bool bShowStatusBar = false;
 
     /**
+     * If true (default), the WebView extends edge-to-edge under the iOS
+     * notch / home indicator. The page can use the standard CSS env vars
+     * (env(safe-area-inset-top) etc.) to keep tappable elements clear of
+     * those areas — same model native iOS apps use.
+     *
+     * If false, the WebView is inset to respect the safe area; nothing
+     * draws under the notch.
+     *
+     * iOS-only. Android handles display cutouts at the activity / manifest
+     * level (UE's default GameActivity already extends under cutouts);
+     * the flag is no-op on Android. Windows has no notch concept.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    bool bExtendUnderSafeArea = true;
+
+    /**
+     * If false (default), the WebView itself does NOT scroll on touch /
+     * mouse-wheel drag. Long content should put the scrollable region in
+     * a CSS overflow:auto container (overflow:auto on a div) — so the
+     * outer game-UI page stays put and only the intended panel scrolls.
+     *
+     * If true, the WebView scrolls and bounces like a normal browser
+     * page.
+     *
+     * Honoured on every platform: iOS via scrollView.scrollEnabled +
+     * bounces, Android + Windows via injected CSS that sets
+     * html/body { overflow:hidden } on every page load.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    bool bAllowOuterScroll = false;
+
+    /**
      * When non-empty, overrides navigator.userAgent inside the WebView.
      * Useful for Unreal-specific page branches, e.g.:
      *   if (navigator.userAgent.includes('Unreal')) { ... }
