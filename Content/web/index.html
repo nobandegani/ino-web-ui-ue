@@ -2,10 +2,24 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>InoWebUI — Demos</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  /* Game-UI defaults: no text selection, no long-press callout, no tap-flash.
+     Inputs / textareas / contenteditable opt back in below so typing works. */
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  input, textarea, [contenteditable] {
+    -webkit-user-select: text;
+    user-select: text;
+  }
 
   :root {
     --bg-0: #0a0e14;
