@@ -763,17 +763,16 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
         // User-Agent override.
         if (UserAgentNS != nil) { WebView.customUserAgent = UserAgentNS; }
 
-        // bStartMuted: WKWebView has no first-class audio mute. Best we can do
-        // is JS — see SetMuted() docs. We schedule one on first navigation if
-        // needed.
+        // bStartMuted: no-op on iOS. WKWebView has no first-class audio mute
+        // API and we deliberately don't synthesise one via JS — keeps the
+        // page free of plugin-injected scripts beyond the bridge. Same
+        // posture as Android, which logs the same warning.
         if (bMutedOnStart)
         {
-            WKUserScript* MuteScript =
-                [[WKUserScript alloc] initWithSource:
-                    @"(function(){try{document.querySelectorAll('audio,video').forEach(function(m){m.muted=true;});}catch(e){}})();"
-                                       injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
-                                    forMainFrameOnly:NO];
-            [UCC addUserScript:MuteScript];
+            UE_LOG(LogInoWebUI, Warning,
+                TEXT("FInoWebViewImpl_iOS: bStartMuted is a no-op on iOS. "
+                     "WKWebView has no native mute API; mute individual "
+                     "<audio>/<video> elements from your page if needed."));
         }
 
         // Layout: autoresize to follow the parent's bounds in auto-mode. The
@@ -1148,29 +1147,19 @@ void FInoWebViewImpl_iOS::ExecuteJavaScript(const FString& Code)
     });
 }
 
-void FInoWebViewImpl_iOS::SetMuted(bool bMuted)
+void FInoWebViewImpl_iOS::SetMuted(bool /*bMuted*/)
 {
     check(IsInGameThread());
     if (bDestroyed) return;
-    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
-    if (!Internal) return;
 
-    // WKWebView has no first-class audio mute. Closest thing: walk every
-    // <audio>/<video> element and flip .muted. New media added afterward
-    // won't pick this up — same constraint as the Android side. Logged so
-    // users know not to expect strict-app-mute semantics.
+    // WKWebView has no first-class audio mute API. Earlier versions of this
+    // impl walked <audio>/<video> elements via JS as a best-effort
+    // approximation; that's been removed to keep the plugin from injecting
+    // scripts into the page beyond the bridge. Same posture as Android.
+    // Mute individual media elements from your own page JS if you need it.
     UE_LOG(LogInoWebUI, Warning,
-        TEXT("SetMuted on iOS: WKWebView has no first-class mute API. "
-             "Walking <audio>/<video>.muted via JS as a best-effort approximation."));
-
-    NSString* Script = bMuted
-        ? @"(function(){try{document.querySelectorAll('audio,video').forEach(function(m){m.muted=true;});}catch(e){}})();"
-        : @"(function(){try{document.querySelectorAll('audio,video').forEach(function(m){m.muted=false;});}catch(e){}})();";
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        WKWebView* WebView = Internal->WebView;
-        if (WebView != nil) [WebView evaluateJavaScript:Script completionHandler:nil];
-    });
+        TEXT("SetMuted on iOS: not supported. WKWebView has no native mute API. "
+             "Mute individual <audio>/<video> elements via your own page JS."));
 }
 
 void FInoWebViewImpl_iOS::FocusWebView()
@@ -1186,25 +1175,20 @@ void FInoWebViewImpl_iOS::FocusWebView()
     });
 }
 
-void FInoWebViewImpl_iOS::SetZoomFactor(float Factor)
+void FInoWebViewImpl_iOS::SetZoomFactor(float /*Factor*/)
 {
     check(IsInGameThread());
     if (bDestroyed) return;
-    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
-    if (!Internal) return;
 
-    CachedZoomFactor = Factor;
-
-    // WKWebView has no native zoomFactor; CSS zoom is the most reliable
-    // cross-platform path that doesn't reflow scrolling weirdly.
-    NSString* Script = [NSString stringWithFormat:
-        @"(function(){try{document.body.style.zoom = %f;}catch(e){}})();",
-        (double)Factor];
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        WKWebView* WebView = Internal->WebView;
-        if (WebView != nil) [WebView evaluateJavaScript:Script completionHandler:nil];
-    });
+    // WKWebView has no native zoomFactor API. Earlier versions of this
+    // impl injected `document.body.style.zoom = <factor>` via JS; that's
+    // been removed to keep the plugin from injecting scripts into the
+    // page beyond the bridge. CachedZoomFactor stays at 1.0; consumers
+    // that need zoom can apply CSS zoom themselves.
+    UE_LOG(LogInoWebUI, Warning,
+        TEXT("SetZoomFactor on iOS: not supported. WKWebView has no native "
+             "zoomFactor API. Apply CSS `zoom` (or `transform: scale(...)`) "
+             "from your own page styles if you need scaling."));
 }
 
 void FInoWebViewImpl_iOS::ClearAllCookies()
