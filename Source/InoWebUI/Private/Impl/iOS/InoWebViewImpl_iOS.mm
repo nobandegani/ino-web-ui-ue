@@ -341,6 +341,11 @@ struct FInoWebViewImpl_iOS_Internal
     // works again the moment the first page finishes loading.
     if (self.ShouldLockZoom)
     {
+        const BOOL bWasPinchEnabled = webView.scrollView.pinchGestureRecognizer.enabled;
+        const CGFloat WasMinZoom    = webView.scrollView.minimumZoomScale;
+        const CGFloat WasMaxZoom    = webView.scrollView.maximumZoomScale;
+        const CGFloat WasZoomScale  = webView.scrollView.zoomScale;
+
         webView.scrollView.minimumZoomScale = 1.0;
         webView.scrollView.maximumZoomScale = 1.0;
         webView.scrollView.bouncesZoom      = NO;
@@ -350,6 +355,12 @@ struct FInoWebViewImpl_iOS_Internal
         {
             [webView.scrollView setZoomScale:1.0 animated:NO];
         }
+
+        UE_LOG(LogInoWebUI, Verbose,
+            TEXT("FInoWebViewImpl_iOS[%d] didFinishNavigation: re-applied zoom lock "
+                 "(was: pinch=%d min=%.3f max=%.3f scale=%.3f → now all clamped to 1.0)"),
+            (int32)self.InstanceId,
+            (int)bWasPinchEnabled, (double)WasMinZoom, (double)WasMaxZoom, (double)WasZoomScale);
     }
 
     NSString* URLStr = webView.URL.absoluteString;
@@ -868,11 +879,12 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
     bReady = true;
 
     UE_LOG(LogInoWebUI, Log,
-        TEXT("FInoWebViewImpl_iOS[%d] Initialize  url='%s'  transparent=%d  visible=%d  vhost='%s'"),
+        TEXT("FInoWebViewImpl_iOS[%d] Initialize  url='%s'  transparent=%d  visible=%d  vhost='%s'  bAllowZoom=%d"),
         InstanceId, *Config.InitialURL,
         Config.View.bTransparentBackground ? 1 : 0,
         Config.View.bVisibleOnCreate ? 1 : 0,
-        *VirtualHostName);
+        *VirtualHostName,
+        Config.View.bAllowZoom ? 1 : 0);
 
     if (OnReadyCallback)
     {
