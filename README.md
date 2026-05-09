@@ -146,6 +146,47 @@ Both directions use a fixed JSON envelope:
 `{ channel: string, payload: any }`. See
 [`docs/Messaging.md`](docs/Messaging.md) for the full contract.
 
+### 6. Recommended HTML defaults for game UI
+
+A handful of "browser feels" defaults are controlled by the page itself,
+not by any native API the plugin can call into. Add these to your
+`index.html` for the full game-UI overlay experience — they kill pinch
+zoom, input-focus auto-zoom (iOS), drag-to-select text, the long-press
+peek-and-share popup (iOS), and the blue tap-flash (Android / iOS).
+
+In `<head>`:
+
+```html
+<meta name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+```
+
+In your CSS reset:
+
+```css
+* {
+  -webkit-user-select: none;  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+/* Re-enable selection for form fields so typing still works. */
+input, textarea, [contenteditable] {
+  -webkit-user-select: text;  user-select: text;
+}
+```
+
+Why HTML-side and not a `Config.View` flag: WebKit (iOS) handles pinch
+zoom, double-tap zoom, and input auto-zoom internally — *above* the
+UIKit gesture-recognizer chain. The plugin already disables every
+native pinch path it can reach (`scrollView.minimumZoomScale = 1`,
+`pinchGestureRecognizer.enabled = NO`, exhaustive recognizer scan), but
+WebKit's internal mechanism only listens to the page's viewport meta.
+Same story for text selection — `-webkit-user-select` is the standard
+cross-platform off-switch and there's no native equivalent.
+
+The demo pages under `Content/web/` already ship with these defaults —
+`Content/web/index.html` is a usable starting template.
+
 ---
 
 ## Further reading
