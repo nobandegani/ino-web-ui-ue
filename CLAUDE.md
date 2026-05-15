@@ -150,7 +150,7 @@ dispatches share one run loop, ordering is preserved end-to-end.
 | **DevTools (remote)** | ✔ | `setWebContentsDebuggingEnabled` — inspect via `chrome://inspect/#devices` on desktop Chrome |
 | **ExecuteJavaScript** | ✔ | `webView.evaluateJavascript` |
 | **UserAgentOverride** | ✔ | `WebSettings.setUserAgentString` |
-| **bEnableContextMenus** | ✔ | `setOnLongClickListener` suppresses the browser context menu |
+| **bEnableContextMenus** | ✔ | `setOnLongClickListener` + `getHitTestResult` — suppresses the browser long-press menu (links / images / page-text selection) but **keeps** the Paste / Select-All toolbar inside editable `<input>` / `<textarea>` so password/text paste still works |
 | `OpenDevTools` (programmatic) | — | Android has no in-process API; remote inspect only (log explains) |
 | `SetMuted` / `bStartMuted` | — | `android.webkit.WebView` has no audio mute; log warns |
 | `bEnableAcceleratorKeys` | N/A | F5/F12/Ctrl+F are desktop-only concepts |

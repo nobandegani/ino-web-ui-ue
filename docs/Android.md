@@ -112,10 +112,21 @@ the impl from the registry — serialises correctly.
 | DevTools (remote) | yes | `setWebContentsDebuggingEnabled` — see below |
 | `ExecuteJavaScript` | yes | `webView.evaluateJavascript` |
 | `UserAgentOverride` | yes | `WebSettings.setUserAgentString` |
-| `bEnableContextMenus` | yes | `setOnLongClickListener` suppresses the browser context menu |
+| `bEnableContextMenus` | yes | `setOnLongClickListener` + `getHitTestResult` — suppresses the browser long-press menu but keeps editable-field Paste/Select (see note) |
 | `OpenDevTools` (programmatic) | no | Android has no in-process API; remote inspect only |
 | `SetMuted` / `bStartMuted` | no | Android `WebView` has no audio-mute API; a warning is logged |
 | `bEnableAcceleratorKeys` | N/A | F5 / F12 / Ctrl+F are desktop-only concepts |
+
+> **Context menus & paste.** On Android, the Paste / Select-All toolbar is
+> raised by a *long-press*. A blanket `setLongClickable(false)` (the old
+> behavior) therefore also broke pasting into `<input>` / `<textarea>` —
+> e.g. a user could not paste a password. With `bEnableContextMenus =
+> false` the long-press listener now inspects
+> `WebView.getHitTestResult()`: `EDIT_TEXT_TYPE` (editable element) lets
+> the gesture through so the Paste/Select toolbar appears; every other
+> target is consumed, so the browser long-press menu (open-link-in-tab,
+> save-image, page-text selection) stays suppressed for game UI. No need
+> to set `bEnableContextMenus = true` just to allow paste.
 
 ## Remote DevTools
 

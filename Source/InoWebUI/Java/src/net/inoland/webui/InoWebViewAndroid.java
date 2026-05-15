@@ -882,9 +882,23 @@ public class InoWebViewAndroid
         });
     }
 
-    /** Suppress the browser's built-in long-press context menu (text-select,
-     *  "save image", etc.). Text fields still show the system copy/paste
-     *  toolbar via the standard IME — we only kill the BROWSER menu. */
+    /**
+     * Suppress the browser's built-in long-press menu (link "open in new
+     * tab", image "save image", arbitrary page-text selection) for
+     * locked-down game UI — WITHOUT killing long-press inside editable
+     * fields. An &lt;input&gt;/&lt;textarea&gt; still gets its Paste /
+     * Select-All action toolbar (so the user can paste a password, etc.);
+     * we only consume the long-press when the hit target is NOT editable.
+     *
+     * Implementation note: setLongClickable(true) must stay set even in
+     * the "disabled" branch. If it were false, Android never dispatches
+     * the long-press to our listener, so the editable-field action mode
+     * would never start either (this was the old bug — a blanket
+     * setLongClickable(false) + always-consume listener killed paste in
+     * password / text inputs). We discriminate per-gesture via
+     * WebView.getHitTestResult(): EDIT_TEXT_TYPE means the press landed
+     * on an editable element, so we let WebView handle it normally.
+     */
     public static void setContextMenusEnabled(final int id, final boolean enabled)
     {
         final Activity activity = getActivity();
@@ -897,12 +911,23 @@ public class InoWebViewAndroid
                     wv.setOnLongClickListener(null);     // back to default
                     wv.setLongClickable(true);
                 } else {
+                    // Keep long-press dispatching ON so editable fields
+                    // still get their selection/paste toolbar; only consume
+                    // (suppress the browser menu) for non-editable targets.
+                    wv.setLongClickable(true);
                     wv.setOnLongClickListener(new android.view.View.OnLongClickListener() {
                         @Override public boolean onLongClick(android.view.View v) {
-                            return true; // consume — no menu
+                            android.webkit.WebView.HitTestResult r =
+                                    ((WebView) v).getHitTestResult();
+                            int t = (r != null)
+                                    ? r.getType()
+                                    : android.webkit.WebView.HitTestResult.UNKNOWN_TYPE;
+                            if (t == android.webkit.WebView.HitTestResult.EDIT_TEXT_TYPE) {
+                                return false; // editable → allow paste/select toolbar
+                            }
+                            return true;      // else consume — no browser menu
                         }
                     });
-                    wv.setLongClickable(false);
                 }
             }
         });
