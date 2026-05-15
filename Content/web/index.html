@@ -125,7 +125,7 @@
 
   .pill {
     display: inline-flex; align-items: center; gap: 6px;
-    font-size: 11.5px; color: var(--dim);
+    font-size: 11.5px; color: var(--dim); white-space: nowrap;
     padding: 5px 10px; border-radius: 999px;
     background: rgba(255,255,255,.04);
     border: 1px solid var(--stroke);
@@ -614,15 +614,45 @@
   .lg.tx .a { color: var(--b1); } .lg.rx .a { color: var(--b2); } .lg.sy .a { color: var(--warn); }
   .lg .a { flex: none; font-weight: 700; }
 
-  /* responsive: collapse the sidebar into a top tab strip */
+  /* ── Responsive ──
+     ≤980: drop the chrome pills the dev-overlay already covers.
+     ≤760: sidebar → horizontal tab strip.
+     ≤520: Hide button → icon-only, tighter type/padding. */
+  @media (max-width: 980px) {
+    .top { gap: 10px; padding: 0 16px; }
+    .top .pill { display: none; }   /* platform + FPS pills: redundant with the dev overlay */
+  }
   @media (max-width: 760px) {
-    .app { grid-template-columns: 1fr; grid-template-areas: "top" "side" "stage" "status"; grid-template-rows: 56px auto 1fr 28px; }
-    .side { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--stroke); padding: 8px; }
+    .app {
+      grid-template-columns: 1fr;
+      grid-template-areas: "top" "side" "stage" "status";
+      grid-template-rows: 54px auto 1fr 28px;
+    }
+    .side {
+      flex-direction: row; overflow-x: auto; gap: 4px;
+      border-right: 0; border-bottom: 1px solid var(--stroke); padding: 8px 10px;
+      -webkit-overflow-scrolling: touch;
+      /* soft right fade so it's obvious the strip scrolls */
+      -webkit-mask: linear-gradient(90deg, #000 92%, transparent);
+      mask: linear-gradient(90deg, #000 92%, transparent);
+    }
+    .side::-webkit-scrollbar { height: 0; }
     .nav-h { display: none; }
-    .nav-item { white-space: nowrap; }
+    .nav-item { white-space: nowrap; padding: 8px 12px; }
     .nav-item.on::before { display: none; }
-    .scroll { padding: 20px; }
+    .scroll { padding: 18px; }
     .brand .tag { display: none; }
+  }
+  @media (max-width: 520px) {
+    .top { padding: 0 12px; }
+    .hb-label { display: none; }
+    .hide-btn { padding: 9px; }
+    .brand b { font-size: 14px; }
+    .logo { width: 28px; height: 28px; }
+    .view-head h1 { font-size: 21px; }
+    .view-head p { font-size: 13px; }
+    .scroll { padding: 14px; }
+    .panel { padding: 16px; }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
@@ -651,7 +681,7 @@
     <div class="pill fps"><span class="dot"></span>FPS <b id="fps">—</b></div>
     <button class="hide-btn" id="hideBtn">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M3 12s3.5-7 9-7 9 7 9 7-3.5 7-9 7-9-7-9-7z"/><circle cx="12" cy="12" r="3"/><path d="M4 4l16 16"/></svg>
-      Hide UI
+      <span class="hb-label">Hide&nbsp;UI</span>
     </button>
   </div>
 
