@@ -398,8 +398,26 @@ private:
     /** Platform implementation. Null on unsupported platforms / after shutdown. */
     TUniquePtr<IInoWebViewImpl> Impl;
 
-    /** Tracks the "Toggle transparency" state driven by the dev overlay. */
+    /** Tracks the current background opacity. Initialized from
+     *  Config.View.bTransparentBackground in Init and flipped by the dev
+     *  overlay's "Toggle transparency". Drives auto engine-idle. */
     bool bBackgroundCurrentlyOpaque = false;
+
+    /** Tracks Show()/Hide() visibility. Initialized from
+     *  Config.View.bVisibleOnCreate in Init. Drives auto engine-idle. */
+    bool bViewVisible = true;
+
+    /** Mirror of Config.View.bAutoIdleEngineWhenOpaque — when true this
+     *  view asks the subsystem to idle the engine while it is opaque AND
+     *  visible (recomputed on show/hide and on transparency switch). */
+    bool bAutoIdleEngineWhenOpaque = false;
+
+    /**
+     * Recompute whether this view wants the engine idled
+     * (bAutoIdleEngineWhenOpaque && visible && opaque) and report it to
+     * the owning subsystem. Cheap; safe to call repeatedly.
+     */
+    void RefreshEngineIdleRequest();
 
     /** True when SetBounds is in effect. Subsystem skips this WebView when
      *  broadcasting the parent client rect. SetBoundsAuto resets it. */

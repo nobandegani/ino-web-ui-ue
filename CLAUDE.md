@@ -614,6 +614,37 @@ sync (Android). Bind it right after `CreateWebView` to run code as soon
 as the WebView is ready for operations. If you bind after ready has
 already fired, use `IsReady()` as a fallback.
 
+### Engine idle (performance)
+
+When a full-screen **opaque** web UI is up, the 3D scene is completely
+hidden — rendering it is wasted GPU / CPU / battery. The subsystem can
+"idle" the engine with three switches:
+
+1. `UGameViewportClient::bDisableWorldRendering = true` — stop 3D render
+2. `GEngine->SetMaxFPS(8)` — throttle the frame loop
+3. `UGameplayStatics::SetGamePaused(true)` — freeze gameplay
+
+The pre-idle Max FPS and pause state are snapshot on the way in and
+restored **exactly** on the way out (idempotent, no drift).
+
+| Surface | What |
+|---|---|
+| `UInoWebUISubsystem::SetEngineIdle(bool)` | Manual override (BP-callable). |
+| `UInoWebUISubsystem::IsEngineIdle()` | BlueprintPure query. |
+| `FInoWebViewSettings::bAutoIdleEngineWhenOpaque` | Per-view opt-in (default false). When set, the view auto-requests idle while it is **opaque AND visible**; recomputed on Show/Hide and on every dev-overlay transparency toggle. |
+
+Aggregation: the engine is idle while `SetEngineIdle(true)` **OR** any
+auto-managed view is opaque & visible. Each `UInoWebView` reports its
+desired state via `RequestEngineIdle`; the subsystem keeps a weak-ref
+requester set (auto-pruned) plus the manual flag and only touches the
+engine when the resolved state flips. `Deinitialize` force-restores so a
+torn-down subsystem never leaves the game paused/throttled. The WebView
+is OS-composited independently of the UE loop, so the page stays smooth
+while Unreal idles.
+
+Note this is the one place the plugin reaches into engine-wide state —
+it's strictly opt-in (config flag default false / explicit manual call).
+
 ### Dev-tools floating overlay
 
 Gated by `FInoWebViewConfig::bEnableDevTools`. When enabled, a circular

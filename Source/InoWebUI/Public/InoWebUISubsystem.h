@@ -92,6 +92,37 @@ public:
      */
     void BroadcastClientRectToOne(UInoWebView* View);
 
+    // ── Engine idle (performance) ───────────────────────────────────────────
+
+    /**
+     * Manually idle / un-idle the Unreal engine — the "three switches":
+     *   1. UGameViewportClient::bDisableWorldRendering  (stop 3D rendering)
+     *   2. GEngine->SetMaxFPS(trickle)                  (throttle the loop)
+     *   3. UGameplayStatics::SetGamePaused(true)        (freeze gameplay)
+     *
+     * Use while a full-screen opaque web UI is up so Unreal stops doing
+     * work nobody can see. The previous Max FPS and pause state are saved
+     * on the first idle and restored exactly when fully un-idled.
+     *
+     * This manual flag is OR-combined with the automatic per-WebView
+     * behaviour (FInoWebViewSettings::bAutoIdleEngineWhenOpaque): the
+     * engine is idle while EITHER this is set OR any auto-managed WebView
+     * is opaque & visible. Idempotent; safe to call any time / repeatedly.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI|Performance")
+    void SetEngineIdle(bool bIdle);
+
+    /** True while the engine is currently idled (by manual or auto request). */
+    UFUNCTION(BlueprintPure, Category = "Ino|WebUI|Performance")
+    bool IsEngineIdle() const { return bEngineIdleApplied; }
+
+    /**
+     * Internal — a UInoWebView reports whether it currently wants the
+     * engine idled (its config opted in AND it is opaque AND visible).
+     * Not for Blueprint; use SetEngineIdle for manual control.
+     */
+    void RequestEngineIdle(UInoWebView* View, bool bWantIdle);
+
 private:
     /** All live WebViews keyed by the name passed to CreateWebView. */
     UPROPERTY()
@@ -133,4 +164,25 @@ private:
      * creation (covers the case where the window resizes during async init).
      */
     void BroadcastClientRectToAll();
+
+    // ── Engine idle internals ───────────────────────────────────────────────
+
+    /** Desired idle = manual OR any auto requester; apply only if changed. */
+    void RecomputeEngineIdle();
+
+    /** Flip the three switches, saving/restoring prior state. Idempotent. */
+    void ApplyEngineIdle(bool bIdle);
+
+    /** Set by SetEngineIdle(true/false) — the manual override. */
+    bool bManualEngineIdle = false;
+
+    /** WebViews currently asking for idle (opaque & visible & opted-in). */
+    TSet<TWeakObjectPtr<UInoWebView>> EngineIdleRequesters;
+
+    /** Whether the three switches are currently applied. */
+    bool bEngineIdleApplied = false;
+
+    /** Engine state captured the moment we entered idle, restored on exit. */
+    float SavedMaxFPS = 0.0f;
+    bool  bSavedGamePaused = false;
 };

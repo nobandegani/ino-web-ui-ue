@@ -10,9 +10,11 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
+#include "Engine/Engine.h"           // GEngine->Get/SetMaxFPS
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
+#include "Kismet/GameplayStatics.h"  // Is/SetGamePaused
 #include "Framework/Application/SlateApplication.h"
 #include "UnrealClient.h"            // FViewport
 #include "Widgets/SWindow.h"
@@ -46,6 +48,13 @@ void UInoWebUISubsystem::Deinitialize()
     }
 
     DestroyAllWebViews();
+
+    // Never leave the engine throttled / paused / world-rendering-off behind
+    // us. DestroyAllWebViews already drops every auto requester, but a manual
+    // SetEngineIdle(true) (or any edge) must not survive subsystem teardown.
+    EngineIdleRequesters.Empty();
+    bManualEngineIdle = false;
+    ApplyEngineIdle(false);
 
     Super::Deinitialize();
 }
@@ -445,4 +454,104 @@ FString UInoWebUISubsystem::ResolveBundleContentFolder(UInoWebBundle* Bundle)
         TEXT("Bundle '%s': extracted %d file(s) to %s"),
         *Bundle->GetName(), Bundle->Files.Num(), *ExtractDir);
     return ExtractDir;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Engine idle — the "three switches" + manual/auto aggregation
+//
+//  Desired idle = bManualEngineIdle  OR  any live EngineIdleRequesters entry.
+//  We only touch the engine when the resolved desired state changes, and we
+//  snapshot Max FPS + pause state on the way IN so we can restore EXACTLY
+//  on the way OUT (idempotent, no drift if called repeatedly).
+// ─────────────────────────────────────────────────────────────────────────────
+void UInoWebUISubsystem::SetEngineIdle(bool bIdle)
+{
+    check(IsInGameThread());
+    bManualEngineIdle = bIdle;
+    RecomputeEngineIdle();
+}
+
+void UInoWebUISubsystem::RequestEngineIdle(UInoWebView* View, bool bWantIdle)
+{
+    check(IsInGameThread());
+    if (!View) return;
+
+    if (bWantIdle)
+    {
+        EngineIdleRequesters.Add(View);
+    }
+    else
+    {
+        EngineIdleRequesters.Remove(View);
+    }
+    RecomputeEngineIdle();
+}
+
+void UInoWebUISubsystem::RecomputeEngineIdle()
+{
+    // Prune any requesters whose UInoWebView was GC'd without an orderly
+    // ShutdownImpl (defensive — the weak set must not pin idle forever).
+    for (auto It = EngineIdleRequesters.CreateIterator(); It; ++It)
+    {
+        if (!It->IsValid())
+        {
+            It.RemoveCurrent();
+        }
+    }
+
+    const bool bDesired = bManualEngineIdle || (EngineIdleRequesters.Num() > 0);
+    if (bDesired != bEngineIdleApplied)
+    {
+        ApplyEngineIdle(bDesired);
+    }
+}
+
+void UInoWebUISubsystem::ApplyEngineIdle(bool bIdle)
+{
+    // Idempotent guard — RecomputeEngineIdle already filters, but the
+    // Deinitialize hard-restore path calls this directly.
+    if (bIdle == bEngineIdleApplied)
+    {
+        return;
+    }
+
+    UGameInstance* GI = GetGameInstance();
+    UWorld* World = GI ? GI->GetWorld() : nullptr;
+    UGameViewportClient* GVC = GI ? GI->GetGameViewportClient() : nullptr;
+
+    // Trickle frame rate while idle — high enough that the OS-composited
+    // WebView and input stay responsive, low enough to cut GPU/CPU/battery.
+    // (The WebView renders on its own compositor, independent of this.)
+    constexpr float IdleMaxFPS = 8.0f;
+
+    if (bIdle)
+    {
+        // Snapshot prior state so we restore EXACTLY what was there.
+        SavedMaxFPS = (GEngine != nullptr) ? GEngine->GetMaxFPS() : 0.0f;
+        bSavedGamePaused = (World != nullptr) && UGameplayStatics::IsGamePaused(World);
+
+        if (GVC)    { GVC->bDisableWorldRendering = true; }
+        if (GEngine){ GEngine->SetMaxFPS(IdleMaxFPS); }
+        if (World)  { UGameplayStatics::SetGamePaused(World, true); }
+
+        bEngineIdleApplied = true;
+        UE_LOG(LogInoWebUI, Log,
+            TEXT("Engine IDLE: world rendering off, MaxFPS %.0f (was %.0f), game paused "
+                 "(was %s). Requesters: manual=%d auto=%d"),
+            IdleMaxFPS, SavedMaxFPS, bSavedGamePaused ? TEXT("true") : TEXT("false"),
+            bManualEngineIdle ? 1 : 0, EngineIdleRequesters.Num());
+    }
+    else
+    {
+        // Restore prior state. Only un-pause if WE paused it.
+        if (GVC)    { GVC->bDisableWorldRendering = false; }
+        if (GEngine){ GEngine->SetMaxFPS(SavedMaxFPS); }
+        if (World && !bSavedGamePaused) { UGameplayStatics::SetGamePaused(World, false); }
+
+        bEngineIdleApplied = false;
+        UE_LOG(LogInoWebUI, Log,
+            TEXT("Engine RESUMED: world rendering on, MaxFPS restored to %.0f, "
+                 "pause restored to %s."),
+            SavedMaxFPS, bSavedGamePaused ? TEXT("true") : TEXT("false"));
+    }
 }

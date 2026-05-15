@@ -79,6 +79,34 @@ struct INOWEBUI_API FInoWebViewSettings
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View")
     bool bVisibleOnCreate = true;
 
+    // ── Performance ─────────────────────────────────────────────────────────
+
+    /**
+     * If true, the InoWebUI subsystem automatically "idles" the Unreal
+     * engine while THIS WebView is fully covering the screen — i.e. while
+     * it is OPAQUE (background not transparent) AND visible. Idling means:
+     * disable 3D world rendering, throttle Max FPS to a trickle, and pause
+     * the game. The instant the view becomes transparent again, is hidden,
+     * or is destroyed, the engine is restored to exactly what it was.
+     *
+     * Use this for full-screen web menus / screens where the 3D scene is
+     * completely hidden behind an opaque page: it removes the GPU / CPU /
+     * battery cost of rendering a scene nobody can see. (The WebView is an
+     * OS-composited surface independent of the UE frame loop, so the page
+     * stays perfectly smooth while Unreal idles.)
+     *
+     * Re-evaluated automatically on Show / Hide and on every transparency
+     * switch. Internally drives the same logic as
+     * UInoWebUISubsystem::SetEngineIdle, which you can also call manually.
+     * Multiple opted-in WebViews are aggregated — Unreal idles while ANY
+     * of them is opaque & visible (or a manual SetEngineIdle(true) is set).
+     *
+     * Default false (opt-in).
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View",
+              meta = (DisplayName = "Auto-Idle Engine When Opaque & Visible"))
+    bool bAutoIdleEngineWhenOpaque = false;
+
     // ── Dev / debug ─────────────────────────────────────────────────────────
 
     /**

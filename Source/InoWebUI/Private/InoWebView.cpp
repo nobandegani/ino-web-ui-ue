@@ -149,6 +149,14 @@ void UInoWebView::Init(FName InName, TUniquePtr<IInoWebViewImpl>&& InImpl,
             OnCapturePreviewComplete.Broadcast(bSuccess, FilePath);
         };
 
+    // Cache the config bits that drive automatic engine-idle. Opacity
+    // mirrors the configured transparency (the dev overlay's "Toggle
+    // transparency" can flip it later); the visible flag mirrors
+    // bVisibleOnCreate (Show/Hide keep it current).
+    bAutoIdleEngineWhenOpaque  = Config.View.bAutoIdleEngineWhenOpaque;
+    bBackgroundCurrentlyOpaque = !Config.View.bTransparentBackground;
+    bViewVisible               = Config.View.bVisibleOnCreate;
+
     const bool bOk = Impl->Initialize(ParentNativeHandle, Config);
     if (!bOk)
     {
@@ -159,6 +167,10 @@ void UInoWebView::Init(FName InName, TUniquePtr<IInoWebViewImpl>&& InImpl,
     }
 
     UE_LOG(LogInoWebUI, Log, TEXT("UInoWebView[%s] created."), *WebViewName.ToString());
+
+    // Establish the initial engine-idle request — covers a view created
+    // opaque + visible with bAutoIdleEngineWhenOpaque set.
+    RefreshEngineIdleRequest();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -198,11 +210,29 @@ void UInoWebView::Reload()
 void UInoWebView::Show()
 {
     if (Impl.IsValid()) Impl->SetVisible(true);
+    bViewVisible = true;
+    RefreshEngineIdleRequest();
 }
 
 void UInoWebView::Hide()
 {
     if (Impl.IsValid()) Impl->SetVisible(false);
+    bViewVisible = false;
+    RefreshEngineIdleRequest();
+}
+
+void UInoWebView::RefreshEngineIdleRequest()
+{
+    // The owning subsystem aggregates requests from all views (+ a manual
+    // override). We only ask for idle while this view is actually covering
+    // the scene: opted-in AND opaque AND visible.
+    if (UInoWebUISubsystem* Subsystem = Cast<UInoWebUISubsystem>(GetOuter()))
+    {
+        const bool bWantIdle = bAutoIdleEngineWhenOpaque
+                               && bViewVisible
+                               && bBackgroundCurrentlyOpaque;
+        Subsystem->RequestEngineIdle(this, bWantIdle);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -265,6 +295,8 @@ bool UInoWebView::HandleDevToolsAction(const FString& Channel)
             TEXT("UInoWebView[%s]: background is now %s"),
             *WebViewName.ToString(),
             bBackgroundCurrentlyOpaque ? TEXT("OPAQUE (white)") : TEXT("TRANSPARENT"));
+        // Opacity is half of the auto engine-idle condition — re-evaluate.
+        RefreshEngineIdleRequest();
         return true;
     }
     // Note: "_devtools.info" never reaches UE — the dev overlay handles
@@ -518,6 +550,13 @@ void UInoWebView::OnParentResized(int32 X, int32 Y, int32 Width, int32 Height)
 
 void UInoWebView::ShutdownImpl()
 {
+    // Drop any engine-idle request first so a destroyed/opaque view can't
+    // leave the engine throttled or paused. Idempotent (set Remove).
+    if (UInoWebUISubsystem* Subsystem = Cast<UInoWebUISubsystem>(GetOuter()))
+    {
+        Subsystem->RequestEngineIdle(this, false);
+    }
+
     if (Impl.IsValid())
     {
         Impl->Shutdown();

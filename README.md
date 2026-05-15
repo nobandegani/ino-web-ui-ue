@@ -227,6 +227,29 @@ key/button that calls `Show` to bring it back. If the page is opened
 without the bridge (plain browser), the Hide button shows a toast
 instead of silently doing nothing.
 
+### Engine idle for full-screen web menus
+
+A full-screen **opaque** web UI (main menu, settings, loading screen)
+completely hides the 3D scene — rendering it is wasted GPU / CPU /
+battery. The subsystem can idle Unreal with three switches: disable
+world rendering, throttle Max FPS to a trickle, and pause the game. The
+WebView is OS-composited independently of the UE loop, so the page stays
+perfectly smooth while Unreal idles.
+
+Two ways to use it:
+
+- **Automatic (recommended):** set `Config.View.bAutoIdleEngineWhenOpaque
+  = true`. The engine idles whenever that view is opaque **and** visible,
+  and resumes the instant it becomes transparent, is hidden, or is
+  destroyed. No wiring needed — re-evaluated on Show/Hide and on every
+  transparency switch.
+- **Manual:** call `UInoWebUISubsystem::SetEngineIdle(true/false)`
+  yourself (BP-callable). OR-combined with the automatic per-view state.
+
+Prior Max FPS / pause state is snapshot on idle and restored exactly on
+resume; subsystem teardown force-restores. This is the only place the
+plugin touches engine-wide state — strictly opt-in (flag defaults false).
+
 ---
 
 ## Further reading
