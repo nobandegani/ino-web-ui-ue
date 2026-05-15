@@ -22,6 +22,27 @@
         <copyDir src="$S(PluginDir)/Java" dst="$S(BuildDir)" />
     </resourceCopies>
 
+    <!--
+      AndroidX WebKit — provides WebViewCompat.addDocumentStartJavaScript,
+      the Android counterpart of WebView2's AddScriptToExecuteOnDocumentCreated
+      and WKUserScriptInjectionTimeAtDocumentStart. It guarantees the
+      window.InoWebUI bridge runs BEFORE any page script on every navigation,
+      eliminating the onPageStarted+evaluateJavascript race. The Java side
+      feature-detects (WebViewFeature.DOCUMENT_START_SCRIPT) and falls back
+      to onPageStarted injection on pre-2020 System WebView, so this
+      dependency is required but its API is used conditionally.
+
+      Requires AndroidX (UE 5.x enables android.useAndroidX by default).
+      webkit 1.8.0 builds against compileSdk 34 (UE 5.7's default).
+    -->
+    <buildGradleAdditions>
+        <insert>
+dependencies {
+    implementation "androidx.webkit:webkit:1.8.0"
+}
+        </insert>
+    </buildGradleAdditions>
+
     <!-- Import the helper class into GameActivity so our lifecycle hooks resolve -->
     <gameActivityImportAdditions>
         <insert>

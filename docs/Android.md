@@ -50,8 +50,8 @@ A single `InoWebViewClient` subclass handles:
   mapped local folder (virtual-host mapping).
 - `shouldOverrideUrlLoading` — navigation lockdown; returns `true` for
   non-whitelisted URIs.
-- `onPageStarted` — injects the `window.InoWebUI` bridge and
-  (if enabled) the dev-tools overlay.
+- `onPageStarted` — *fallback* bridge / dev-overlay injection, used
+  only on pre-2020 System WebView (see "Bridge injection timing" below).
 - `onPageFinished` / `onReceivedError` — drives
   `OnNavigationCompleted`.
 - `onRenderProcessGone` — drives `OnProcessFailed` (API 26+).
@@ -76,6 +76,32 @@ The JS side is identical across platforms:
 `window.chrome.webview.postMessage` does not exist on Android, so the
 bridge on Android routes through `addJavascriptInterface` instead. User
 JavaScript does not have to care — the injected shim abstracts it.
+
+### Bridge injection timing
+
+`bridge.js` (and the dev overlay) are registered via AndroidX
+`WebViewCompat.addDocumentStartJavaScript` whenever
+`WebViewFeature.DOCUMENT_START_SCRIPT` is supported — ≈Chrome-WebView 83+,
+effectively every device since 2020. That API runs the script **before
+any page script, on every navigation**, the same hard guarantee
+WebView2 (`AddScriptToExecuteOnDocumentCreated`) and WKWebView
+(`WKUserScriptInjectionTimeAtDocumentStart`) give. So a consumer page can
+do `if (window.InoWebUI) …` at the top of its own first script and it is
+reliably there.
+
+The legacy `onPageStarted` + `evaluateJavascript` path had **no** ordering
+guarantee against the page's inline scripts — a page that checked
+`window.InoWebUI` once at load could see it undefined and conclude
+"bridge not connected" (this is why a page that works on Windows could
+fail on Android). It is now the **fallback only**, for System WebView too
+old to support `DOCUMENT_START_SCRIPT`.
+
+Requires `androidx.webkit:webkit` (added by `InoWebUI_UPL.xml` via
+`buildGradleAdditions`). AndroidX must be enabled — the UE 5.x default.
+The pinned `1.8.0` artifact builds against compileSdk 34 (UE 5.7's
+default); if a project overrides `compileSdk` lower, lower the webkit
+version in the UPL to a matching one (the API itself exists since
+webkit 1.4.0).
 
 ## Java -> C++ events
 
@@ -161,6 +187,34 @@ Error: `"InoWebViewAndroid Java class not found"`. Check, in order:
    `Intermediate/Android/APK/src/net/inoland/webui/InoWebViewAndroid.java`.
 3. **ProGuard / R8** — our `-keep` rule in the UPL should stop
    stripping; check the mapping output if suspicious.
+
+## "Bridge not connected" on Android (but fine on Windows)
+
+Symptom: a page that reports the bridge connected on Windows shows
+"not connected" / `window.InoWebUI` undefined on Android.
+
+Cause: the page checked `window.InoWebUI` **once**, synchronously, and
+the bridge was injected too late. Pre-fix, Android injected the bridge
+in `onPageStarted` via `evaluateJavascript`, which has no ordering
+guarantee against the page's own inline scripts. Windows never had this
+because WebView2 injects at document-start.
+
+Fix (already in the plugin): the bridge is registered via
+`WebViewCompat.addDocumentStartJavaScript`, matching the Windows/iOS
+document-start guarantee. If you still see it on a device:
+
+1. Filter logcat: `adb logcat | findstr /I "InoWebUI"`.
+2. Look for `setupMessaging(<id>): bridge via addDocumentStartJavaScript`
+   — that confirms the pre-page path is active.
+3. If you instead see `DOCUMENT_START_SCRIPT not supported` the device's
+   System WebView is ancient; update *Android System WebView* (or
+   Chrome) from the Play Store. The `onPageStarted` fallback still runs
+   but is best-effort.
+4. If you see `addDocumentStartJavaScript failed (…)`, the
+   `androidx.webkit` dependency likely didn't resolve — verify the UPL
+   `buildGradleAdditions` block is present and AndroidX is enabled
+   (UE 5.x default) and the webkit version matches the project's
+   `compileSdk`.
 
 ## Android-specific quirk: MATCH_PARENT sizing (auto mode)
 

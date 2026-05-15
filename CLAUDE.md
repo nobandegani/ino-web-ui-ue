@@ -158,13 +158,32 @@ dispatches share one run loop, ordering is preserved end-to-end.
 ### Android runtime architecture
 
 One `InoWebViewClient` (handles `shouldInterceptRequest` for virtual host,
-`shouldOverrideUrlLoading` for lockdown, `onPageStarted` for JS bridge
-injection, `onPageFinished` / `onReceivedError` for nav completion,
-`onRenderProcessGone` for crash) plus one `InoWebChromeClient` (handles
-title changes, JS dialogs, `onCreateWindow`). Both are installed once in
-`createWebView` and read per-WebView state from a `sConfigs:
+`shouldOverrideUrlLoading` for lockdown, `onPageStarted` as the *fallback*
+JS-bridge injection path, `onPageFinished` / `onReceivedError` for nav
+completion, `onRenderProcessGone` for crash) plus one `InoWebChromeClient`
+(handles title changes, JS dialogs, `onCreateWindow`). Both are installed
+once in `createWebView` and read per-WebView state from a `sConfigs:
 SparseArray<Config>` that the various `configureXxx` JNI methods
 populate between `createWebView` and the first `loadURL`.
+
+**Bridge injection timing (important).** The bridge / dev-overlay are
+registered through AndroidX `WebViewCompat.addDocumentStartJavaScript`
+(in `setupMessaging` / `setDevToolsEnabled`) whenever
+`WebViewFeature.DOCUMENT_START_SCRIPT` is supported — ≈Chrome-WebView 83+,
+i.e. effectively every device since 2020. That API runs the script
+**before any page script on every navigation**, the exact guarantee
+WebView2's `AddScriptToExecuteOnDocumentCreated` and WKWebView's
+`WKUserScriptInjectionTimeAtDocumentStart` give, so `window.InoWebUI`
+is reliably present when the consumer page's own scripts run. The old
+`onPageStarted` + `evaluateJavascript` path is kept **only as a
+fallback** for pre-2020 System WebView (no ordering guarantee — best
+effort). `Config.docStart{Bridge,Overlay}Installed` gates `onPageStarted`
+so the preferred path never double-injects. Requires the
+`androidx.webkit:webkit` gradle dep (added via `InoWebUI_UPL.xml`
+`buildGradleAdditions`); AndroidX must be enabled (UE 5.x default) and
+the webkit `1.8.0` artifact builds against compileSdk 34 (UE 5.7
+default — bump/lower the version in the UPL if the project overrides
+compileSdk).
 
 JS bridge is the same `window.InoWebUI.send/on/off` API as Windows.
 `window.chrome.webview.postMessage` doesn't exist on Android; the
@@ -615,9 +634,12 @@ expands seven action buttons on a quarter-circle arc:
 `UInoWebView::DispatchIncomingEnvelope` before the user's
 `OnMessageReceived` delegate runs. User code never sees them.
 
-Overlay is injected on every page load (Windows:
-`AddScriptToExecuteOnDocumentCreated`, Android:
-`WebViewClient.onPageStarted`). The JS source-of-truth lives in
+Overlay is injected at document-start on every navigation (Windows:
+`AddScriptToExecuteOnDocumentCreated`; iOS: `WKUserScript` at
+`InjectionTimeAtDocumentStart`; Android: `WebViewCompat.
+addDocumentStartJavaScript`, falling back to `WebViewClient.onPageStarted`
+only on pre-2020 System WebView — see "Bridge injection timing" above).
+The JS source-of-truth lives in
 `Source/InoWebUI/JS/dev_overlay.js`; `Scripts/GenerateJSConstants.ps1`
 emits a C++ header (`Private/Generated/InoWebUIScripts.generated.h`,
 auto-chunked under MSVC's 16380-char string-literal limit) and a Java

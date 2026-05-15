@@ -34,6 +34,9 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -43,6 +46,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 import com.epicgames.unreal.GameActivity;
 import com.epicgames.unreal.Logger;
@@ -78,6 +82,16 @@ public class InoWebViewAndroid
         // Manual bounds — when true, syncBounds applies the supplied X/Y/W/H
         // (with DP scaling) instead of forcing MATCH_PARENT. Default false.
         boolean manualBounds;
+
+        // True once the bridge / dev-overlay have been registered through
+        // WebViewCompat.addDocumentStartJavaScript (the pre-page-script
+        // injection path). When set, InoWebViewClient.onPageStarted must NOT
+        // re-inject via evaluateJavascript — the document-start API already
+        // ran the script before any page code, exactly like Windows/iOS.
+        // When the API is unsupported (very old System WebView) these stay
+        // false and onPageStarted remains the fallback.
+        boolean docStartBridgeInstalled;
+        boolean docStartOverlayInstalled;
     }
 
     /** Kind values match the C++ EInoScriptDialogKind enum in InoWebUITypes.h.
@@ -178,15 +192,26 @@ public class InoWebViewAndroid
             Config c = sConfigs.get(id);
             if (c == null) return;
 
-            // Inject the bridge as early as possible so page scripts can
-            // rely on window.InoWebUI being present.
-            if (c.messagingEnabled)
+            // FALLBACK PATH ONLY. On any System WebView that supports
+            // DOCUMENT_START_SCRIPT (≈Chrome 83+, i.e. effectively every
+            // device since 2020) the bridge / overlay were already registered
+            // via WebViewCompat.addDocumentStartJavaScript and ran BEFORE any
+            // page script — re-injecting here would be a redundant second
+            // copy (bridge.js self-guards with `if (window.InoWebUI) return;`
+            // so it's harmless, but the overlay would mount twice). We only
+            // inject here when the document-start API was unavailable.
+            //
+            // onPageStarted + evaluateJavascript has no ordering guarantee
+            // against the page's own inline scripts; this legacy path is
+            // therefore best-effort and exists purely so ancient WebView
+            // builds still get a (late) bridge rather than none.
+            if (c.messagingEnabled && !c.docStartBridgeInstalled)
             {
                 view.evaluateJavascript(InoWebUIScripts.BRIDGE_JS, null);
             }
             // Dev overlay runs AFTER the bridge because its buttons call
             // window.InoWebUI.send(...).
-            if (c.devOverlayEnabled)
+            if (c.devOverlayEnabled && !c.docStartOverlayInstalled)
             {
                 view.evaluateJavascript(InoWebUIScripts.DEVTOOLS_OVERLAY_JS, null);
             }
@@ -600,10 +625,47 @@ public class InoWebViewAndroid
                 // addJavascriptInterface exposes the object as a named JS
                 // global. We pick a name (_InoWebUIHost) that user code is
                 // unlikely to collide with; the injected BRIDGE_JS wraps
-                // it behind the nice window.InoWebUI.send() API.
+                // it behind the nice window.InoWebUI.send() API. The
+                // interface is bound to the WebView before the first load,
+                // so it is present in the JS context by the time any
+                // document-start script runs.
                 wv.addJavascriptInterface(new InoWebBridge(id), "_InoWebUIHost");
 
-                getOrCreateConfig(id).messagingEnabled = true;
+                Config cfg = getOrCreateConfig(id);
+                cfg.messagingEnabled = true;
+
+                // Preferred path: register bridge.js as a document-start
+                // script. WebViewCompat runs it BEFORE any page script on
+                // every navigation (and re-runs on each navigation), which
+                // is exactly the guarantee WebView2 and WKWebView give. This
+                // is what makes window.InoWebUI reliably present when the
+                // page's own scripts execute — closing the onPageStarted
+                // race. allowedOriginRules = {"*"}: the bridge is needed on
+                // whatever origin the (vhost-locked) content is served from.
+                if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT))
+                {
+                    try {
+                        Set<String> allOrigins = Collections.singleton("*");
+                        WebViewCompat.addDocumentStartJavaScript(
+                                wv, InoWebUIScripts.BRIDGE_JS, allOrigins);
+                        cfg.docStartBridgeInstalled = true;
+                        Log.debug("setupMessaging(" + id + "): bridge via "
+                                + "addDocumentStartJavaScript (pre-page guarantee)");
+                    } catch (Exception e) {
+                        // Defensive: if registration throws for any reason,
+                        // leave docStartBridgeInstalled false so onPageStarted
+                        // still injects (degraded but functional).
+                        Log.warn("setupMessaging(" + id + "): addDocumentStartJavaScript "
+                                + "failed (" + e.getMessage() + ") — falling back to "
+                                + "onPageStarted injection");
+                    }
+                }
+                else
+                {
+                    Log.warn("setupMessaging(" + id + "): DOCUMENT_START_SCRIPT not "
+                            + "supported by this System WebView — using onPageStarted "
+                            + "fallback (bridge may load after early page scripts)");
+                }
                 Log.debug("setupMessaging(" + id + ")");
             }
         });
@@ -778,11 +840,37 @@ public class InoWebViewAndroid
 
                 // Per-WebView: flip the flag that InoWebViewClient.onPageStarted
                 // reads to decide whether to inject the floating dev overlay.
-                getOrCreateConfig(id).devOverlayEnabled = enabled;
+                Config c = getOrCreateConfig(id);
+                c.devOverlayEnabled = enabled;
 
                 if (enabled) {
-                    Log.debug("DevTools enabled — dev overlay will inject on next page "
-                            + "load; chrome://inspect available for remote Chrome DevTools");
+                    // Same document-start path as the bridge. dev_overlay.js
+                    // self-defers to DOMContentLoaded and guards window.InoWebUI,
+                    // so registering it at document-start is safe and matches
+                    // the Windows/iOS injection model. Guard with the flag so
+                    // a repeated setDevToolsEnabled(true) can't stack multiple
+                    // overlay copies. Registration order (bridge first, in
+                    // setupMessaging; overlay here) is preserved by WebViewCompat.
+                    WebView wv = sWebViews.get(id);
+                    if (wv != null && !c.docStartOverlayInstalled
+                            && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT))
+                    {
+                        try {
+                            WebViewCompat.addDocumentStartJavaScript(
+                                    wv, InoWebUIScripts.DEVTOOLS_OVERLAY_JS,
+                                    Collections.singleton("*"));
+                            c.docStartOverlayInstalled = true;
+                        } catch (Exception e) {
+                            Log.warn("setDevToolsEnabled(" + id + "): overlay "
+                                    + "addDocumentStartJavaScript failed ("
+                                    + e.getMessage() + ") — onPageStarted fallback");
+                        }
+                    }
+                    Log.debug("DevTools enabled — dev overlay "
+                            + (c.docStartOverlayInstalled
+                                ? "registered at document-start"
+                                : "will inject on next page load")
+                            + "; chrome://inspect available for remote Chrome DevTools");
                 }
             }
         });
