@@ -5,6 +5,9 @@
 //
 // Injected only when FInoWebViewConfig::bEnableDevTools is true. Actions:
 //   • Refresh      → window.InoWebUI.send('_devtools.refresh', {})  → UInoWebView::Reload
+//   • DevTools     → window.InoWebUI.send('_devtools.openDevTools', {}) → UInoWebView::OpenDevTools
+//                    (Windows: real Chromium DevTools window; Android: logs
+//                     chrome://inspect hint; iOS: logs Safari Web Inspector hint)
 //   • Info         → JS-only modal (never hops to UE)
 //   • Dev Callback → window.InoWebUI.send('_devtools.devCallback', {}) → OnDevCallback
 // UInoWebView intercepts the '_devtools.' prefix in DispatchIncomingEnvelope;
@@ -22,8 +25,9 @@
 
   // 'handler' = JS-only (no UE hop). Order = top-to-bottom in the stack.
   var ACTIONS = [
-    { id: 'refresh',    label: 'Refresh',      svg: '<path d="M20 11a8 8 0 1 0-2.3 5.6M20 5v6h-6"/>' },
-    { id: 'info',       label: 'Info',         svg: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+    { id: 'refresh',     label: 'Refresh',  svg: '<path d="M20 11a8 8 0 1 0-2.3 5.6M20 5v6h-6"/>' },
+    { id: 'openDevTools', label: 'DevTools', svg: '<path d="M9 8l-3.5 4 3.5 4M15 8l3.5 4-3.5 4"/>' },
+    { id: 'info',        label: 'Info',     svg: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
       handler: function() { showInfoModal(); } },
     { id: 'devCallback', label: 'Dev Callback', svg: '<path d="M12 3l2.4 5 5.6.8-4 4 1 5.6-5-2.7-5 2.7 1-5.6-4-4 5.6-.8z"/>' }
   ];

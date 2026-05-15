@@ -153,6 +153,9 @@ static const TCHAR* GInoWebUIDevToolsOverlayScript =
 //
 // Injected only when FInoWebViewConfig::bEnableDevTools is true. Actions:
 //   • Refresh      → window.InoWebUI.send('_devtools.refresh', {})  → UInoWebView::Reload
+//   • DevTools     → window.InoWebUI.send('_devtools.openDevTools', {}) → UInoWebView::OpenDevTools
+//                    (Windows: real Chromium DevTools window; Android: logs
+//                     chrome://inspect hint; iOS: logs Safari Web Inspector hint)
 //   • Info         → JS-only modal (never hops to UE)
 //   • Dev Callback → window.InoWebUI.send('_devtools.devCallback', {}) → OnDevCallback
 // UInoWebView intercepts the '_devtools.' prefix in DispatchIncomingEnvelope;
@@ -170,8 +173,9 @@ static const TCHAR* GInoWebUIDevToolsOverlayScript =
 
   // 'handler' = JS-only (no UE hop). Order = top-to-bottom in the stack.
   var ACTIONS = [
-    { id: 'refresh',    label: 'Refresh',      svg: '<path d="M20 11a8 8 0 1 0-2.3 5.6M20 5v6h-6"/>' },
-    { id: 'info',       label: 'Info',         svg: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+    { id: 'refresh',     label: 'Refresh',  svg: '<path d="M20 11a8 8 0 1 0-2.3 5.6M20 5v6h-6"/>' },
+    { id: 'openDevTools', label: 'DevTools', svg: '<path d="M9 8l-3.5 4 3.5 4M15 8l3.5 4-3.5 4"/>' },
+    { id: 'info',        label: 'Info',     svg: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
       handler: function() { showInfoModal(); } },
     { id: 'devCallback', label: 'Dev Callback', svg: '<path d="M12 3l2.4 5 5.6.8-4 4 1 5.6-5-2.7-5 2.7 1-5.6-4-4 5.6-.8z"/>' }
   ];
@@ -300,14 +304,14 @@ static const TCHAR* GInoWebUIDevToolsOverlayScript =
         '<span style="display:flex;align-items:center;justify-content:center;'
           + 'width:26px;height:26px;border-radius:8px;background:rgba(255,255,255,0.07);'
           + 'flex:none">' + icon(a.svg, 15) + '</span>'
-        + '<span style="font-size:13px;font-weight:600;white-space:nowrap">' + a.label + '</span>';
-      p.style.cssText = S('display:flex;align-items:center;gap:10px;'
+        + '<span style="font-size:13px;font-weight:600;white-space:nowrap">' + a.label + '</span>';)JS")
+    TEXT(R"JS(      p.style.cssText = S('display:flex;align-items:center;gap:10px;'
         + 'padding:8px 16px 8px 8px;border-radius:999px;cursor:pointer;'
         + 'background:rgba(20,24,40,0.86);'
         + 'border:1px solid rgba(255,255,255,0.12);'
         + 'box-shadow:0 8px 22px rgba(0,0,0,0.45);'
-        + 'backdrop-filter:blur(16px) saturate(150%);')JS")
-    TEXT(R"JS(        + '-webkit-backdrop-filter:blur(16px) saturate(150%);'
+        + 'backdrop-filter:blur(16px) saturate(150%);'
+        + '-webkit-backdrop-filter:blur(16px) saturate(150%);'
         + 'pointer-events:none;opacity:0;'
         + 'transform:translateY(14px) scale(0.92);'
         + 'transition:opacity 0.2s ease,transform 0.3s ' + SPRING
