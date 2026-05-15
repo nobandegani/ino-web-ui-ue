@@ -628,17 +628,19 @@
       grid-template-areas: "top" "side" "stage" "status";
       grid-template-rows: 54px auto 1fr 28px;
     }
+    /* Wrapping pill cloud — every item always visible & clickable, no
+       horizontal scroll (which is unusable with a mouse on desktop). */
     .side {
-      flex-direction: row; overflow-x: auto; gap: 4px;
-      border-right: 0; border-bottom: 1px solid var(--stroke); padding: 8px 10px;
-      -webkit-overflow-scrolling: touch;
-      /* soft right fade so it's obvious the strip scrolls */
-      -webkit-mask: linear-gradient(90deg, #000 92%, transparent);
-      mask: linear-gradient(90deg, #000 92%, transparent);
+      flex-direction: row; flex-wrap: wrap; gap: 6px; overflow: visible;
+      border-right: 0; border-bottom: 1px solid var(--stroke);
+      padding: 10px 12px;
     }
-    .side::-webkit-scrollbar { height: 0; }
     .nav-h { display: none; }
-    .nav-item { white-space: nowrap; padding: 8px 12px; }
+    .nav-item {
+      flex: 0 0 auto; white-space: nowrap;
+      padding: 7px 12px; font-size: 12.5px;
+    }
+    .nav-item svg { width: 15px; height: 15px; }
     .nav-item.on::before { display: none; }
     .scroll { padding: 18px; }
     .brand .tag { display: none; }
