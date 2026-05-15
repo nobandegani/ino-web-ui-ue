@@ -202,8 +202,57 @@
       + 'backdrop-filter:blur(16px) saturate(150%);'
       + '-webkit-backdrop-filter:blur(16px) saturate(150%);'
       + 'transition:transform 0.2s ' + SPRING + ',background 0.2s,box-shadow 0.2s;'
-      + 'align-self:flex-end;');
-    root.appendChild(fab);
+      + 'flex:none;');
+
+    // Always-visible FPS chip, docked left of the gear FAB. Measures the
+    // WebView layer's own frame rate (UI jank), NOT UE's render thread.
+    var fps = document.createElement('div');
+    fps.title = 'WebView UI frame rate';
+    fps.style.cssText = S('display:flex;align-items:center;gap:7px;'
+      + 'height:34px;padding:0 13px;border-radius:999px;pointer-events:auto;'
+      + 'background:rgba(20,24,40,0.86);'
+      + 'border:1px solid rgba(255,255,255,0.12);'
+      + 'box-shadow:0 8px 22px rgba(0,0,0,0.45);'
+      + 'backdrop-filter:blur(16px) saturate(150%);'
+      + '-webkit-backdrop-filter:blur(16px) saturate(150%);'
+      + 'font-variant-numeric:tabular-nums;flex:none;');
+    fps.innerHTML =
+      '<span id="__inoFpsDot" style="width:7px;height:7px;border-radius:50%;'
+        + 'background:#43e08b;flex:none;transition:background 0.3s,box-shadow 0.3s"></span>'
+      + '<span style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;'
+        + 'color:rgba(255,255,255,0.5)">FPS</span>'
+      + '<b id="__inoFpsN" style="font-size:14px;font-weight:800;color:#eef2f8;'
+        + 'min-width:22px;text-align:right">--</b>';
+
+    // Bottom row: [ FPS chip ] [ gear FAB ]. The action stack expands above.
+    var bottom = document.createElement('div');
+    bottom.style.cssText = 'display:flex;align-items:center;gap:10px;';
+    bottom.appendChild(fps);
+    bottom.appendChild(fab);
+    root.appendChild(bottom);
+
+    // FPS sampler — rAF frame count, refreshed every ~500ms, colour-coded.
+    (function() {
+      var nEl = fps.querySelector('#__inoFpsN');
+      var dEl = fps.querySelector('#__inoFpsDot');
+      var last = (window.performance && performance.now) ? performance.now() : Date.now();
+      var frames = 0, acc = 0;
+      function tick(t) {
+        if (t == null) t = (window.performance && performance.now) ? performance.now() : Date.now();
+        frames++; acc += t - last; last = t;
+        if (acc >= 500) {
+          var v = Math.round(frames * 1000 / acc);
+          frames = 0; acc = 0;
+          nEl.textContent = v;
+          var col = v >= 55 ? '#43e08b' : (v >= 30 ? '#fbbf24' : '#fb6f84');
+          nEl.style.color = col;
+          dEl.style.background = col;
+          dEl.style.boxShadow = '0 0 8px ' + col;
+        }
+        requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    })();
 
     var expanded = false;
     var gear = fab.querySelector('#__inoGear');
