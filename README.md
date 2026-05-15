@@ -187,6 +187,40 @@ cross-platform off-switch and there's no native equivalent.
 The demo pages under `Content/web/` already ship with these defaults —
 `Content/web/index.html` is a usable starting template.
 
+### Demo / showcase app
+
+`Content/web/index.html` is a single self-contained showcase app — a
+persistent shell with hash-routed sections (Overview, Buttons, Inputs,
+Toggles, Containers, Data &amp; Charts, Motion, Effects, UE Bridge,
+Chat). No external/CDN dependencies, so it works under lockdown,
+offline, and on every platform. Point a `UInoWebBundle` (or
+`VirtualHostFolder`) at `Content/web/` and load `index.html`.
+
+It has a persistent **Hide UI** button. The plugin can't hide itself
+from JS, so the button sends a bridge message you wire up in
+Blueprint / C++:
+
+```cpp
+// On the UInoWebView returned by CreateWebView / CreateWebViewFromAsset:
+View->OnMessageReceived.AddDynamic(this, &AMyHud::HandleWebMessage);
+
+void AMyHud::HandleWebMessage(FName Channel, const FJsonObjectWrapper& Payload)
+{
+    if (Channel == TEXT("app.hide"))
+    {
+        View->Hide();          // overlay disappears; 3D scene stays
+        // You own the re-show trigger — e.g. an input action:
+        //   View->Show();  (and View->FocusWebView() if it has inputs)
+    }
+}
+```
+
+In Blueprint: bind the `On Message Received` red event pin, branch on
+`Channel == "app.hide"`, call `Hide` on the WebView. Provide your own
+key/button that calls `Show` to bring it back. If the page is opened
+without the bridge (plain browser), the Hide button shows a toast
+instead of silently doing nothing.
+
 ---
 
 ## Further reading
