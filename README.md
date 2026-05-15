@@ -169,9 +169,15 @@ In your CSS reset:
   -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
 }
-/* Re-enable selection for form fields so typing still works. */
+/* Re-enable selection AND the long-press callout for form fields, so
+   typing *and* the iOS Cut/Copy/Paste edit menu still work. Restoring
+   only user-select isn't always enough: on some iOS versions a field
+   left at `-webkit-touch-callout: none` won't raise the long-press
+   "Paste" menu — which is the only way to paste into an empty password
+   input (no text to double-tap-select first). */
 input, textarea, [contenteditable] {
   -webkit-user-select: text;  user-select: text;
+  -webkit-touch-callout: default;
 }
 ```
 

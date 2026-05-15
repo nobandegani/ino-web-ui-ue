@@ -6,7 +6,8 @@
 <title>InoWebUI — Showcase</title>
 <style>
   /* Game-UI defaults: no text selection, no long-press callout, no tap-flash.
-     Inputs / textareas / contenteditable opt back in below so typing works. */
+     Inputs / textareas / contenteditable opt back in below so typing AND
+     the iOS Cut/Copy/Paste edit menu still work. */
   * {
     box-sizing: border-box;
     margin: 0;
@@ -19,6 +20,7 @@
   input, textarea, [contenteditable] {
     -webkit-user-select: text;
     user-select: text;
+    -webkit-touch-callout: default;
   }
 
   :root {

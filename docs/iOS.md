@@ -226,3 +226,15 @@ call to add.)
   applied to both `webView.opaque` and the underlying `scrollView`'s
   background colour. If your HTML has its own background colour, that
   paints on top — set `body { background: transparent; }` in CSS.
+- **Can't paste into an `<input>` (e.g. password) on iOS.** This is
+  *not* a native-code issue — the iOS impl never disables long-press,
+  text-interaction or the edit menu (only `UIPinchGestureRecognizer`
+  for zoom-lock), and `bEnableContextMenus` is not overridden on iOS, so
+  WKWebView's default Cut/Copy/Paste menu is available. The cause is the
+  page's own game-UI CSS reset: a global `-webkit-touch-callout: none`
+  that isn't restored on form fields can suppress the long-press "Paste"
+  callout on some iOS versions (the only paste path for an empty field).
+  Fix is HTML-side — re-enable it on the form-field exemption:
+  `input, textarea, [contenteditable] { -webkit-touch-callout: default; }`
+  (already shipped in the README recommended reset and
+  `Content/web/index.html`).
