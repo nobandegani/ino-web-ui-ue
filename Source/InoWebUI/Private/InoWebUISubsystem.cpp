@@ -50,10 +50,11 @@ void UInoWebUISubsystem::Deinitialize()
     DestroyAllWebViews();
 
     // Never leave the engine throttled / paused / world-rendering-off behind
-    // us. DestroyAllWebViews already drops every auto requester, but a manual
-    // SetEngineIdle(true) (or any edge) must not survive subsystem teardown.
-    EngineIdleRequesters.Empty();
+    // us. DestroyAllWebViews already drops every covering view, but manual
+    // SetEngineIdle / auto mode must not survive subsystem teardown.
+    CoveringViews.Empty();
     bManualEngineIdle = false;
+    bAutoEngineIdle   = false;
     ApplyEngineIdle(false);
 
     Super::Deinitialize();
@@ -457,13 +458,20 @@ FString UInoWebUISubsystem::ResolveBundleContentFolder(UInoWebBundle* Bundle)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Engine idle — the "three switches" + manual/auto aggregation
+//  Engine idle — the "three switches" + auto/manual aggregation
 //
-//  Desired idle = bManualEngineIdle  OR  any live EngineIdleRequesters entry.
-//  We only touch the engine when the resolved desired state changes, and we
-//  snapshot Max FPS + pause state on the way IN so we can restore EXACTLY
-//  on the way OUT (idempotent, no drift if called repeatedly).
+//  Desired idle = bManualEngineIdle  OR  (bAutoEngineIdle AND a covering
+//  WebView exists). We only touch the engine when the resolved desired
+//  state changes, and we snapshot Max FPS + pause state on the way IN so
+//  we restore EXACTLY on the way OUT (idempotent, no drift).
 // ─────────────────────────────────────────────────────────────────────────────
+void UInoWebUISubsystem::SetAutoEngineIdle(bool bEnabled)
+{
+    check(IsInGameThread());
+    bAutoEngineIdle = bEnabled;
+    RecomputeEngineIdle();
+}
+
 void UInoWebUISubsystem::SetEngineIdle(bool bIdle)
 {
     check(IsInGameThread());
@@ -471,27 +479,27 @@ void UInoWebUISubsystem::SetEngineIdle(bool bIdle)
     RecomputeEngineIdle();
 }
 
-void UInoWebUISubsystem::RequestEngineIdle(UInoWebView* View, bool bWantIdle)
+void UInoWebUISubsystem::SetViewCovering(UInoWebView* View, bool bCovering)
 {
     check(IsInGameThread());
     if (!View) return;
 
-    if (bWantIdle)
+    if (bCovering)
     {
-        EngineIdleRequesters.Add(View);
+        CoveringViews.Add(View);
     }
     else
     {
-        EngineIdleRequesters.Remove(View);
+        CoveringViews.Remove(View);
     }
     RecomputeEngineIdle();
 }
 
 void UInoWebUISubsystem::RecomputeEngineIdle()
 {
-    // Prune any requesters whose UInoWebView was GC'd without an orderly
+    // Prune any covering views whose UInoWebView was GC'd without an orderly
     // ShutdownImpl (defensive — the weak set must not pin idle forever).
-    for (auto It = EngineIdleRequesters.CreateIterator(); It; ++It)
+    for (auto It = CoveringViews.CreateIterator(); It; ++It)
     {
         if (!It->IsValid())
         {
@@ -499,7 +507,8 @@ void UInoWebUISubsystem::RecomputeEngineIdle()
         }
     }
 
-    const bool bDesired = bManualEngineIdle || (EngineIdleRequesters.Num() > 0);
+    const bool bDesired = bManualEngineIdle
+                          || (bAutoEngineIdle && CoveringViews.Num() > 0);
     if (bDesired != bEngineIdleApplied)
     {
         ApplyEngineIdle(bDesired);
@@ -537,9 +546,11 @@ void UInoWebUISubsystem::ApplyEngineIdle(bool bIdle)
         bEngineIdleApplied = true;
         UE_LOG(LogInoWebUI, Log,
             TEXT("Engine IDLE: world rendering off, MaxFPS %.0f (was %.0f), game paused "
-                 "(was %s). Requesters: manual=%d auto=%d"),
+                 "(was %s). [manual=%s auto=%s coveringViews=%d]"),
             IdleMaxFPS, SavedMaxFPS, bSavedGamePaused ? TEXT("true") : TEXT("false"),
-            bManualEngineIdle ? 1 : 0, EngineIdleRequesters.Num());
+            bManualEngineIdle ? TEXT("on") : TEXT("off"),
+            bAutoEngineIdle   ? TEXT("on") : TEXT("off"),
+            CoveringViews.Num());
     }
     else
     {

@@ -95,33 +95,46 @@ public:
     // ── Engine idle (performance) ───────────────────────────────────────────
 
     /**
-     * Manually idle / un-idle the Unreal engine — the "three switches":
+     * AUTO engine-idle toggle (this is the main switch). When enabled, the
+     * subsystem automatically idles the engine whenever ANY visible WebView
+     * is opaque (i.e. a web UI is fully covering the 3D scene) and resumes
+     * the instant no covering WebView remains. Default OFF.
+     *
+     * "Idle" = the three switches, applied with exact save/restore:
      *   1. UGameViewportClient::bDisableWorldRendering  (stop 3D rendering)
      *   2. GEngine->SetMaxFPS(trickle)                  (throttle the loop)
      *   3. UGameplayStatics::SetGamePaused(true)        (freeze gameplay)
      *
-     * Use while a full-screen opaque web UI is up so Unreal stops doing
-     * work nobody can see. The previous Max FPS and pause state are saved
-     * on the first idle and restored exactly when fully un-idled.
-     *
-     * This manual flag is OR-combined with the automatic per-WebView
-     * behaviour (FInoWebViewSettings::bAutoIdleEngineWhenOpaque): the
-     * engine is idle while EITHER this is set OR any auto-managed WebView
-     * is opaque & visible. Idempotent; safe to call any time / repeatedly.
+     * Toggling this re-evaluates immediately (turning it on while an opaque
+     * WebView is already up idles right away; turning it off resumes).
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI|Performance")
+    void SetAutoEngineIdle(bool bEnabled);
+
+    /** Whether AUTO engine-idle mode is currently enabled. */
+    UFUNCTION(BlueprintPure, Category = "Ino|WebUI|Performance")
+    bool IsAutoEngineIdle() const { return bAutoEngineIdle; }
+
+    /**
+     * Manual override of the same three switches, independent of auto mode.
+     * OR-combined with auto: the engine is idle while EITHER this is set
+     * OR (auto is on AND a covering WebView exists). Idempotent; safe any
+     * time. Use this if you want to drive idling from your own game logic
+     * without the auto/opaque heuristic.
      */
     UFUNCTION(BlueprintCallable, Category = "Ino|WebUI|Performance")
     void SetEngineIdle(bool bIdle);
 
-    /** True while the engine is currently idled (by manual or auto request). */
+    /** True while the engine is currently idled (manual or auto-resolved). */
     UFUNCTION(BlueprintPure, Category = "Ino|WebUI|Performance")
     bool IsEngineIdle() const { return bEngineIdleApplied; }
 
     /**
-     * Internal — a UInoWebView reports whether it currently wants the
-     * engine idled (its config opted in AND it is opaque AND visible).
-     * Not for Blueprint; use SetEngineIdle for manual control.
+     * Internal — a UInoWebView reports whether it is currently "covering"
+     * the scene (opaque AND visible). The subsystem only acts on this when
+     * auto mode is on. Not for Blueprint.
      */
-    void RequestEngineIdle(UInoWebView* View, bool bWantIdle);
+    void SetViewCovering(UInoWebView* View, bool bCovering);
 
 private:
     /** All live WebViews keyed by the name passed to CreateWebView. */
@@ -167,7 +180,7 @@ private:
 
     // ── Engine idle internals ───────────────────────────────────────────────
 
-    /** Desired idle = manual OR any auto requester; apply only if changed. */
+    /** Desired idle = manual OR (auto && any covering view); apply if changed. */
     void RecomputeEngineIdle();
 
     /** Flip the three switches, saving/restoring prior state. Idempotent. */
@@ -176,8 +189,11 @@ private:
     /** Set by SetEngineIdle(true/false) — the manual override. */
     bool bManualEngineIdle = false;
 
-    /** WebViews currently asking for idle (opaque & visible & opted-in). */
-    TSet<TWeakObjectPtr<UInoWebView>> EngineIdleRequesters;
+    /** Set by SetAutoEngineIdle(true/false) — the auto-mode toggle. */
+    bool bAutoEngineIdle = false;
+
+    /** WebViews currently opaque AND visible (fully covering the scene). */
+    TSet<TWeakObjectPtr<UInoWebView>> CoveringViews;
 
     /** Whether the three switches are currently applied. */
     bool bEngineIdleApplied = false;

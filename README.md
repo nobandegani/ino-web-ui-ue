@@ -236,19 +236,20 @@ world rendering, throttle Max FPS to a trickle, and pause the game. The
 WebView is OS-composited independently of the UE loop, so the page stays
 perfectly smooth while Unreal idles.
 
-Two ways to use it:
+Both controls are on the subsystem (no per-view config flag):
 
-- **Automatic (recommended):** set `Config.View.bAutoIdleEngineWhenOpaque
-  = true`. The engine idles whenever that view is opaque **and** visible,
-  and resumes the instant it becomes transparent, is hidden, or is
-  destroyed. No wiring needed — re-evaluated on Show/Hide and on every
-  transparency switch.
+- **Automatic (recommended):** call
+  `UInoWebUISubsystem::SetAutoEngineIdle(true)` once. From then on the
+  engine idles whenever **any** visible WebView is opaque, and resumes
+  the instant none are (a view going transparent, hidden, or destroyed
+  all resume it). No per-view wiring — re-evaluated on Show/Hide and on
+  every transparency switch.
 - **Manual:** call `UInoWebUISubsystem::SetEngineIdle(true/false)`
-  yourself (BP-callable). OR-combined with the automatic per-view state.
+  yourself (BP-callable). OR-combined with auto mode.
 
 Prior Max FPS / pause state is snapshot on idle and restored exactly on
 resume; subsystem teardown force-restores. This is the only place the
-plugin touches engine-wide state — strictly opt-in (flag defaults false).
+plugin touches engine-wide state — strictly opt-in (auto defaults off).
 
 ---
 

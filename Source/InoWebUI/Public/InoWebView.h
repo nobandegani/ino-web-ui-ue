@@ -400,24 +400,21 @@ private:
 
     /** Tracks the current background opacity. Initialized from
      *  Config.View.bTransparentBackground in Init and flipped by the dev
-     *  overlay's "Toggle transparency". Drives auto engine-idle. */
+     *  overlay's "Toggle transparency". Part of the "covering" state. */
     bool bBackgroundCurrentlyOpaque = false;
 
     /** Tracks Show()/Hide() visibility. Initialized from
-     *  Config.View.bVisibleOnCreate in Init. Drives auto engine-idle. */
+     *  Config.View.bVisibleOnCreate in Init. Part of the "covering" state. */
     bool bViewVisible = true;
 
-    /** Mirror of Config.View.bAutoIdleEngineWhenOpaque — when true this
-     *  view asks the subsystem to idle the engine while it is opaque AND
-     *  visible (recomputed on show/hide and on transparency switch). */
-    bool bAutoIdleEngineWhenOpaque = false;
-
     /**
-     * Recompute whether this view wants the engine idled
-     * (bAutoIdleEngineWhenOpaque && visible && opaque) and report it to
-     * the owning subsystem. Cheap; safe to call repeatedly.
+     * Report this view's "covering" state (opaque AND visible — i.e. it
+     * fully hides the 3D scene) to the owning subsystem. The subsystem
+     * decides whether that idles the engine (only when its auto mode is
+     * on). Recomputed on Show/Hide and on every transparency switch.
+     * Cheap; safe to call repeatedly.
      */
-    void RefreshEngineIdleRequest();
+    void RefreshCoveringState();
 
     /** True when SetBounds is in effect. Subsystem skips this WebView when
      *  broadcasting the parent client rect. SetBoundsAuto resets it. */

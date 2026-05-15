@@ -627,23 +627,29 @@ hidden — rendering it is wasted GPU / CPU / battery. The subsystem can
 The pre-idle Max FPS and pause state are snapshot on the way in and
 restored **exactly** on the way out (idempotent, no drift).
 
+The controls live entirely on the **subsystem** (there is no per-view
+config flag):
+
 | Surface | What |
 |---|---|
-| `UInoWebUISubsystem::SetEngineIdle(bool)` | Manual override (BP-callable). |
-| `UInoWebUISubsystem::IsEngineIdle()` | BlueprintPure query. |
-| `FInoWebViewSettings::bAutoIdleEngineWhenOpaque` | Per-view opt-in (default false). When set, the view auto-requests idle while it is **opaque AND visible**; recomputed on Show/Hide and on every dev-overlay transparency toggle. |
+| `UInoWebUISubsystem::SetAutoEngineIdle(bool)` | **The main toggle.** When on, the engine idles whenever ANY visible WebView is opaque (covering the scene) and resumes when none are. Default off. |
+| `UInoWebUISubsystem::IsAutoEngineIdle()` | BlueprintPure — is auto mode on. |
+| `UInoWebUISubsystem::SetEngineIdle(bool)` | Manual override of the same switches, independent of auto. |
+| `UInoWebUISubsystem::IsEngineIdle()` | BlueprintPure — is the engine currently idled. |
 
-Aggregation: the engine is idle while `SetEngineIdle(true)` **OR** any
-auto-managed view is opaque & visible. Each `UInoWebView` reports its
-desired state via `RequestEngineIdle`; the subsystem keeps a weak-ref
-requester set (auto-pruned) plus the manual flag and only touches the
-engine when the resolved state flips. `Deinitialize` force-restores so a
-torn-down subsystem never leaves the game paused/throttled. The WebView
-is OS-composited independently of the UE loop, so the page stays smooth
-while Unreal idles.
+Resolved idle = `SetEngineIdle(true)` **OR** (`SetAutoEngineIdle` on
+**AND** a covering view exists). Each `UInoWebView` tracks its own
+visibility + opacity (seeded from config, updated on Show/Hide and the
+dev-overlay transparency toggle) and reports a raw "covering"
+(opaque && visible) bool to the subsystem via `SetViewCovering`. The
+subsystem keeps an auto-pruned weak-ref `CoveringViews` set + the manual
+& auto flags, and only touches the engine when the resolved state flips.
+`Deinitialize` force-restores so a torn-down subsystem never leaves the
+game paused/throttled. The WebView is OS-composited independently of the
+UE loop, so the page stays smooth while Unreal idles.
 
 Note this is the one place the plugin reaches into engine-wide state —
-it's strictly opt-in (config flag default false / explicit manual call).
+strictly opt-in (auto default off / explicit manual call).
 
 ### Dev-tools floating overlay
 
