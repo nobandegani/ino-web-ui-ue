@@ -603,6 +603,8 @@ Common pattern examples:
 | `FocusWebView()`         | Move keyboard focus into the WebView (for HTML input fields). |
 | `SetZoomFactor(Factor)`  | 1.0 = 100%, 1.5 = 150%. |
 | `GetZoomFactor()`        | Current zoom (returns 1.0 if not ready). |
+| `SetBackgroundTransparent(bool)` | Runtime equivalent of `bTransparentBackground` — switch see-through ↔ opaque white. No-ops if unchanged; feeds auto engine-idle (`RefreshCoveringState`). |
+| `IsBackgroundTransparent()` | BlueprintPure — current background mode. |
 | `ClearAllCookies()`      | Delete all cookies in this WebView's isolated profile. Useful for logout. |
 
 ### Ready signal
@@ -639,9 +641,10 @@ config flag):
 
 Resolved idle = `SetEngineIdle(true)` **OR** (`SetAutoEngineIdle` on
 **AND** a covering view exists). Each `UInoWebView` tracks its own
-visibility + opacity (seeded from config, updated on Show/Hide and the
-dev-overlay transparency toggle) and reports a raw "covering"
-(opaque && visible) bool to the subsystem via `SetViewCovering`. The
+visibility + opacity (seeded from config, updated on Show/Hide and on
+`SetBackgroundTransparent` / the dev-overlay transparency toggle) and
+reports a raw "covering" (opaque && visible) bool to the subsystem via
+`SetViewCovering`. The
 subsystem keeps an auto-pruned weak-ref `CoveringViews` set + the manual
 & auto flags, and only touches the engine when the resolved state flips.
 `Deinitialize` force-restores so a torn-down subsystem never leaves the

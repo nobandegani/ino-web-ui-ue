@@ -135,6 +135,25 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
     void Hide();
 
+    // ── Appearance ──────────────────────────────────────────────────────────
+
+    /**
+     * Switch the WebView background between transparent (the 3D scene shows
+     * through the page's empty areas) and opaque white, at runtime. This is
+     * the runtime equivalent of FInoWebViewConfig's bTransparentBackground.
+     *
+     * Also feeds the subsystem's auto engine-idle: going opaque while
+     * visible can idle Unreal; going transparent resumes it (only if
+     * SetAutoEngineIdle is on). Safe before the WebView is ready (applied
+     * once the native side is up). Game-thread only.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void SetBackgroundTransparent(bool bTransparent);
+
+    /** Current background mode. True = transparent, false = opaque white. */
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Ino|WebUI")
+    bool IsBackgroundTransparent() const { return !bBackgroundCurrentlyOpaque; }
+
     // ── Messaging (Phase 2) ─────────────────────────────────────────────────
 
     /**

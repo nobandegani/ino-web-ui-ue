@@ -52,7 +52,7 @@ overlay window becomes invisible. Set `FullscreenMode=1` in
 | Overlay create / destroy | ✔ | ✔ | ✔ |
 | URL / local file / virtual-host loading | ✔ | ✔ | ✔ (1) |
 | Show / Hide / Reload / SyncBounds | ✔ | ✔ | ✔ |
-| Transparent background | ✔ | ✔ | ✔ |
+| Transparent background (config + runtime `SetBackgroundTransparent`) | ✔ | ✔ | ✔ |
 | Two-way messaging (`window.InoWebUI` + `once`) | ✔ | ✔ | ✔ |
 | Navigation lockdown (whitelist) | ✔ | ✔ | ✔ |
 | JS dialog suppression (`alert`/`confirm`/`prompt`) | ✔ | ✔ | ✔ |

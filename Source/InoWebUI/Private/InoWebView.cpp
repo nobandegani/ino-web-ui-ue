@@ -232,6 +232,29 @@ void UInoWebView::RefreshCoveringState()
     }
 }
 
+void UInoWebView::SetBackgroundTransparent(bool bTransparent)
+{
+    check(IsInGameThread());
+
+    const bool bOpaque = !bTransparent;
+    if (bOpaque == bBackgroundCurrentlyOpaque)
+    {
+        return; // no change — don't churn the impl or re-evaluate idle
+    }
+
+    bBackgroundCurrentlyOpaque = bOpaque;
+    if (Impl.IsValid()) Impl->SetBackgroundOpaque(bOpaque);
+
+    UE_LOG(LogInoWebUI, Log,
+        TEXT("UInoWebView[%s]: background set to %s"),
+        *WebViewName.ToString(),
+        bOpaque ? TEXT("OPAQUE (white)") : TEXT("TRANSPARENT"));
+
+    // Opacity is half of the "covering" condition — re-evaluate so auto
+    // engine-idle reacts immediately (mirrors the dev-overlay toggle).
+    RefreshCoveringState();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Messaging (Phase 2)
 // ─────────────────────────────────────────────────────────────────────────────
