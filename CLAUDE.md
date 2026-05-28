@@ -16,7 +16,7 @@ pixels in the HTML reveal the 3D scene underneath.
 This is fundamentally different from UE's built-in `WebBrowser` plugin, which
 textures the browser output — we skip all of that, zero copy, zero stall.
 
-**Current status: Phase 13 — Win64 (full) + Android (full parity) + iOS (`WKWebView`, full parity bar `OpenDevTools` and `SetMuted`) + Web Bundle assets + dev-tools overlay + DirectComposition hosting for PIE + unified `bridge.js` / `dev_overlay.js` source + browser-style API surface (back/forward, state getters, capture, headers, sub-region bounds).**
+**Current status: Phase 18 — Win64 (full) + Android (full parity, hardened) + iOS (`WKWebView`, full parity bar `OpenDevTools` and `SetMuted`) + Web Bundle assets + dev-tools overlay + DirectComposition hosting for PIE + unified `bridge.js` / `dev_overlay.js` source + browser-style API surface (back/forward, state getters, capture, headers, sub-region bounds) + Android renderer auto-recover / unresponsive detection + `addWebMessageListener` bridge + page console capture + explicit security defaults.**
 
 ---
 
@@ -138,7 +138,7 @@ dispatches share one run loop, ordering is preserved end-to-end.
 | Activity lifecycle hooks | ✔ | Pause / Resume / Destroy via UPL |
 | **Virtual-host mapping** | ✔ | `WebViewClient.shouldInterceptRequest` serves `https://<host>/*` from a local folder |
 | **Web Bundle assets** | ✔ | Runtime logic is cross-platform; works identically |
-| **Two-way messaging** | ✔ | `addJavascriptInterface` + `evaluateJavascript`; same `window.InoWebUI` API as Windows |
+| **Two-way messaging** | ✔ | `addWebMessageListener` w/ origin allowlist (modern, ~Chrome 82+) → `addJavascriptInterface` (legacy fallback). UE→JS uses `JavaScriptReplyProxy.postMessage` when available, falls back to `evaluateJavascript`. Same `window.InoWebUI` API as Windows. |
 | **Navigation events** | ✔ | `OnNavigationStarting` / `OnNavigationCompleted` / `OnDocumentTitleChanged` |
 | **Lockdown** | ✔ | `shouldOverrideUrlLoading` returns true for non-whitelisted URIs; same wildcard rules |
 | **JS dialog suppression** | ✔ | `WebChromeClient.onJs{Alert,Confirm,Prompt,BeforeUnload}` |
@@ -146,11 +146,18 @@ dispatches share one run loop, ordering is preserved end-to-end.
 | **Focus events + FocusWebView** | ✔ | `setOnFocusChangeListener` + `requestFocus` |
 | **SetZoomFactor** | ✔ | `setInitialScale(percent)` |
 | **ClearAllCookies** | ✔ | `CookieManager.removeAllCookies` |
-| **OnProcessFailed** | ✔ | `WebViewClient.onRenderProcessGone` (API 26+) |
+| **OnProcessFailed** | ✔ | `WebViewClient.onRenderProcessGone` (API 26+) — does doc-mandated detach + destroy + `sWebViews.remove(id)` before firing the C++ callback |
+| **Auto-recover on process failure** | ✔ | `bAutoRecoverOnProcessFailed` (default true). After `OnProcessFailed` fires, plugin recreates a fresh native impl with the same Config, reloads to the last-known URL (snapshotted pre-shutdown). Budget: 3 attempts per 60s window. See "Renderer failure recovery" below. |
+| **Hung-renderer detection + auto-terminate** | ✔ | `WebViewCompat.setWebViewRenderProcessClient` (AndroidX). Hung renderer (~5s no event-loop response) fires `OnRenderProcessUnresponsive`. If `UnresponsiveTimeoutMs > 0` (default 10000), schedules `WebViewRenderProcess.terminate()` — which triggers `onRenderProcessGone` → auto-recover. `OnRenderProcessResponsive` cancels pending terminate if renderer unstuck itself. |
+| **Console message capture** | ✔ | `WebChromeClient.onConsoleMessage`. New `OnConsoleMessage(Level, Message, SourceID, Line)` BP delegate (`EInoConsoleMessageLevel`). Page logs also mirrored to `LogInoWebUI` at matching verbosity — see them in the UE console without binding the delegate. |
+| **Security defaults** | ✔ | Explicit `setMixedContentMode(NEVER_ALLOW)` + `setAllowFileAccess(false)` + `setAllowContentAccess(false)` (Config: `bAllowMixedContent` / `bAllowFileURLs` / `bAllowContentURIs`, all default false). Defense-in-depth — removes reliance on API-version defaults that changed at 30. |
+| **Renderer priority** | ✔ | `setRendererPriorityPolicy(RENDERER_PRIORITY_BOUND, true)` — Android may reclaim renderer memory when our overlay is hidden. |
+| **Cleartext URL warning** | ✔ | `Navigate` / `Initialize` / `LoadURLWithHeaders` log a loud warning when URL starts `http://` — Android 28+ default NSC blocks cleartext silently with `ERR_CLEARTEXT_NOT_PERMITTED`. |
 | **DevTools (remote)** | ✔ | `setWebContentsDebuggingEnabled` — inspect via `chrome://inspect/#devices` on desktop Chrome |
 | **ExecuteJavaScript** | ✔ | `webView.evaluateJavascript` |
 | **UserAgentOverride** | ✔ | `WebSettings.setUserAgentString` |
 | **bEnableContextMenus** | ✔ | `setOnLongClickListener` + `getHitTestResult` — suppresses the browser long-press menu (links / images / page-text selection) but **keeps** the Paste / Select-All toolbar inside editable `<input>` / `<textarea>` so password/text paste still works |
+| **CapturePreview** | ✔ | `PixelCopy.request(Window, Rect, Bitmap, ...)` — reads the actual SurfaceFlinger output, works on HW-accelerated WebView. (Earlier `WebView.draw(Canvas)` was the deprecated software path and silently missed content.) |
 | `OpenDevTools` (programmatic) | — | Android has no in-process API; remote inspect only (log explains) |
 | `SetMuted` / `bStartMuted` | — | `android.webkit.WebView` has no audio mute; log warns |
 | `bEnableAcceleratorKeys` | N/A | F5/F12/Ctrl+F are desktop-only concepts |
@@ -185,10 +192,16 @@ the webkit `1.8.0` artifact builds against compileSdk 34 (UE 5.7
 default — bump/lower the version in the UPL if the project overrides
 compileSdk).
 
-JS bridge is the same `window.InoWebUI.send/on/off` API as Windows.
-`window.chrome.webview.postMessage` doesn't exist on Android; the
-injected bridge routes through `addJavascriptInterface` instead. User
-JS is identical across platforms.
+JS bridge is the same `window.InoWebUI.send / on / off / once` API as
+Windows. `window.chrome.webview.postMessage` doesn't exist on Android;
+the injected bridge routes through `addWebMessageListener` (modern,
+origin-allowlisted, ~Chrome 82+) or `addJavascriptInterface` (legacy
+fallback) — `setupMessaging` feature-detects and picks the right
+install path. UE→JS push prefers `JavaScriptReplyProxy.postMessage`
+when the page has already posted (giving us a reply channel) and
+falls back to `evaluateJavascript` otherwise. See "Android hardening"
+section below for the full migration story. User JS is identical
+across platforms.
 
 Events from Java to C++ go through six `nativeOn...` JNI exports
 routed via a single `DispatchOnGameThread<Lambda>` helper that:
@@ -205,6 +218,186 @@ registry) serializes correctly.
   1. UPL was registered (look for "InoWebUI: UPL init (Android)" in build log)
   2. Java file got copied — check `Intermediate/Android/APK/src/net/inoland/webui/`
   3. ProGuard isn't stripping the class (our `-keep` rule should prevent this)
+
+---
+
+## Android hardening (Phases 14–18)
+
+A doc-driven hardening pass aligning the Android impl with every Android /
+AndroidX WebView best-practice for `minSdk 28 → targetSdk 35`. None of these
+changes break the public API — old code keeps working. AndroidX webkit dep
+bumped to `1.16.0` (current stable) in the UPL `buildGradleAdditions`.
+
+### JNI hygiene (Phase 14)
+
+- **UTF-16 round-trip**, not Modified UTF-8. `FStringToJString` /
+  `JStringToFString` use `Env->NewString` / `GetStringChars` with `FTCHARToUTF16`
+  / `FUTF16ToTCHAR` bridging. The old `NewStringUTF` / `GetStringUTFChars`
+  pair used Java's Modified UTF-8, which corrupts U+0000 and any
+  supplementary-plane character (≥ U+10000 — every emoji). Replace all
+  `NewStringUTF(TCHAR_TO_UTF8(*X))` patterns with `FStringToJString(Env, X)`
+  when adding new JNI call sites.
+- **`ExceptionCheck` + `ExceptionClear`** after `FindJavaClass` and after the
+  block of `GetStaticMethodID` calls in `InoWebUIJNI::Init`. A failed lookup
+  leaves the exception sticky on the JNIEnv; the next throwing JNI call
+  aborts the VM under CheckJNI.
+- **`java.lang.String` cached as a global ref** (`InoWebUIJNI::StringClass`),
+  not re-`FindClass`-ed per call. Drops a per-call leak risk and removes the
+  missing-`ExceptionCheck` path.
+
+### `PixelCopy` for screenshots (Phase 14)
+
+`CapturePreview` uses `PixelCopy.request(activity.getWindow(), srcRect, bmp,
+listener, copyHandler)` on a dedicated `HandlerThread`. The old
+`WebView.draw(Canvas)` path was Chromium's deprecated software-draw — it
+silently dropped HW-accelerated WebView content (blank or partial PNGs) and
+didn't handle `<video>`, WebGL, or accelerated CSS. PixelCopy reads the final
+SurfaceFlinger composite, so the result matches what's on screen. Available
+since API 24; minSdk 28 satisfies the Rect overload at API 26+.
+
+### Renderer failure recovery (Phases 15 + 16)
+
+Two failure modes, one recovery path. The plugin handles both automatically;
+user code only has to bind `OnProcessFailed` if it wants observability.
+
+| State | Detected via | Defaults |
+|---|---|---|
+| **Renderer crashed / OS-killed** | `WebViewClient.onRenderProcessGone` (API 26+) | Java does doc-mandated cleanup (detach + `destroy()` + drop from `sWebViews` / `sConfigs`). C++ fires `OnProcessFailed` BP delegate, then auto-recovers if `bAutoRecoverOnProcessFailed` (default true). |
+| **Renderer hung** (~5s no event-loop response) | `WebViewCompat.setWebViewRenderProcessClient.onRenderProcessUnresponsive` | Fires `OnRenderProcessUnresponsive`. If `Config.UnresponsiveTimeoutMs > 0` (default 10000), schedules `WebViewRenderProcess.terminate()` after that delay — which triggers the crashed-renderer path above. |
+| **Renderer unstuck itself** | `onRenderProcessResponsive` | Pending terminate is cancelled via `view.removeCallbacks`. `OnRenderProcessResponsive` BP delegate fires. |
+
+**Auto-recover semantics** (`UInoWebView::RecreateImpl`):
+
+1. Snapshot `Impl->GetURL()` BEFORE `Shutdown`. This is what we reload to —
+   not `SavedConfig.InitialURL` — so a user deep into an SPA hash route
+   comes back to that route, not the home page.
+2. `Impl->Shutdown()` → reset `Impl` to nullptr.
+3. `Impl = CreateInoWebViewImpl()` — fresh native impl with a NEW
+   `InstanceId` (the C++ counter increments). Java's `sWebViews` for the old
+   ID was already cleared in `onRenderProcessGone`.
+4. `WireImplCallbacks()` re-binds every `IInoWebViewImpl` callback slot on
+   the fresh impl. Extracted from `Init` precisely for this reuse.
+5. `Impl->Initialize(SavedParentNativeHandle, ConfigCopyWithSnapshottedURL)`.
+6. Re-assert runtime state that diverged from config defaults: visibility,
+   transparency, manual bounds.
+7. `RefreshCoveringState()` re-engages the subsystem's auto engine-idle.
+
+**State preservation across recreate** (lives in the WebView data dir, not
+the renderer process — survives automatically):
+
+- Cookies, localStorage, sessionStorage, IndexedDB, Service Worker caches.
+- All C++ / BP delegate bindings on the persistent `UInoWebView` UObject.
+- Bounds / visibility / opacity / manual-bounds state (re-asserted above).
+
+**Lost** (same as a normal F5 reload — page must handle):
+
+- In-page JS variables, live WebSocket / EventSource connections, scroll
+  position, history past the snapshotted URL.
+
+**Recovery budget**: sliding window of 3 attempts per 60 seconds. When
+exceeded, the WebView is left dead and a clear error is logged. Prevents an
+infinite recreate loop on a page that consistently crashes the renderer
+(broken WebGL shader, OOM-on-load, etc.).
+
+**User-destroyed-during-handler guard**: if the BP `OnProcessFailed` handler
+calls `DestroyWebView`, our `Impl` is `Reset` to null. `HandleProcessFailed`
+checks `Impl.IsValid()` after the Broadcast and bails before scheduling the
+recreate. The deferred `AsyncTask` also re-checks `bAwaitingRecreate` (which
+`ShutdownImpl` clears) so a recreate scheduled moments before destroy can't
+materialize a phantom WebView.
+
+**Multi-WebView warning**: Android shares renderer processes across
+WebViews by default. `WebViewRenderProcess.terminate()` for one hung
+WebView kills the whole process — every co-resident WebView also fires
+`onRenderProcessGone` and auto-recovers (brief visible reload). Logged
+when `sWebViews.size() > 1` at terminate time so the dev understands the
+collateral.
+
+### JS bridge: `addWebMessageListener` (Phase 17)
+
+`setupMessaging` chooses bridge install path by feature-detection:
+
+1. **`WebViewCompat.addWebMessageListener`** (modern, ~Chrome 82+) — gated
+   by `WebViewFeature.WEB_MESSAGE_LISTENER`. Injects a `_InoWebUIHost` with
+   `.postMessage` + `.onmessage`. **Origin-allowlisted**: `{"https://<vhost>"}`
+   when a virtual host is set, `{"*"}` otherwise. Listener runs on the UI
+   thread (vs. JavaBridge background thread). Stores
+   `JavaScriptReplyProxy` per post for the UE→JS direction.
+2. **`addJavascriptInterface`** (legacy) — installed only when the modern
+   feature isn't supported. Injects `_InoWebUIHost.receive`. No origin
+   check, callback runs on `JavaBridge` thread.
+
+**UE → JS push**, in fall-through order:
+
+1. `JavaScriptReplyProxy.postMessage(json)` — when the page has already
+   posted at least once (we captured a reply channel). No JS-engine
+   round-trip, no string-interpolation risk, supports binary `ArrayBuffer`
+   if we ever extend the wire format.
+2. `evaluateJavascript("window._InoWebUIDispatch(<jsLiteral>)")` — legacy
+   fallback. Used pre-handshake (before JS posts) and on the
+   addJavascriptInterface path. `jsStringLiteral` helper handles U+2028 /
+   U+2029 escaping.
+
+**`bridge.js`** detects both shapes on `window._InoWebUIHost` (`.postMessage`
+vs `.receive`) and mounts the matching transport. Bumped to v1.2. Page
+authors don't change anything — the `window.InoWebUI.send / on / off / once`
+API is identical regardless of which native path was used.
+
+**Security model**: in production with a virtual host configured, only the
+page served from `https://<vhost>` sees `_InoWebUIHost`. Third-party
+iframes, redirects, ads — none of them can call the bridge. With the
+legacy path the bridge was exposed to every frame with no origin check.
+
+### Console message capture (Phase 18)
+
+`WebChromeClient.onConsoleMessage` is overridden in `InoWebChromeClient`.
+Maps `ConsoleMessage.MessageLevel` ordinal → `EInoConsoleMessageLevel`
+(Tip=0, Log=1, Warning=2, Error=3, Debug=4 — matches Android's enum
+ordering so the JNI bridge passes the level through as a plain `jint`).
+
+Fires the `OnConsoleMessage(Level, Message, SourceID, Line)` BP delegate.
+Also mirrored to `LogInoWebUI` at matching verbosity (`Error` → UE Error,
+`Warning` → Warning, `Log` / `Tip` → Log, `Debug` → Verbose) so developers
+see page logs in their UE console without binding the delegate. Returning
+`false` from `onConsoleMessage` keeps WebView's own logcat mirror intact
+for `adb logcat | grep chromium` workflows.
+
+Android-only today. Windows / iOS impls don't surface console messages
+(WebView2 has no equivalent event; WKWebView routes only to Safari Web
+Inspector).
+
+### Explicit security defaults (Phase 18)
+
+Three new `FInoWebViewConfig` bool fields, all default false:
+
+| Field | Setting | Why explicit |
+|---|---|---|
+| `bAllowMixedContent` | `WebSettings.setMixedContentMode(NEVER_ALLOW / ALWAYS_ALLOW)` | API 21+ default is NEVER_ALLOW; setting explicit removes reliance on future framework default changes. Turn on only for dev flows mixing schemes. |
+| `bAllowFileURLs` | `setAllowFileAccess(bool)` | Default changed from `true` → `false` at API 30. Now consistent across our minSdk 28..targetSdk 35 range. Game UI served from a vhost never needs `file://`. |
+| `bAllowContentURIs` | `setAllowContentAccess(bool)` | Same defense-in-depth motivation. Game UI doesn't need `content://` cross-app file sharing. |
+
+Wired through a Java `configureSecurity(id, mixed, file, content)` static
+method, called from C++ Initialize right after `configureDialogs`.
+
+### Renderer priority (Phase 14)
+
+`wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, true)` at
+WebView creation. Framework default is `IMPORTANT` (pinned at higher than
+host activity) — appropriate for a primary-content browser, not a game-UI
+overlay. `BOUND` + `waivedWhenNotVisible=true` lets Android reclaim
+renderer memory the moment our overlay is hidden, and re-bound on next
+show. If Android terminates the waived renderer under memory pressure,
+`onRenderProcessGone` fires → auto-recover takes over.
+
+### Cleartext URL warning (Phase 14)
+
+`WarnIfCleartextHttpURL(URL, CallSite)` runs at `Navigate`, `Initialize`
+(for `InitialURL`), and `LoadURLWithHeaders`. Logs a loud warning when the
+URL starts `http://` (case-insensitive). On API 28+ the default
+`NetworkSecurityConfig` blocks cleartext silently with
+`ERR_CLEARTEXT_NOT_PERMITTED` — devs spelunking through logcat for the
+cause is a recurring trap. The warning points them at
+`usesCleartextTraffic="true"` or a per-host `network_security_config`.
 
 ---
 
@@ -773,6 +966,29 @@ tuples. No compression inside the asset itself.
    on `bDestroyed` is usually enough.
 3. Add thin wrapper on `UInoWebView` as `UFUNCTION(BlueprintCallable, ...)`.
 
+### A new event / BP delegate (e.g., `OnConsoleMessage`)
+1. Add a `TFunction<void(...)>` callback slot to `IInoWebViewImpl` — the
+   plain `OnXxxCallback` shape (NOT pure virtual). The impl populates it
+   from the native event source.
+2. Add a `DECLARE_DYNAMIC_MULTICAST_DELEGATE[_NParams]` typedef in
+   `InoWebView.h` and a `UPROPERTY(BlueprintAssignable)` member.
+3. **Wire it in `UInoWebView::WireImplCallbacks`** — NOT inline in `Init`.
+   The wiring is extracted into that helper precisely so the auto-recover
+   path (`RecreateImpl`) can re-bind callbacks on the fresh impl without
+   duplicating the wiring code. Forgetting this means the new event fires
+   correctly on the original WebView but stops firing after a renderer
+   process recovery.
+4. Per platform:
+   - **Windows**: capture the event in `OnControllerReady` (or wherever the
+     event source lives), marshal to the game thread if needed, call the
+     stored TFunction.
+   - **Android**: add a new `nativeOnXxx` JNI export that uses
+     `DispatchOnGameThread` + the registry lock, then a corresponding
+     Java-side hook (typically inside `InoWebChromeClient` or
+     `InoWebViewClient`).
+   - **iOS**: same pattern via the Obj-C++ delegate methods, marshaling
+     back to game thread with `AsyncTask`.
+
 ### A new bit of injected JS
 1. Add (or edit) a file under `Source/InoWebUI/JS/`.
 2. Run `Plugins/InoWebUI/Scripts/GenerateJSConstants.ps1`.
@@ -806,7 +1022,12 @@ directly — those are generated and will be overwritten.
 | 11 | Bridge hardening — `once`, iteration safety, `Object.create(null)`, U+2028 fix | ✔ done |
 | 12 | Browser API completeness — back/forward, state getters, capture, headers, sub-region bounds | ✔ done |
 | 13 | iOS implementation (`WKWebView`) | ✔ done |
-| 14 | macOS implementation (`WKWebView`) | — |
+| 14 | Android docs-review hardening — UTF-16 JNI, `PixelCopy` capture, `ExceptionCheck` discipline, renderer priority, AndroidX webkit 1.16, cleartext URL warning | ✔ done |
+| 15 | Auto-recover on renderer process failure — `onRenderProcessGone` → detach + recreate w/ same Config + reload to snapshotted URL, retry budget (3 per 60s) | ✔ done |
+| 16 | Hung-renderer detection + auto-terminate — `WebViewRenderProcessClient`, `OnRenderProcessUnresponsive` / `Responsive` BP delegates, `UnresponsiveTimeoutMs` config | ✔ done |
+| 17 | JS bridge migration to `addWebMessageListener` — origin allowlist, `JavaScriptReplyProxy` for UE→JS, legacy `addJavascriptInterface` fallback for pre-2020 System WebView | ✔ done |
+| 18 | Console capture + explicit security defaults — `OnConsoleMessage` BP delegate + `LogInoWebUI` mirror, `bAllowMixedContent` / `bAllowFileURLs` / `bAllowContentURIs` defaults off | ✔ done |
+| 19 | macOS implementation (`WKWebView`) | — |
 
 Don't stub future phases — add them when they're needed.
 
