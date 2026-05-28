@@ -32,13 +32,23 @@
       to onPageStarted injection on pre-2020 System WebView, so this
       dependency is required but its API is used conditionally.
 
+      Version 1.16.0 (current stable, May 2026) requires min SDK 24 — well
+      below our project's min SDK 28. Brings @UiThread / @AnyThread lint
+      annotations, async startup (`WebViewCompat.startUpWebView`), navigation
+      listener APIs, per-Profile cookie/storage isolation (`MULTI_PROFILE`),
+      ArrayBuffer support over postMessage (`WEB_MESSAGE_ARRAY_BUFFER`),
+      and the recommended `WebMessageListener` API as a hardened replacement
+      for `addJavascriptInterface`. Drop-in upgrade — the methods we use
+      (`addDocumentStartJavaScript`, the `DOCUMENT_START_SCRIPT` feature
+      check) are source-compatible.
+
       Requires AndroidX (UE 5.x enables android.useAndroidX by default).
-      webkit 1.8.0 builds against compileSdk 34 (UE 5.7's default).
+      Builds against compileSdk 34+; UE 5.7's default is 34.
     -->
     <buildGradleAdditions>
         <insert>
 dependencies {
-    implementation "androidx.webkit:webkit:1.8.0"
+    implementation "androidx.webkit:webkit:1.16.0"
 }
         </insert>
     </buildGradleAdditions>

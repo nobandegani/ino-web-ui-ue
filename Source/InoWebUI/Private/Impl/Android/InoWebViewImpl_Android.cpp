@@ -87,6 +87,12 @@ namespace InoWebUIJNI
         jclass Local = FAndroidApplication::FindJavaClass("net/inoland/webui/InoWebViewAndroid");
         if (!Local)
         {
+            // A failed FindJavaClass leaves a ClassNotFoundException pending on
+            // the JNIEnv. The next JNI call that checks pending exceptions
+            // (CheckJNI in debug, or any throwing JNI fn) aborts the VM. Clear
+            // it before we bail so the caller can recover (e.g. log and skip
+            // WebView features instead of crashing the whole process).
+            if (Env->ExceptionCheck()) { Env->ExceptionDescribe(); Env->ExceptionClear(); }
             UE_LOG(LogInoWebUI, Error,
                 TEXT("InoWebViewAndroid Java class not found — check UPL inclusion "
                      "and ProGuard rules."));
@@ -128,7 +134,19 @@ namespace InoWebUIJNI
         MLoadURLWithHeaders = Env->GetStaticMethodID(JavaClass, "loadURLWithHeaders", "(ILjava/lang/String;[Ljava/lang/String;[Ljava/lang/String;)V");
         MSetBoundsMode      = Env->GetStaticMethodID(JavaClass, "setBoundsMode",      "(IZ)V");
 
-        if (!MCreate || !MDestroy || !MLoadURL || !MSetVisible || !MReload
+        // Any GetStaticMethodID miss above throws NoSuchMethodError, which
+        // sticks to the JNIEnv. CheckJNI (or the next throwing JNI call) will
+        // abort the process if we don't clear it. Check + clear before we
+        // even look at the method-ID nulls — we want to report which method
+        // was missing, not abort the VM.
+        const bool bPendingException = Env->ExceptionCheck() != JNI_FALSE;
+        if (bPendingException)
+        {
+            Env->ExceptionDescribe();  // dumps the exception to logcat
+            Env->ExceptionClear();
+        }
+        if (bPendingException
+            || !MCreate || !MDestroy || !MLoadURL || !MSetVisible || !MReload
             || !MSyncBounds || !MSetVirtualHost || !MSetupMessaging || !MPostMessage
             || !MConfigureLockdown || !MConfigureDialogs
             || !MFocusWebView || !MSetZoomFactor || !MClearAllCookies
@@ -142,12 +160,101 @@ namespace InoWebUIJNI
         {
             UE_LOG(LogInoWebUI, Error,
                 TEXT("One or more InoWebViewAndroid methods not found — Java helper "
-                     "out of sync with C++?"));
+                     "out of sync with C++? (pendingException=%s)"),
+                bPendingException ? TEXT("true") : TEXT("false"));
             return false;
         }
 
         UE_LOG(LogInoWebUI, Log, TEXT("InoWebViewAndroid JNI bindings initialized."));
         return true;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  JNI string conversion helpers (UTF-16 round-trip)
+//
+//  Why NOT NewStringUTF / GetStringUTFChars?
+//
+//    Those JNI functions use Java's "Modified UTF-8", a non-standard encoding
+//    that differs from standard UTF-8 for U+0000 (encoded as 0xC0 0x80 to
+//    keep C strings null-terminable) and for supplementary-plane characters
+//    (≥ U+10000, encoded as a 6-byte surrogate-pair sequence instead of the
+//    standard 4-byte sequence).
+//
+//    UE's TCHAR_TO_UTF8 / UTF8_TO_TCHAR macros produce / consume STANDARD
+//    UTF-8. So a JSON payload, URL, page title — anything containing emoji
+//    or characters outside the BMP — gets silently mangled when round-tripped
+//    via the *UTF* JNI calls. Android's CheckJNI also aborts the VM if it
+//    detects invalid Modified UTF-8.
+//
+//    The fix is to skip UTF-8 entirely on the JNI boundary: use the UTF-16
+//    JNI functions (NewString / GetStringChars), which match jchar's native
+//    encoding and have no ambiguity. UE's FUTF16ToTCHAR / FTCHARToUTF16
+//    bridge UTF-16 ↔ TCHAR cleanly on every platform (TCHAR may be UTF-16
+//    on Windows or UTF-32 on Android — the conversion class handles either).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** UE FString → Java jstring via UTF-16. Caller owns the returned local ref. */
+static jstring FStringToJString(JNIEnv* Env, const FString& Str)
+{
+    if (!Env) return nullptr;
+    if (Str.IsEmpty())
+    {
+        // Empty Java string — pass nullptr length 0 so we don't risk a null
+        // deref on the input buffer for empty strings.
+        const jchar Empty = 0;
+        return Env->NewString(&Empty, 0);
+    }
+    FTCHARToUTF16 Conv(*Str, Str.Len());
+    return Env->NewString(
+        reinterpret_cast<const jchar*>(Conv.Get()),
+        static_cast<jsize>(Conv.Length()));
+}
+
+/** Java jstring → UE FString via UTF-16. */
+static FString JStringToFString(JNIEnv* Env, jstring JStr)
+{
+    if (!Env || !JStr) return FString();
+    const jsize Len = Env->GetStringLength(JStr);
+    if (Len <= 0) return FString();
+    const jchar* Chars = Env->GetStringChars(JStr, nullptr);
+    if (!Chars) return FString();
+    FUTF16ToTCHAR Converted(
+        reinterpret_cast<const UTF16CHAR*>(Chars),
+        static_cast<int32>(Len));
+    FString Result = FString::ConstructFromPtrSize(
+        Converted.Get(), Converted.Length());
+    Env->ReleaseStringChars(JStr, Chars);
+    return Result;
+}
+
+/**
+ * Warn the developer when they try to load a cleartext http:// URL.
+ *
+ * Since Android 9 (API 28 — our minSdk), the default NetworkSecurityConfig
+ * blocks cleartext traffic. WebView surfaces the block as a silent navigation
+ * failure with ERR_CLEARTEXT_NOT_PERMITTED in logcat — no error callback to
+ * us, no visible signal in the UE log. The first-time setup confusion this
+ * causes is a recurring footgun; we log a loud warning at the C++ layer so
+ * the developer sees it without spelunking through logcat filters.
+ *
+ * The fix is project-side, not plugin-side: either declare
+ * `android:usesCleartextTraffic="true"` on `<application>` in the manifest
+ * (blunt — affects every URL the app loads) or ship a network_security_config
+ * XML that allows cleartext for the specific hosts you control (per
+ * https://developer.android.com/privacy-and-security/security-config).
+ */
+static void WarnIfCleartextHttpURL(const FString& URL, const TCHAR* CallSite)
+{
+    if (URL.StartsWith(TEXT("http://"), ESearchCase::IgnoreCase))
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("%s: URL '%s' uses cleartext http:// — Android 28+ blocks "
+                 "cleartext by default. This navigation will fail silently "
+                 "with ERR_CLEARTEXT_NOT_PERMITTED unless your app declares "
+                 "usesCleartextTraffic=\"true\" in the Android manifest or "
+                 "ships a network_security_config allowing this host."),
+            CallSite, *URL);
     }
 }
 
@@ -206,8 +313,8 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
             ? FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir() / Config.VirtualHostFolder)
             : FPaths::ConvertRelativePathToFull(Config.VirtualHostFolder);
 
-        jstring JHost   = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.VirtualHostName));
-        jstring JFolder = Env->NewStringUTF(TCHAR_TO_UTF8(*AbsoluteFolder));
+        jstring JHost   = FStringToJString(Env, Config.VirtualHostName);
+        jstring JFolder = FStringToJString(Env, AbsoluteFolder);
         Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetVirtualHost,
             static_cast<jint>(InstanceId), JHost, JFolder);
         Env->DeleteLocalRef(JHost);
@@ -232,7 +339,7 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
             Config.AllowedURIPatterns.Num(), StringCls, nullptr);
         for (int32 i = 0; i < Config.AllowedURIPatterns.Num(); ++i)
         {
-            jstring S = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.AllowedURIPatterns[i]));
+            jstring S = FStringToJString(Env, Config.AllowedURIPatterns[i]);
             Env->SetObjectArrayElement(JPatterns, i, S);
             Env->DeleteLocalRef(S);
         }
@@ -279,7 +386,7 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
 
     if (!Config.View.UserAgentOverride.IsEmpty())
     {
-        jstring JUA = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.View.UserAgentOverride));
+        jstring JUA = FStringToJString(Env, Config.View.UserAgentOverride);
         Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetUserAgent,
             static_cast<jint>(InstanceId), JUA);
         Env->DeleteLocalRef(JUA);
@@ -301,13 +408,15 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
     // InitialHeaders are configured; otherwise plain loadURL.
     if (!Config.InitialURL.IsEmpty())
     {
+        WarnIfCleartextHttpURL(Config.InitialURL, TEXT("Initialize/InitialURL"));
+
         if (Config.InitialHeaders.Num() > 0)
         {
             LoadURLWithHeaders(Config.InitialURL, Config.InitialHeaders);
         }
         else
         {
-            jstring JUrl = Env->NewStringUTF(TCHAR_TO_UTF8(*Config.InitialURL));
+            jstring JUrl = FStringToJString(Env, Config.InitialURL);
             Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MLoadURL,
                 static_cast<jint>(InstanceId), JUrl);
             Env->DeleteLocalRef(JUrl);
@@ -351,7 +460,9 @@ void FInoWebViewImpl_Android::Navigate(const FString& URL)
     JNIEnv* Env = FAndroidApplication::GetJavaEnv();
     if (!Env || !InoWebUIJNI::JavaClass) return;
 
-    jstring JUrl = Env->NewStringUTF(TCHAR_TO_UTF8(*URL));
+    WarnIfCleartextHttpURL(URL, TEXT("Navigate"));
+
+    jstring JUrl = FStringToJString(Env, URL);
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MLoadURL,
         static_cast<jint>(InstanceId), JUrl);
     Env->DeleteLocalRef(JUrl);
@@ -443,7 +554,7 @@ void FInoWebViewImpl_Android::PostMessageJson(const FString& Json)
     JNIEnv* Env = FAndroidApplication::GetJavaEnv();
     if (!Env || !InoWebUIJNI::JavaClass) return;
 
-    jstring JJson = Env->NewStringUTF(TCHAR_TO_UTF8(*Json));
+    jstring JJson = FStringToJString(Env, Json);
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MPostMessage,
         static_cast<jint>(InstanceId), JJson);
     Env->DeleteLocalRef(JJson);
@@ -475,14 +586,10 @@ static void DispatchOnGameThread(int32 Id, FLambda&& Action)
         });
 }
 
-static FString JStringToFString(JNIEnv* Env, jstring JStr)
-{
-    if (!JStr) return FString();
-    const char* Chars = Env->GetStringUTFChars(JStr, nullptr);
-    FString Result = UTF8_TO_TCHAR(Chars);
-    Env->ReleaseStringUTFChars(JStr, Chars);
-    return Result;
-}
+// JStringToFString / FStringToJString helpers are defined near the top of this
+// file, right after InoWebUIJNI::Init(). They use the UTF-16 JNI functions so
+// supplementary characters (emoji, ≥ U+10000) round-trip safely — see the
+// big comment block there for why the UTF-8 JNI functions can't be used.
 
 extern "C" JNIEXPORT void JNICALL
 Java_net_inoland_webui_InoWebViewAndroid_nativeOnMessageReceived(
@@ -637,7 +744,7 @@ void FInoWebViewImpl_Android::ExecuteJavaScript(const FString& Code)
     JNIEnv* Env = FAndroidApplication::GetJavaEnv();
     if (!Env || !InoWebUIJNI::JavaClass) return;
 
-    jstring JCode = Env->NewStringUTF(TCHAR_TO_UTF8(*Code));
+    jstring JCode = FStringToJString(Env, Code);
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MExecuteJavaScript,
         static_cast<jint>(InstanceId), JCode);
     Env->DeleteLocalRef(JCode);
@@ -751,8 +858,8 @@ void FInoWebViewImpl_Android::LoadHTMLString(const FString& HTML, const FString&
     JNIEnv* Env = FAndroidApplication::GetJavaEnv();
     if (!Env || !InoWebUIJNI::JavaClass) return;
 
-    jstring JHtml = Env->NewStringUTF(TCHAR_TO_UTF8(*HTML));
-    jstring JBase = BaseURI.IsEmpty() ? nullptr : Env->NewStringUTF(TCHAR_TO_UTF8(*BaseURI));
+    jstring JHtml = FStringToJString(Env, HTML);
+    jstring JBase = BaseURI.IsEmpty() ? nullptr : FStringToJString(Env, BaseURI);
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MLoadHTMLString,
         static_cast<jint>(InstanceId), JHtml, JBase);
     Env->DeleteLocalRef(JHtml);
@@ -768,8 +875,8 @@ void FInoWebViewImpl_Android::SetCookie(const FString& URL, const FString& Cooki
     JNIEnv* Env = FAndroidApplication::GetJavaEnv();
     if (!Env || !InoWebUIJNI::JavaClass) return;
 
-    jstring JUrl    = Env->NewStringUTF(TCHAR_TO_UTF8(*URL));
-    jstring JCookie = Env->NewStringUTF(TCHAR_TO_UTF8(*Cookie));
+    jstring JUrl    = FStringToJString(Env, URL);
+    jstring JCookie = FStringToJString(Env, Cookie);
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetCookie,
         static_cast<jint>(InstanceId), JUrl, JCookie);
     Env->DeleteLocalRef(JUrl);
@@ -794,7 +901,7 @@ bool FInoWebViewImpl_Android::CapturePreview(EInoImageFormat Format, const FStri
     JNIEnv* Env = FAndroidApplication::GetJavaEnv();
     if (!Env || !InoWebUIJNI::JavaClass) return false;
 
-    jstring JPath = Env->NewStringUTF(TCHAR_TO_UTF8(*OutFilePath));
+    jstring JPath = FStringToJString(Env, OutFilePath);
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MCapturePreview,
         static_cast<jint>(InstanceId),
         static_cast<jint>(Format == EInoImageFormat::JPEG ? 1 : 0),
@@ -822,6 +929,8 @@ void FInoWebViewImpl_Android::LoadURLWithHeaders(const FString& URL,
     JNIEnv* Env = FAndroidApplication::GetJavaEnv();
     if (!Env || !InoWebUIJNI::JavaClass) return;
 
+    WarnIfCleartextHttpURL(URL, TEXT("LoadURLWithHeaders"));
+
     jclass StringCls = Env->FindClass("java/lang/String");
 
     // Build parallel arrays of header names and values (simpler than HashMap
@@ -833,8 +942,8 @@ void FInoWebViewImpl_Android::LoadURLWithHeaders(const FString& URL,
     int32 i = 0;
     for (const TPair<FString, FString>& KV : Headers)
     {
-        jstring JN = Env->NewStringUTF(TCHAR_TO_UTF8(*KV.Key));
-        jstring JV = Env->NewStringUTF(TCHAR_TO_UTF8(*KV.Value));
+        jstring JN = FStringToJString(Env, KV.Key);
+        jstring JV = FStringToJString(Env, KV.Value);
         Env->SetObjectArrayElement(JNames,  i, JN);
         Env->SetObjectArrayElement(JValues, i, JV);
         Env->DeleteLocalRef(JN);
@@ -842,7 +951,7 @@ void FInoWebViewImpl_Android::LoadURLWithHeaders(const FString& URL,
         ++i;
     }
 
-    jstring JUrl = Env->NewStringUTF(TCHAR_TO_UTF8(*URL));
+    jstring JUrl = FStringToJString(Env, URL);
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MLoadURLWithHeaders,
         static_cast<jint>(InstanceId), JUrl, JNames, JValues);
     Env->DeleteLocalRef(JUrl);

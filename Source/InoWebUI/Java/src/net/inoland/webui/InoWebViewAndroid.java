@@ -14,11 +14,14 @@ package net.inoland.webui;
 import android.app.Activity;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.Rect;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.Message;
 import android.util.SparseArray;
+import android.view.PixelCopy;
 import android.view.View;
 import android.view.ViewGroup;
-import android.os.Message;
-import android.graphics.Canvas;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.RenderProcessGoneDetail;
@@ -412,6 +415,18 @@ public class InoWebViewAndroid
 
                 WebView wv = new WebView(activity);
                 if (transparent) wv.setBackgroundColor(Color.TRANSPARENT);
+
+                // Renderer priority — pinning the renderer at IMPORTANT (the
+                // framework default) is appropriate for a primary-content
+                // browser, but we're a game-UI overlay. Drop to BOUND so the
+                // renderer runs at the host Activity's priority, and pass
+                // waivedWhenNotVisible=true so Android can fully reclaim
+                // renderer memory the moment our overlay is hidden (chat
+                // panel dismissed, menu closed, app backgrounded). Re-bound
+                // automatically next time the WebView is shown.
+                //
+                // No-op on API < 26; our minSdk is 28 so always applies.
+                wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, true);
 
                 wv.getSettings().setJavaScriptEnabled(true);
                 wv.getSettings().setDomStorageEnabled(true);
@@ -1213,7 +1228,25 @@ public class InoWebViewAndroid
     /**
      * Render the WebView into a Bitmap and write to outFilePath. Format = 0
      * for PNG, 1 for JPEG (matches EInoImageFormat). Async — fires
-     * nativeOnCapturePreviewComplete with success bool when done.
+     * nativeOnCapturePreviewComplete with the success bool when done.
+     *
+     * Why PixelCopy instead of WebView.draw(Canvas)?
+     *
+     *   WebView has been hardware-accelerated by default since API 19. Calling
+     *   `wv.draw(softwareCanvas)` triggers Chromium's deprecated software-draw
+     *   path, which silently does NOT capture the actual rendered content on
+     *   modern devices — you get a blank or partial PNG instead of a
+     *   screenshot. The software-draw path is also documented as not
+     *   supporting <video>, WebGL, or accelerated CSS effects:
+     *     https://chromium.googlesource.com/chromium/src/+/HEAD/android_webview/docs/software_draw_deprecated.md
+     *
+     *   PixelCopy.request(Window, Rect, Bitmap, ...) reads pixels from the
+     *   final SurfaceFlinger output of the host window, so the result
+     *   matches what the user actually sees — HW-accelerated WebView
+     *   content, video frames, and everything else.
+     *
+     *   Available since API 24 with the Rect overload requiring API 26;
+     *   our minSdk is 28 so both are always available.
      */
     public static void capturePreview(final int id, final int format, final String outFilePath)
     {
@@ -1224,34 +1257,102 @@ public class InoWebViewAndroid
         }
         activity.runOnUiThread(new Runnable() {
             @Override public void run() {
-                boolean ok = false;
-                try {
-                    WebView wv = sWebViews.get(id);
-                    if (wv == null) {
-                        nativeOnCapturePreviewComplete(id, false, outFilePath);
-                        return;
-                    }
-                    int w = Math.max(1, wv.getWidth());
-                    int h = Math.max(1, wv.getHeight());
-                    Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-                    Canvas canvas = new Canvas(bmp);
-                    wv.draw(canvas);
-
-                    Bitmap.CompressFormat cf = (format == 1)
-                            ? Bitmap.CompressFormat.JPEG
-                            : Bitmap.CompressFormat.PNG;
-                    FileOutputStream fos = new FileOutputStream(outFilePath);
-                    try {
-                        ok = bmp.compress(cf, 90, fos);
-                    } finally {
-                        try { fos.close(); } catch (Exception ignore) {}
-                    }
-                    bmp.recycle();
-                } catch (Exception e) {
-                    Log.error("capturePreview(" + id + ") failed: " + e.getMessage());
-                    ok = false;
+                final WebView wv = sWebViews.get(id);
+                if (wv == null) {
+                    nativeOnCapturePreviewComplete(id, false, outFilePath);
+                    return;
                 }
-                nativeOnCapturePreviewComplete(id, ok, outFilePath);
+                final int w = wv.getWidth();
+                final int h = wv.getHeight();
+                if (w <= 0 || h <= 0) {
+                    Log.warn("capturePreview(" + id + "): WebView has zero size; "
+                            + "did you capture before the first layout?");
+                    nativeOnCapturePreviewComplete(id, false, outFilePath);
+                    return;
+                }
+
+                // PixelCopy sources from the host Window's surface; we need
+                // the WebView's bounds relative to that window so we crop to
+                // just our overlay rather than capturing the whole screen.
+                int[] loc = new int[2];
+                wv.getLocationInWindow(loc);
+                final Rect srcRect = new Rect(loc[0], loc[1], loc[0] + w, loc[1] + h);
+
+                // OOM-guard the bitmap allocation: a 1440×3120 ARGB_8888 is
+                // ~18 MB; a tablet at 2560×1600 is ~16 MB; both are fine, but
+                // pathological resolutions can fail. Surface the failure
+                // through the callback instead of letting it crash the app.
+                final Bitmap bmp;
+                try {
+                    bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                } catch (OutOfMemoryError oom) {
+                    Log.error("capturePreview(" + id + "): OutOfMemoryError "
+                            + "allocating " + w + "x" + h + " bitmap (~"
+                            + (w * h * 4L / (1024 * 1024)) + " MB)");
+                    nativeOnCapturePreviewComplete(id, false, outFilePath);
+                    return;
+                }
+
+                // PixelCopy delivers its callback onto the supplied Handler.
+                // Use a dedicated background thread so the file I/O (and the
+                // JPEG/PNG compress) doesn't block the main thread on big
+                // bitmaps. The thread quits after one capture; we don't reuse
+                // it because the API is one-shot per request.
+                final HandlerThread copyThread = new HandlerThread("InoWebUI-Capture");
+                copyThread.start();
+                final Handler copyHandler = new Handler(copyThread.getLooper());
+
+                try {
+                    PixelCopy.request(
+                        activity.getWindow(), srcRect, bmp,
+                        new PixelCopy.OnPixelCopyFinishedListener() {
+                            @Override public void onPixelCopyFinished(int copyResult) {
+                                boolean ok = false;
+                                try {
+                                    if (copyResult != PixelCopy.SUCCESS) {
+                                        Log.warn("capturePreview(" + id
+                                                + "): PixelCopy failed result=" + copyResult);
+                                    } else {
+                                        Bitmap.CompressFormat cf = (format == 1)
+                                                ? Bitmap.CompressFormat.JPEG
+                                                : Bitmap.CompressFormat.PNG;
+                                        FileOutputStream fos = new FileOutputStream(outFilePath);
+                                        try {
+                                            ok = bmp.compress(cf, 90, fos);
+                                            if (!ok) {
+                                                Log.warn("capturePreview(" + id
+                                                        + "): Bitmap.compress returned false "
+                                                        + "(path=" + outFilePath + ")");
+                                            }
+                                        } finally {
+                                            try { fos.close(); } catch (Exception ignore) {}
+                                        }
+                                    }
+                                } catch (Exception e) {
+                                    // Most commonly hits scoped-storage paths on
+                                    // API 29+: writing to /sdcard outside the
+                                    // app-private dirs fails with FileNotFound.
+                                    Log.error("capturePreview(" + id + ") write failed: "
+                                            + e.getMessage() + " (path=" + outFilePath + "). "
+                                            + "If the path is outside the app's private "
+                                            + "directory, scoped storage may be blocking it.");
+                                } finally {
+                                    bmp.recycle();
+                                    copyThread.quitSafely();
+                                    nativeOnCapturePreviewComplete(id, ok, outFilePath);
+                                }
+                            }
+                        },
+                        copyHandler);
+                } catch (IllegalArgumentException iae) {
+                    // PixelCopy throws synchronously if the source surface
+                    // isn't available yet, or the rect is invalid.
+                    Log.error("capturePreview(" + id + "): PixelCopy.request threw "
+                            + iae.getClass().getSimpleName() + ": " + iae.getMessage());
+                    bmp.recycle();
+                    copyThread.quitSafely();
+                    nativeOnCapturePreviewComplete(id, false, outFilePath);
+                }
             }
         });
     }
