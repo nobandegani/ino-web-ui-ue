@@ -594,17 +594,45 @@ public class InoWebViewAndroid
                     cur.pendingProcess = null;
 
                     if (p == null) return;
+
+                    // Multi-WebView warning: Android shares renderer
+                    // processes between WebViews by default (memory
+                    // efficiency). terminate() kills the whole process,
+                    // so every other WebView that happens to share it
+                    // also fires onRenderProcessGone — they all
+                    // auto-recover with a brief visible reload. Log so
+                    // the developer understands the collateral.
+                    final int liveCount = sWebViews.size();
+                    if (liveCount > 1) {
+                        Log.warn("auto-terminating renderer for id=" + id
+                                + " will affect " + (liveCount - 1)
+                                + " other WebView(s) sharing the same renderer "
+                                + "process; each will auto-recover (visible "
+                                + "page reload). Android shares renderers by "
+                                + "default — this is normal.");
+                    }
+
                     Log.warn("auto-terminating unresponsive renderer for id=" + id
                             + " after " + ms + "ms — will trigger "
                             + "onRenderProcessGone → C++ auto-recover");
+                    boolean terminated = false;
                     try {
-                        // Boolean return: true if termination was initiated.
-                        // We ignore it — the onRenderProcessGone callback is
-                        // the source of truth for follow-up.
-                        p.terminate();
+                        // Returns true if termination was initiated. false
+                        // means the renderer is already gone (no associated
+                        // process) — in that case onRenderProcessGone will
+                        // NOT fire and the WebView stays hung. Surface to
+                        // C++ via nativeOnProcessFailed so the recover
+                        // state machine still kicks in.
+                        terminated = p.terminate();
                     } catch (Exception e) {
                         Log.error("WebViewRenderProcess.terminate threw "
                                 + e.getClass().getSimpleName() + ": " + e.getMessage());
+                    }
+                    if (!terminated) {
+                        Log.warn("terminate() returned false for id=" + id
+                                + " — synthesizing onProcessFailed so C++ can "
+                                + "still trigger auto-recover");
+                        nativeOnProcessFailed(id, "renderer terminate() returned false");
                     }
                 }
             };

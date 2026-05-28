@@ -478,7 +478,10 @@ struct INOWEBUI_API FInoWebViewConfig
      * WebView when its renderer process dies (out-of-memory kill, renderer
      * crash, etc.). The OnProcessFailed delegate still fires first so you
      * can react (telemetry, "reconnecting" toast), then a fresh native
-     * WebView is initialized with the same Config and the page is reloaded.
+     * WebView is initialized with the same Config and the page is reloaded
+     * to the URL the user was last on (snapshotted from CachedURL just
+     * before the old impl is destroyed — NOT InitialURL, so SPA deep
+     * links survive the recreate).
      *
      * Reliable for typical web UI:
      *   • localStorage / cookies / IndexedDB survive (they live in the

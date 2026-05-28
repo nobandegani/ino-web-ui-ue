@@ -32,6 +32,13 @@ namespace InoWebUIJNI
 {
     static bool      bInitAttempted = false;
     static jclass    JavaClass      = nullptr;    // global ref; freed on module unload
+    static jclass    StringClass    = nullptr;    // global ref to java.lang.String — reused
+                                                  // by every NewObjectArray that builds a
+                                                  // String[] (lockdown patterns, header
+                                                  // names / values). Replaces per-call
+                                                  // FindClass which a) leaks a local ref
+                                                  // on the failure path and b) needs an
+                                                  // ExceptionCheck the prior code skipped.
     static jmethodID MCreate         = nullptr;
     static jmethodID MDestroy        = nullptr;
     static jmethodID MLoadURL        = nullptr;
@@ -102,6 +109,22 @@ namespace InoWebUIJNI
         }
         JavaClass = (jclass)Env->NewGlobalRef(Local);
         Env->DeleteLocalRef(Local);
+
+        // Cache java.lang.String once. Used by every NewObjectArray that
+        // builds a String[]. java.lang.String is always findable; the
+        // ExceptionCheck guard here is defense-in-depth.
+        if (jclass StrLocal = Env->FindClass("java/lang/String"))
+        {
+            StringClass = (jclass)Env->NewGlobalRef(StrLocal);
+            Env->DeleteLocalRef(StrLocal);
+        }
+        else
+        {
+            if (Env->ExceptionCheck()) { Env->ExceptionDescribe(); Env->ExceptionClear(); }
+            UE_LOG(LogInoWebUI, Error,
+                TEXT("Failed to locate java.lang.String — JNI initialization aborted."));
+            return false;
+        }
 
         MCreate         = Env->GetStaticMethodID(JavaClass, "createWebView",   "(IZZ)V");
         MDestroy        = Env->GetStaticMethodID(JavaClass, "destroyWebView",  "(I)V");
@@ -340,9 +363,8 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
     // Step 2c: lockdown — hand the Java client the allowlist so
     // shouldOverrideUrlLoading can cancel non-whitelisted nav.
     {
-        jclass StringCls = Env->FindClass("java/lang/String");
         jobjectArray JPatterns = Env->NewObjectArray(
-            Config.AllowedURIPatterns.Num(), StringCls, nullptr);
+            Config.AllowedURIPatterns.Num(), InoWebUIJNI::StringClass, nullptr);
         for (int32 i = 0; i < Config.AllowedURIPatterns.Num(); ++i)
         {
             jstring S = FStringToJString(Env, Config.AllowedURIPatterns[i]);
@@ -354,7 +376,6 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
             static_cast<jboolean>(Config.bLockToVirtualHost ? JNI_TRUE : JNI_FALSE),
             JPatterns);
         Env->DeleteLocalRef(JPatterns);
-        Env->DeleteLocalRef(StringCls);
     }
 
     // Step 2d: hardening — JS dialog suppression + window.open blocking.
@@ -444,9 +465,14 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
             Env->DeleteLocalRef(JUrl);
         }
 
-        // Seed cached URL so GetURL() is meaningful even before the first
-        // navigation completes.
-        CachedURL = Config.InitialURL;
+        // Seed cached URL + loading state so GetURL() / IsLoading() are
+        // meaningful between Initialize returning and the first
+        // nativeOnNavigationStarting callback. Without this, BP code that
+        // reads IsLoading() in the OnReady handler sees false even though
+        // a page load is in flight (especially relevant for the recreate
+        // path where BP code may re-bind state on OnReady).
+        CachedURL      = Config.InitialURL;
+        bCachedLoading = true;
     }
 
     // Android WebView construction itself runs on the UI thread (the Java
@@ -1006,13 +1032,11 @@ void FInoWebViewImpl_Android::LoadURLWithHeaders(const FString& URL,
 
     WarnIfCleartextHttpURL(URL, TEXT("LoadURLWithHeaders"));
 
-    jclass StringCls = Env->FindClass("java/lang/String");
-
     // Build parallel arrays of header names and values (simpler than HashMap
     // construction across JNI).
     const int32 N = Headers.Num();
-    jobjectArray JNames  = Env->NewObjectArray(N, StringCls, nullptr);
-    jobjectArray JValues = Env->NewObjectArray(N, StringCls, nullptr);
+    jobjectArray JNames  = Env->NewObjectArray(N, InoWebUIJNI::StringClass, nullptr);
+    jobjectArray JValues = Env->NewObjectArray(N, InoWebUIJNI::StringClass, nullptr);
 
     int32 i = 0;
     for (const TPair<FString, FString>& KV : Headers)
@@ -1032,7 +1056,6 @@ void FInoWebViewImpl_Android::LoadURLWithHeaders(const FString& URL,
     Env->DeleteLocalRef(JUrl);
     Env->DeleteLocalRef(JNames);
     Env->DeleteLocalRef(JValues);
-    Env->DeleteLocalRef(StringCls);
 
     bCachedLoading = true;
 }

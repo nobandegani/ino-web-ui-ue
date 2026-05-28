@@ -741,10 +741,20 @@ void UInoWebView::RecreateImpl()
     check(IsInGameThread());
     bAwaitingRecreate = false;
 
+    // Snapshot the page's last-known URL BEFORE we shut down the old impl.
+    // This is what the recreate will reload to — not SavedConfig.InitialURL —
+    // so users who navigated past the entry point (SPA hash routes, an
+    // in-app deep-link, etc.) come back to the page they were ACTUALLY
+    // looking at, not the home page. SavedConfig stays untouched as the
+    // canonical user-supplied config; we only override InitialURL in the
+    // local copy we pass to Initialize.
+    FString LastKnownURL = Impl.IsValid() ? Impl->GetURL() : FString();
+    if (LastKnownURL.IsEmpty()) LastKnownURL = SavedConfig.InitialURL;
+
     UE_LOG(LogInoWebUI, Log,
         TEXT("UInoWebView[%s]: auto-recovering after renderer process failure "
-             "(attempt %d in current 60s window)."),
-        *WebViewName.ToString(), RecentRecoveryAttempts.Num());
+             "(attempt %d in current 60s window) — reloading '%s'."),
+        *WebViewName.ToString(), RecentRecoveryAttempts.Num(), *LastKnownURL);
 
     // Drop the dead impl. Shutdown is idempotent against Java-side cleanup
     // that already happened in onRenderProcessGone — the Java destroyWebView
@@ -770,7 +780,14 @@ void UInoWebView::RecreateImpl()
     // Wire callbacks BEFORE Initialize, same ordering as the original Init.
     WireImplCallbacks();
 
-    const bool bOk = Impl->Initialize(SavedParentNativeHandle, SavedConfig);
+    // Use a config copy that points at the last-known URL, so the new
+    // WebView reloads to where the user was. SavedConfig itself stays
+    // unchanged so a SECOND recreate after the user navigated again still
+    // captures the latest URL fresh from CachedURL.
+    FInoWebViewConfig RecreateConfig = SavedConfig;
+    RecreateConfig.InitialURL = LastKnownURL;
+
+    const bool bOk = Impl->Initialize(SavedParentNativeHandle, RecreateConfig);
     if (!bOk)
     {
         UE_LOG(LogInoWebUI, Error,
@@ -805,9 +822,8 @@ void UInoWebView::RecreateImpl()
     RefreshCoveringState();
 
     UE_LOG(LogInoWebUI, Log,
-        TEXT("UInoWebView[%s]: recreate complete — fresh native WebView in place, "
-             "page reloading to InitialURL '%s'."),
-        *WebViewName.ToString(), *SavedConfig.InitialURL);
+        TEXT("UInoWebView[%s]: recreate complete — fresh native WebView in place."),
+        *WebViewName.ToString());
 }
 
 void UInoWebView::ShutdownImpl()
