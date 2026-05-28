@@ -6,7 +6,8 @@
 // Detects transport at runtime:
 //   • window.chrome.webview                                → Windows (WebView2)
 //   • window.webkit.messageHandlers._InoWebUIHost          → iOS (WKWebView)
-//   • window._InoWebUIHost                                 → Android (addJavascriptInterface)
+//   • window._InoWebUIHost.postMessage                     → Android (addWebMessageListener — modern, ~Chrome 82+)
+//   • window._InoWebUIHost.receive                         → Android (addJavascriptInterface — legacy fallback)
 //
 // Public API exposed to page scripts (identical on every platform):
 //   window.InoWebUI.send(channel, payload)        — fire-and-forget UE→JS post
@@ -40,9 +41,9 @@
                             && window.webkit.messageHandlers._InoWebUIHost) {
     // iOS (WKWebView). Note: _InoWebUIHost on Apple lives under
     // window.webkit.messageHandlers, NOT as a window-level global, so it
-    // never collides with the Android branch below — both can use the same
-    // logical name. Tested order matters anyway: this branch is checked
-    // BEFORE the bare window._InoWebUIHost check.
+    // never collides with the Android branches below — all platforms can
+    // use the same logical name. Tested order matters anyway: this branch
+    // is checked BEFORE the bare window._InoWebUIHost checks.
     transport = {
       send: function(json) {
         window.webkit.messageHandlers._InoWebUIHost.postMessage(json);
@@ -52,7 +53,30 @@
         window._InoWebUIDispatch = function(env) { dispatch(env); };
       }
     };
-  } else if (window._InoWebUIHost) {
+  } else if (window._InoWebUIHost
+              && typeof window._InoWebUIHost.postMessage === 'function') {
+    // Android — addWebMessageListener (modern path). Shape:
+    //   window._InoWebUIHost.postMessage(json)  — JS → app
+    //   window._InoWebUIHost.onmessage = fn     — app → JS (via replyProxy)
+    // Origin-restricted: this object is only present on origins the native
+    // side allowlisted. Page-side API is otherwise identical.
+    transport = {
+      send: function(json) { window._InoWebUIHost.postMessage(json); },
+      install: function(dispatch) {
+        // Prefer the structured-clone reply channel when the host pushes
+        // via JavaScriptReplyProxy.postMessage. The bridge object's
+        // .onmessage receives a MessageEvent whose .data is our envelope.
+        window._InoWebUIHost.onmessage = function(evt) { dispatch(evt.data); };
+        // Keep the evaluateJavascript path live too: pre-handshake (before
+        // JS has posted anything, so the host has no replyProxy yet) the
+        // host falls back to evaluateJavascript("window._InoWebUIDispatch(...)").
+        window._InoWebUIDispatch = function(env) { dispatch(env); };
+      }
+    };
+  } else if (window._InoWebUIHost
+              && typeof window._InoWebUIHost.receive === 'function') {
+    // Android — addJavascriptInterface (legacy fallback for System WebView
+    // versions that don't support addWebMessageListener, pre-2020).
     transport = {
       send: function(json) { window._InoWebUIHost.receive(json); },
       install: function(dispatch) {
@@ -61,12 +85,17 @@
       }
     };
   } else {
-    // No host bridge — running in a plain browser. Log once so dev tooling
-    // makes the situation obvious instead of silently dropping all sends.
+    // No host bridge — running in a plain browser, or on an origin the
+    // native side's addWebMessageListener allowlist doesn't permit (in
+    // which case _InoWebUIHost is intentionally absent for security).
+    // Log once so dev tooling makes the situation obvious instead of
+    // silently dropping all sends.
     if (typeof console !== 'undefined' && console.warn) {
       console.warn('InoWebUI: no host bridge detected '
-                 + '(window.chrome.webview / window.webkit.messageHandlers._InoWebUIHost / '
-                 + 'window._InoWebUIHost all absent). '
+                 + '(checked window.chrome.webview, '
+                 + 'window.webkit.messageHandlers._InoWebUIHost, '
+                 + 'window._InoWebUIHost.postMessage, '
+                 + 'window._InoWebUIHost.receive — all absent). '
                  + 'send/on are no-ops in this environment.');
     }
     return;
@@ -77,7 +106,7 @@
   }
 
   window.InoWebUI = {
-    version: '1.1',
+    version: '1.2',
 
     send: function(channel, payload) {
       if (!validChannel(channel)) {

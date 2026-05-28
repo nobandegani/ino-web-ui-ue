@@ -37,10 +37,14 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 
+import androidx.webkit.JavaScriptReplyProxy;
+import androidx.webkit.WebMessageCompat;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 import androidx.webkit.WebViewRenderProcess;
 import androidx.webkit.WebViewRenderProcessClient;
+
+import android.net.Uri;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -112,6 +116,15 @@ public class InoWebViewAndroid
         int unresponsiveTimeoutMs;
         Runnable pendingTerminateRunnable;
         WebViewRenderProcess pendingProcess;
+
+        // JS bridge transport state. usingWebMessageListener=true means
+        // setupMessaging installed the modern AndroidX bridge with the
+        // origin allowlist; lastReplyProxy is the most recent reply channel
+        // captured from the page (updated on every onPostMessage) — used by
+        // postMessageJson for the UE→JS direction, falling back to
+        // evaluateJavascript when null (pre-handshake or legacy path).
+        boolean usingWebMessageListener;
+        JavaScriptReplyProxy lastReplyProxy;
     }
 
     /** Kind values match the C++ EInoScriptDialogKind enum in InoWebUITypes.h.
@@ -415,9 +428,12 @@ public class InoWebViewAndroid
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    //  JS-side bridge object — exposed via addJavascriptInterface as
-    //  window._InoWebUIHost. The injected BRIDGE_JS calls .receive() on
-    //  it, which hops across JNI into C++.
+    //  JS-side bridge object — LEGACY path, exposed via
+    //  addJavascriptInterface as window._InoWebUIHost. The injected
+    //  BRIDGE_JS calls .receive() on it, which hops across JNI into C++.
+    //  Used only when WEB_MESSAGE_LISTENER is unsupported on the device
+    //  (pre-2020 System WebView). Newer devices use InoWebMessageListener
+    //  below.
     // ─────────────────────────────────────────────────────────────────────
     private static class InoWebBridge
     {
@@ -429,6 +445,85 @@ public class InoWebViewAndroid
         {
             nativeOnMessageReceived(id, envelopeJson);
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  JS-side bridge — MODERN path. WebViewCompat.addWebMessageListener
+    //  injects a window._InoWebUIHost with .postMessage / .onmessage that
+    //  ONLY exists for frames whose origin matches the allowedOriginRules
+    //  passed at registration. Compared to addJavascriptInterface this
+    //  gives us:
+    //
+    //    • Origin allowlist — locked-down iframes from other origins
+    //      cannot see the bridge at all (vs. addJavascriptInterface which
+    //      exposes the bridge to every frame).
+    //    • UI-thread callback (vs. JavaBridge background thread) — our
+    //      existing C++ side already dispatches to the game thread, so
+    //      no marshaling change is needed.
+    //    • JavaScriptReplyProxy — UE→JS push without evaluateJavascript
+    //      string interpolation (used by postMessageJson below).
+    //
+    //  Requires WebViewFeature.WEB_MESSAGE_LISTENER (WebView ~82+, i.e.
+    //  effectively every device 2020+). setupMessaging feature-checks and
+    //  falls back to InoWebBridge above on older System WebView.
+    // ─────────────────────────────────────────────────────────────────────
+    private static class InoWebMessageListener implements WebViewCompat.WebMessageListener
+    {
+        private final int id;
+        InoWebMessageListener(int id) { this.id = id; }
+
+        @Override
+        public void onPostMessage(WebView view, WebMessageCompat message,
+                                  Uri sourceOrigin, boolean isMainFrame,
+                                  JavaScriptReplyProxy replyProxy)
+        {
+            // Ignore iframes — bridge.js only runs the transport branch on
+            // the top frame anyway, but defense-in-depth: drop anything
+            // from a non-main frame at the native boundary too.
+            if (!isMainFrame) return;
+
+            // Capture the reply channel so postMessageJson can push UE→JS
+            // through it. The replyProxy is invalidated on navigation; the
+            // next onPostMessage from the new page gives us a fresh one.
+            Config c = sConfigs.get(id);
+            if (c != null)
+            {
+                c.lastReplyProxy = replyProxy;
+            }
+
+            final String data = (message != null) ? message.getData() : null;
+            if (data == null)
+            {
+                // ArrayBuffer payload — we don't accept binary on this
+                // channel yet (the JS bridge only sends JSON strings). Log
+                // and drop so it can't reach the C++ envelope parser.
+                Log.warn("onPostMessage(" + id + "): dropped non-string "
+                        + "payload from " + sourceOrigin);
+                return;
+            }
+            nativeOnMessageReceived(id, data);
+        }
+    }
+
+    /**
+     * Build the allowed-origin set for addWebMessageListener.
+     *
+     *   • If a virtual host is configured, restrict the bridge to
+     *     "https://<virtualHost>" — the recommended production setup, all
+     *     other origins (third-party iframes, redirects, ads) are denied.
+     *   • If no virtual host (dev mode / DevInitialURL), fall back to "*"
+     *     so the bridge works at whatever URL the dev server serves on.
+     *
+     * Origin syntax is scheme://host[:port] with "*" for whole-set
+     * wildcards or "*.example.com" for subdomain matching.
+     */
+    private static Set<String> buildAllowedOrigins(Config c)
+    {
+        if (c != null && c.virtualHost != null && !c.virtualHost.isEmpty())
+        {
+            return Collections.singleton("https://" + c.virtualHost);
+        }
+        return Collections.singleton("*");
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -798,9 +893,25 @@ public class InoWebViewAndroid
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    //  Messaging — expose the JS host bridge and flip the injection flag.
-    //  Must be called BEFORE loadURL so the bridge is available for the
-    //  first page's scripts.
+    //  Messaging — install the native JS-side bridge object and the
+    //  document-start bridge.js. Must be called BEFORE the first loadURL
+    //  so the bridge is in place for the first page's scripts.
+    //
+    //  Native bridge install paths, ordered by preference:
+    //
+    //    1) WebViewCompat.addWebMessageListener  (modern, ~Chrome 82+)
+    //       — origin-allowlisted, UI-thread callback, replyProxy for the
+    //         UE→JS direction. The injected window._InoWebUIHost exposes
+    //         .postMessage(...) and an .onmessage setter.
+    //
+    //    2) WebView.addJavascriptInterface  (legacy, all versions)
+    //       — no origin check (every frame can see the bridge), callback
+    //         runs on JavaBridge background thread. The injected
+    //         window._InoWebUIHost exposes .receive(...).
+    //
+    //  bridge.js detects which API is present via property check, so the
+    //  page-side JS API (window.InoWebUI.send / .on / .off / .once) is
+    //  identical no matter which native path was chosen.
     // ─────────────────────────────────────────────────────────────────────
     public static void setupMessaging(final int id)
     {
@@ -812,26 +923,56 @@ public class InoWebViewAndroid
                 WebView wv = sWebViews.get(id);
                 if (wv == null) return;
 
-                // addJavascriptInterface exposes the object as a named JS
-                // global. We pick a name (_InoWebUIHost) that user code is
-                // unlikely to collide with; the injected BRIDGE_JS wraps
-                // it behind the nice window.InoWebUI.send() API. The
-                // interface is bound to the WebView before the first load,
-                // so it is present in the JS context by the time any
-                // document-start script runs.
-                wv.addJavascriptInterface(new InoWebBridge(id), "_InoWebUIHost");
-
                 Config cfg = getOrCreateConfig(id);
                 cfg.messagingEnabled = true;
 
-                // Preferred path: register bridge.js as a document-start
-                // script. WebViewCompat runs it BEFORE any page script on
-                // every navigation (and re-runs on each navigation), which
-                // is exactly the guarantee WebView2 and WKWebView give. This
-                // is what makes window.InoWebUI reliably present when the
-                // page's own scripts execute — closing the onPageStarted
-                // race. allowedOriginRules = {"*"}: the bridge is needed on
-                // whatever origin the (vhost-locked) content is served from.
+                // ── Native bridge install ────────────────────────────────
+                boolean wmlInstalled = false;
+                if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER))
+                {
+                    try {
+                        Set<String> allowedOrigins = buildAllowedOrigins(cfg);
+                        WebViewCompat.addWebMessageListener(
+                                wv, "_InoWebUIHost", allowedOrigins,
+                                new InoWebMessageListener(id));
+                        cfg.usingWebMessageListener = true;
+                        wmlInstalled = true;
+                        Log.debug("setupMessaging(" + id + "): bridge via "
+                                + "addWebMessageListener — origin allowlist="
+                                + allowedOrigins);
+                    } catch (Exception e) {
+                        // addWebMessageListener throws IllegalArgumentException
+                        // for malformed origin rules. Defensive — fall through
+                        // to the legacy path rather than ending up with NO bridge.
+                        Log.warn("setupMessaging(" + id + "): addWebMessageListener "
+                                + "threw " + e.getClass().getSimpleName() + ": "
+                                + e.getMessage() + " — falling back to legacy "
+                                + "addJavascriptInterface");
+                    }
+                }
+                else
+                {
+                    Log.debug("setupMessaging(" + id + "): WEB_MESSAGE_LISTENER "
+                            + "not supported by this System WebView — using "
+                            + "legacy addJavascriptInterface (no origin allowlist)");
+                }
+
+                if (!wmlInstalled)
+                {
+                    // Legacy fallback. addJavascriptInterface exposes the
+                    // object globally with no origin check; bridge.js
+                    // detects the .receive shape and routes through it.
+                    wv.addJavascriptInterface(new InoWebBridge(id), "_InoWebUIHost");
+                }
+
+                // ── bridge.js document-start install ─────────────────────
+                // Independent of which native bridge path above was taken
+                // — bridge.js runs on every page and feature-detects the
+                // shape of window._InoWebUIHost itself. allowedOriginRules
+                // = {"*"} here means bridge.js loads on every origin; the
+                // bridge is only USABLE on origins where _InoWebUIHost is
+                // actually present (which addWebMessageListener restricts
+                // via its own allowlist).
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT))
                 {
                     try {
@@ -839,12 +980,9 @@ public class InoWebViewAndroid
                         WebViewCompat.addDocumentStartJavaScript(
                                 wv, InoWebUIScripts.BRIDGE_JS, allOrigins);
                         cfg.docStartBridgeInstalled = true;
-                        Log.debug("setupMessaging(" + id + "): bridge via "
+                        Log.debug("setupMessaging(" + id + "): bridge.js via "
                                 + "addDocumentStartJavaScript (pre-page guarantee)");
                     } catch (Exception e) {
-                        // Defensive: if registration throws for any reason,
-                        // leave docStartBridgeInstalled false so onPageStarted
-                        // still injects (degraded but functional).
                         Log.warn("setupMessaging(" + id + "): addDocumentStartJavaScript "
                                 + "failed (" + e.getMessage() + ") — falling back to "
                                 + "onPageStarted injection");
@@ -854,15 +992,27 @@ public class InoWebViewAndroid
                 {
                     Log.warn("setupMessaging(" + id + "): DOCUMENT_START_SCRIPT not "
                             + "supported by this System WebView — using onPageStarted "
-                            + "fallback (bridge may load after early page scripts)");
+                            + "fallback (bridge.js may load after early page scripts)");
                 }
-                Log.debug("setupMessaging(" + id + ")");
             }
         });
     }
 
     /** UE → JS. Delivers an envelope {channel, payload} to any window.InoWebUI.on
-     *  subscribers on the page. envelopeJson must be a valid JSON object literal. */
+     *  subscribers on the page. envelopeJson must be a valid JSON object literal.
+     *
+     *  Tries three paths in order, falling back as needed:
+     *
+     *    1. JavaScriptReplyProxy.postMessage(json) — when the page has
+     *       already sent us a message via WebMessageListener, we have a
+     *       reply channel that delivers directly without going through
+     *       the JS parser. Fastest, no string-interpolation concerns.
+     *
+     *    2. evaluateJavascript("window._InoWebUIDispatch(<jsLiteral>)") —
+     *       legacy path. Always works as long as bridge.js has installed
+     *       _InoWebUIDispatch. Used pre-handshake (before JS has posted)
+     *       and on devices without WEB_MESSAGE_LISTENER support.
+     */
     public static void postMessageJson(final int id, final String envelopeJson)
     {
         final Activity activity = getActivity();
@@ -873,12 +1023,40 @@ public class InoWebViewAndroid
                 WebView wv = sWebViews.get(id);
                 if (wv == null) return;
 
-                // Wrap the envelope in a JS string literal so the host->JS path
-                // can't be broken by U+2028 / U+2029 (legal in JSON, illegal
-                // in pre-ES2019 JS string literals) or by other unicode that
-                // is valid JSON but invalid as a raw JS expression. The
-                // bridge's dispatcher takes either a string (JSON.parse) or
-                // an object — passing a string keeps both platforms uniform.
+                // Path 1: JavaScriptReplyProxy. Best when available — no
+                // JS engine round-trip for parsing, no string-literal
+                // escaping risk, supports binary ArrayBuffer once we
+                // upgrade the bridge to use it.
+                Config c = sConfigs.get(id);
+                if (c != null && c.lastReplyProxy != null)
+                {
+                    try {
+                        c.lastReplyProxy.postMessage(envelopeJson);
+                        return;
+                    } catch (IllegalStateException ise) {
+                        // ReplyProxy invalidated (frame navigated away
+                        // before the next onPostMessage gave us a fresh
+                        // one). Drop it and fall through to the eval
+                        // path; the next JS-side post will re-supply.
+                        Log.debug("postMessageJson(" + id + "): replyProxy "
+                                + "invalid, dropping and using evaluateJavascript "
+                                + "fallback (" + ise.getMessage() + ")");
+                        c.lastReplyProxy = null;
+                    } catch (Exception e) {
+                        Log.warn("postMessageJson(" + id + "): replyProxy.postMessage "
+                                + "threw " + e.getClass().getSimpleName() + ": "
+                                + e.getMessage() + " — falling back to evaluateJavascript");
+                        c.lastReplyProxy = null;
+                    }
+                }
+
+                // Path 2: evaluateJavascript. Wraps the envelope in a JS
+                // string literal so the host->JS path can't be broken by
+                // U+2028 / U+2029 (legal in JSON, illegal in pre-ES2019
+                // JS string literals) or by other unicode that is valid
+                // JSON but invalid as a raw JS expression. The bridge's
+                // dispatcher takes either a string (JSON.parse) or an
+                // object — passing a string keeps both platforms uniform.
                 String jsLiteral = jsStringLiteral(envelopeJson);
                 wv.evaluateJavascript(
                     "window._InoWebUIDispatch && window._InoWebUIDispatch(" + jsLiteral + ")",
