@@ -458,4 +458,67 @@ private:
      * user's OnMessageReceived delegate); false otherwise.
      */
     bool HandleDevToolsAction(const FString& Channel);
+
+    // ── Auto-recover on renderer process failure ────────────────────────────
+    //
+    // When the underlying native renderer dies (Chromium subprocess OOM-killed
+    // or crashed) the platform impl's OnProcessFailed fires. Per the Android
+    // WebView lifecycle docs the dead native WebView is unusable after that
+    // point — you must detach + destroy it. Auto-recover takes the next step
+    // and re-initializes a fresh native impl with the same Config so the
+    // overlay comes back without the caller having to manually handle it.
+    //
+    // Reliability rationale:
+    //   • Persistent state (cookies, localStorage, IndexedDB) lives in the
+    //     WebView's data dir, NOT the renderer process, so it survives.
+    //   • The UInoWebView UObject (this) and all Blueprint delegate bindings
+    //     persist across the recreate — only the Impl swap happens under us.
+    //   • Pages must already handle a normal reload (same as F5), so the
+    //     recreate looks identical to that from the page's perspective.
+    //
+    // Bounded by a recovery budget (max 3 attempts within 60s) to prevent an
+    // infinite recreate loop on a page that consistently crashes the
+    // renderer — after the budget is exhausted we leave the WebView dead
+    // and the user code can decide what to do next.
+
+    /** Copy of the Config originally passed to Init; replayed by RecreateImpl. */
+    UPROPERTY()
+    FInoWebViewConfig SavedConfig;
+
+    /** Parent OS-level window handle (HWND on Windows) captured at Init. Plain
+     *  pointer — not a UPROPERTY because it's an OS handle, not a UObject.
+     *  Valid for the lifetime of the GameInstance / parent window. */
+    void* SavedParentNativeHandle = nullptr;
+
+    /** FPlatformTime::Seconds() timestamps of recent auto-recovery attempts.
+     *  Trimmed in TryConsumeRecoveryBudget to within the rolling window. */
+    TArray<double> RecentRecoveryAttempts;
+
+    /** Set when HandleProcessFailed schedules a deferred recreate; cleared
+     *  once the recreate runs or on ShutdownImpl. Prevents a recreate from
+     *  firing after the caller has destroyed the WebView in their
+     *  OnProcessFailed handler. */
+    bool bAwaitingRecreate = false;
+
+    /** Wire every IInoWebViewImpl callback slot to a lambda that broadcasts
+     *  the matching BP delegate. Extracted from Init() so RecreateImpl can
+     *  reuse it on the fresh impl. */
+    void WireImplCallbacks();
+
+    /** Called by the OnProcessFailedCallback lambda. Fires the BP delegate
+     *  first, then — if SavedConfig.bAutoRecoverOnProcessFailed and the
+     *  recovery budget allows — schedules a deferred RecreateImpl on the
+     *  next game tick. */
+    void HandleProcessFailed(const FString& Description);
+
+    /** Returns true if we still have budget for one more auto-recover (and
+     *  records the attempt). Sliding window of MaxRecoveriesPerWindow=3
+     *  attempts per RecoveryWindowSec=60 seconds. */
+    bool TryConsumeRecoveryBudget();
+
+    /** Tear down the current Impl, allocate a new one via the factory, wire
+     *  callbacks, re-Initialize with SavedConfig + SavedParentNativeHandle,
+     *  and restore current bounds / visibility / transparency. Logs at every
+     *  step. */
+    void RecreateImpl();
 };

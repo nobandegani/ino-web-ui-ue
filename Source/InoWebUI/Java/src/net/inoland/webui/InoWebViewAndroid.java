@@ -261,14 +261,48 @@ public class InoWebViewAndroid
         @Override
         public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail)
         {
-            // Renderer process died (OOM or crash). Fire the callback; the
-            // WebView is now unusable and the caller should Reload() or
-            // recreate. Returning true means "we handled it — don't bubble
-            // up and crash the app."
+            // Renderer process died (OOM-killed by Android or subprocess
+            // crash). Per Android docs the WebView is permanently unusable
+            // after this point — calling any method on it from this point
+            // on is undefined behavior. The doc-mandated cleanup is to
+            // detach it from its parent and call destroy() promptly.
+            //   https://developer.android.com/develop/ui/views/layout/webapps/managing-webview
+            //
+            // We do that here, on the UI thread, so the dead view's native
+            // resources are released right away. Then we drop our SparseArray
+            // entries so subsequent JNI calls (destroyWebView, loadURL, ...)
+            // become safe no-ops while the C++ side decides whether to
+            // auto-recover (creates a NEW WebView with a NEW InstanceId) or
+            // hand off to the BP/C++ OnProcessFailed handler.
             String desc = (detail != null && detail.didCrash())
                     ? "renderer crashed"
                     : "renderer killed by system (OOM?)";
+            Log.warn("onRenderProcessGone(" + id + "): " + desc + " — "
+                    + "detaching and destroying dead WebView");
+
+            try {
+                ViewGroup parent = (ViewGroup) view.getParent();
+                if (parent != null) parent.removeView(view);
+                view.destroy();
+            } catch (Exception e) {
+                // Best-effort cleanup; an exception here is logged but not
+                // propagated — we still need to fire the native callback so
+                // the C++ side knows the renderer is gone.
+                Log.warn("onRenderProcessGone(" + id + "): cleanup threw "
+                        + e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
+            sWebViews.remove(id);
+            sConfigs.remove(id);
+
+            // Fire the C++ callback AFTER the Java cleanup so by the time the
+            // game-thread handler runs, the dead WebView is fully gone from
+            // our state — the recreate path (if enabled) can allocate a fresh
+            // InstanceId without colliding with stale entries.
             nativeOnProcessFailed(id, desc);
+
+            // Returning true means "we handled it — don't bubble up and
+            // crash the host app." Critical: returning false here makes
+            // Android terminate the whole process.
             return true;
         }
     }

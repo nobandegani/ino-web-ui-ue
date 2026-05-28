@@ -364,6 +364,38 @@ struct INOWEBUI_API FInoWebViewConfig
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
     bool bAllowNewWindows = false;
 
+    /**
+     * If true (default), the plugin automatically recreates the native
+     * WebView when its renderer process dies (out-of-memory kill, renderer
+     * crash, etc.). The OnProcessFailed delegate still fires first so you
+     * can react (telemetry, "reconnecting" toast), then a fresh native
+     * WebView is initialized with the same Config and the page is reloaded.
+     *
+     * Reliable for typical web UI:
+     *   • localStorage / cookies / IndexedDB survive (they live in the
+     *     WebView's data dir, not the renderer process).
+     *   • Your C++ / Blueprint delegate bindings on the UInoWebView are
+     *     untouched (the UObject persists across the recreate).
+     *   • The page reloads exactly like the user pressed F5.
+     *
+     * Lossy for:
+     *   • Any state the page kept only in JavaScript variables (re-fetch
+     *     on DOMContentLoaded — same pattern as a normal reload).
+     *   • Live WebSocket / EventSource connections — the page must
+     *     reconnect on load.
+     *
+     * Protected by a retry budget: at most 3 automatic recoveries within
+     * any 60-second window. If the renderer keeps dying (a page that
+     * consistently crashes the GPU, for example), the plugin stops
+     * recreating and leaves the WebView dead so your code can decide what
+     * to do — preventing an infinite recreate loop.
+     *
+     * Turn off only when you want full manual control of process-failure
+     * recovery via your OnProcessFailed handler.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
+    bool bAutoRecoverOnProcessFailed = true;
+
     // ── Initial-load state (headers / cookies) ──────────────────────────────
 
     /**

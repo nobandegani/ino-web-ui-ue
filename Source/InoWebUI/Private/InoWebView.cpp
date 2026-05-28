@@ -76,6 +76,11 @@ void UInoWebView::Init(FName InName, TUniquePtr<IInoWebViewImpl>&& InImpl,
     WebViewName = InName;
     Impl        = MoveTemp(InImpl);
 
+    // Save the inputs so RecreateImpl can replay them after a renderer-
+    // process failure without the caller having to pass anything back in.
+    SavedConfig              = Config;
+    SavedParentNativeHandle  = ParentNativeHandle;
+
     if (!Impl.IsValid())
     {
         UE_LOG(LogInoWebUI, Warning,
@@ -85,9 +90,47 @@ void UInoWebView::Init(FName InName, TUniquePtr<IInoWebViewImpl>&& InImpl,
     }
 
     // Wire callbacks BEFORE Initialize — the impl may fire events synchronously
-    // during startup (e.g., fast-path env creation). `this` capture is safe:
-    // the impl is our own member, destroyed with us, so lambdas can never
-    // outlive us.
+    // during startup (e.g., fast-path env creation). The wiring is factored
+    // out so RecreateImpl can reuse it on the fresh impl after a process
+    // failure.
+    WireImplCallbacks();
+
+    // Seed the "covering" inputs from config. Opacity mirrors the
+    // configured transparency (the dev overlay's "Toggle transparency"
+    // can flip it later); the visible flag mirrors bVisibleOnCreate
+    // (Show/Hide keep it current).
+    bBackgroundCurrentlyOpaque = !Config.View.bTransparentBackground;
+    bViewVisible               = Config.View.bVisibleOnCreate;
+
+    const bool bOk = Impl->Initialize(ParentNativeHandle, Config);
+    if (!bOk)
+    {
+        UE_LOG(LogInoWebUI, Error,
+            TEXT("UInoWebView[%s]: native Initialize() failed."), *WebViewName.ToString());
+        Impl.Reset();
+        return;
+    }
+
+    UE_LOG(LogInoWebUI, Log, TEXT("UInoWebView[%s] created."), *WebViewName.ToString());
+
+    // Report initial covering state (opaque + visible). The subsystem only
+    // acts on it if its auto engine-idle mode is enabled.
+    RefreshCoveringState();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  WireImplCallbacks
+//
+//  Sets every IInoWebViewImpl callback slot on the current Impl. Extracted
+//  from Init so RecreateImpl can reuse it identically — the lambdas all
+//  capture `this`, which is safe because they're stored on Impl which we own,
+//  so a lambda firing implies our UObject is alive.
+// ─────────────────────────────────────────────────────────────────────────────
+void UInoWebView::WireImplCallbacks()
+{
+    check(IsInGameThread());
+    if (!Impl.IsValid()) return;
+
     Impl->OnMessageReceivedJson = [this](const FString& EnvelopeJson)
     {
         DispatchIncomingEnvelope(EnvelopeJson);
@@ -120,9 +163,14 @@ void UInoWebView::Init(FName InName, TUniquePtr<IInoWebViewImpl>&& InImpl,
 
     Impl->OnGotFocusCallback     = [this] { OnGotFocus.Broadcast();     };
     Impl->OnLostFocusCallback    = [this] { OnLostFocus.Broadcast();    };
+
+    // Process failure goes through HandleProcessFailed: that path fires the
+    // BP delegate AND drives the auto-recover state machine. Direct delegate
+    // broadcast (the pre-Phase-15 behaviour) only happened from here; the
+    // recovery hook is now centralized.
     Impl->OnProcessFailedCallback = [this](const FString& Description)
     {
-        OnProcessFailed.Broadcast(Description);
+        HandleProcessFailed(Description);
     };
 
     // OnReady deferral: impls may fire this callback synchronously (Android)
@@ -148,28 +196,6 @@ void UInoWebView::Init(FName InName, TUniquePtr<IInoWebViewImpl>&& InImpl,
         {
             OnCapturePreviewComplete.Broadcast(bSuccess, FilePath);
         };
-
-    // Seed the "covering" inputs from config. Opacity mirrors the
-    // configured transparency (the dev overlay's "Toggle transparency"
-    // can flip it later); the visible flag mirrors bVisibleOnCreate
-    // (Show/Hide keep it current).
-    bBackgroundCurrentlyOpaque = !Config.View.bTransparentBackground;
-    bViewVisible               = Config.View.bVisibleOnCreate;
-
-    const bool bOk = Impl->Initialize(ParentNativeHandle, Config);
-    if (!bOk)
-    {
-        UE_LOG(LogInoWebUI, Error,
-            TEXT("UInoWebView[%s]: native Initialize() failed."), *WebViewName.ToString());
-        Impl.Reset();
-        return;
-    }
-
-    UE_LOG(LogInoWebUI, Log, TEXT("UInoWebView[%s] created."), *WebViewName.ToString());
-
-    // Report initial covering state (opaque + visible). The subsystem only
-    // acts on it if its auto engine-idle mode is enabled.
-    RefreshCoveringState();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -568,6 +594,165 @@ void UInoWebView::OnParentResized(int32 X, int32 Y, int32 Width, int32 Height)
     if (Impl.IsValid()) Impl->SyncBounds(X, Y, Width, Height);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Auto-recover on renderer process failure
+// ─────────────────────────────────────────────────────────────────────────────
+
+void UInoWebView::HandleProcessFailed(const FString& Description)
+{
+    check(IsInGameThread());
+
+    UE_LOG(LogInoWebUI, Warning,
+        TEXT("UInoWebView[%s]: renderer process failed (%s). Auto-recover is %s."),
+        *WebViewName.ToString(), *Description,
+        SavedConfig.bAutoRecoverOnProcessFailed ? TEXT("ON") : TEXT("OFF"));
+
+    // Fire the BP delegate FIRST so the user's handler can react (telemetry,
+    // toast, queue a reconnect, etc.) before we touch the impl.
+    OnProcessFailed.Broadcast(Description);
+
+    // If the handler called DestroyWebView, our Impl has been reset to null
+    // — the user explicitly tore the view down and doesn't want a recreate.
+    // Bail before scheduling anything.
+    if (!Impl.IsValid())
+    {
+        UE_LOG(LogInoWebUI, Log,
+            TEXT("UInoWebView[%s]: OnProcessFailed handler destroyed the view — "
+                 "skipping auto-recover."),
+            *WebViewName.ToString());
+        return;
+    }
+
+    if (!SavedConfig.bAutoRecoverOnProcessFailed)
+    {
+        return;
+    }
+
+    if (!TryConsumeRecoveryBudget())
+    {
+        UE_LOG(LogInoWebUI, Error,
+            TEXT("UInoWebView[%s]: auto-recover budget exhausted (3 attempts within 60s) — "
+                 "leaving WebView dead. The page may be consistently crashing the renderer; "
+                 "destroy + recreate manually from your OnProcessFailed handler."),
+            *WebViewName.ToString());
+        return;
+    }
+
+    // Defer to next tick so the BP handler's side effects (including a
+    // potential DestroyWebView) settle before we recreate. Weak self keeps
+    // the task safe across GC. bAwaitingRecreate is the kill-switch — if the
+    // user destroyed us in the meantime, ShutdownImpl cleared it.
+    bAwaitingRecreate = true;
+    TWeakObjectPtr<UInoWebView> WeakSelf(this);
+    AsyncTask(ENamedThreads::GameThread, [WeakSelf]()
+    {
+        if (UInoWebView* Self = WeakSelf.Get())
+        {
+            if (Self->bAwaitingRecreate)
+            {
+                Self->RecreateImpl();
+            }
+        }
+    });
+}
+
+bool UInoWebView::TryConsumeRecoveryBudget()
+{
+    // Sliding window: at most N attempts within the last T seconds. Prevents
+    // an infinite recreate loop when the page itself is what's crashing the
+    // renderer (broken WebGL, broken video codec, OOM-on-load, ...).
+    static constexpr int32  MaxRecoveriesPerWindow = 3;
+    static constexpr double RecoveryWindowSec      = 60.0;
+
+    const double Now = FPlatformTime::Seconds();
+    RecentRecoveryAttempts.RemoveAll([Now](double T)
+    {
+        return Now - T > RecoveryWindowSec;
+    });
+
+    if (RecentRecoveryAttempts.Num() >= MaxRecoveriesPerWindow)
+    {
+        return false;
+    }
+
+    RecentRecoveryAttempts.Add(Now);
+    return true;
+}
+
+void UInoWebView::RecreateImpl()
+{
+    check(IsInGameThread());
+    bAwaitingRecreate = false;
+
+    UE_LOG(LogInoWebUI, Log,
+        TEXT("UInoWebView[%s]: auto-recovering after renderer process failure "
+             "(attempt %d in current 60s window)."),
+        *WebViewName.ToString(), RecentRecoveryAttempts.Num());
+
+    // Drop the dead impl. Shutdown is idempotent against Java-side cleanup
+    // that already happened in onRenderProcessGone — the Java destroyWebView
+    // call is a no-op when the SparseArray entry is gone.
+    if (Impl.IsValid())
+    {
+        Impl->Shutdown();
+        Impl.Reset();
+    }
+
+    // Allocate a fresh platform impl. Same factory used by CreateWebView.
+    TUniquePtr<IInoWebViewImpl> NewImpl = CreateInoWebViewImpl();
+    if (!NewImpl.IsValid())
+    {
+        UE_LOG(LogInoWebUI, Error,
+            TEXT("UInoWebView[%s]: RecreateImpl — factory returned null, "
+                 "leaving WebView dead."),
+            *WebViewName.ToString());
+        return;
+    }
+    Impl = MoveTemp(NewImpl);
+
+    // Wire callbacks BEFORE Initialize, same ordering as the original Init.
+    WireImplCallbacks();
+
+    const bool bOk = Impl->Initialize(SavedParentNativeHandle, SavedConfig);
+    if (!bOk)
+    {
+        UE_LOG(LogInoWebUI, Error,
+            TEXT("UInoWebView[%s]: RecreateImpl — native Initialize() failed; "
+                 "WebView left dead."),
+            *WebViewName.ToString());
+        Impl.Reset();
+        return;
+    }
+
+    // Re-assert the post-creation runtime state in case it diverged from
+    // SavedConfig.View defaults (the user may have toggled visibility /
+    // transparency / bounds at runtime — we want the recreated WebView to
+    // come back in the SAME state, not in the original config state).
+    const bool bConfigOpaque = !SavedConfig.View.bTransparentBackground;
+    if (bBackgroundCurrentlyOpaque != bConfigOpaque)
+    {
+        Impl->SetBackgroundOpaque(bBackgroundCurrentlyOpaque);
+    }
+    const bool bConfigVisible = SavedConfig.View.bVisibleOnCreate;
+    if (bViewVisible != bConfigVisible)
+    {
+        Impl->SetVisible(bViewVisible);
+    }
+    if (bManualBounds)
+    {
+        Impl->SetBoundsMode(true);
+        Impl->SyncBounds(ManualX, ManualY, ManualW, ManualH);
+    }
+
+    // Re-engage covering state for the subsystem's auto engine-idle.
+    RefreshCoveringState();
+
+    UE_LOG(LogInoWebUI, Log,
+        TEXT("UInoWebView[%s]: recreate complete — fresh native WebView in place, "
+             "page reloading to InitialURL '%s'."),
+        *WebViewName.ToString(), *SavedConfig.InitialURL);
+}
+
 void UInoWebView::ShutdownImpl()
 {
     // Drop our "covering" entry first so a destroyed/opaque view can't
@@ -576,6 +761,10 @@ void UInoWebView::ShutdownImpl()
     {
         Subsystem->SetViewCovering(this, false);
     }
+
+    // Kill any pending auto-recover; if the user is destroying us, they
+    // don't want a fresh WebView to materialize on the next tick.
+    bAwaitingRecreate = false;
 
     if (Impl.IsValid())
     {
