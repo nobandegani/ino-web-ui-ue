@@ -71,6 +71,25 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebRenderProcessUnresponsive);
  *  (event loop pumped through whatever was blocking it). */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebRenderProcessResponsive);
 
+/** Fires whenever the page calls console.log / .warn / .error / .debug
+ *  / .info. Lets you surface page logs in the UE log (or a debug HUD)
+ *  without having to attach Chrome DevTools.
+ *
+ *  Level    — severity from the page's console call.
+ *  Message  — the formatted message string.
+ *  SourceID — usually the URL of the script that emitted the log; empty for
+ *             inline / extension code.
+ *  Line     — 1-based line number in the source; 0 if unknown.
+ *
+ *  The plugin ALSO mirrors every console message to LogInoWebUI at a
+ *  verbosity matching Level — so you usually don't need to bind this
+ *  delegate at all unless you want page logs in a custom place. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnInoWebConsoleMessage,
+    EInoConsoleMessageLevel, Level,
+    const FString&,          Message,
+    const FString&,          SourceID,
+    int32,                   Line);
+
 /** One-shot signal: the native WebView has finished async construction and
  *  can safely accept operations. Fires exactly once on the game thread, on
  *  a tick AFTER CreateWebView returned — so BP bind order like
@@ -233,6 +252,11 @@ public:
     /** Fires when the renderer recovers from an unresponsive state. */
     UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
     FOnInoWebRenderProcessResponsive OnRenderProcessResponsive;
+
+    /** Fires for every console.log / .warn / .error from the page.
+     *  Android-only today; Windows / iOS don't surface console messages. */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebConsoleMessage OnConsoleMessage;
 
     /** Fires once when the underlying native WebView has finished async
      *  construction and is ready for operations. See FOnInoWebReady docs. */

@@ -20,6 +20,32 @@ enum class EInoScriptDialogKind : uint8
 };
 
 /**
+ * Severity of a console.log()/.info()/.warn()/.error()/.debug() call from
+ * the page. Values match Android's ConsoleMessage.MessageLevel ordinals
+ * exactly so the JNI bridge can pass through as a plain jint with no
+ * mapping table:
+ *
+ *   0 = Tip      (rare; browser-emitted hints)
+ *   1 = Log      (console.log, console.info)
+ *   2 = Warning  (console.warn)
+ *   3 = Error    (console.error)
+ *   4 = Debug    (console.debug)
+ *
+ * Windows / iOS impls don't currently emit OnConsoleMessage — Chromium's
+ * WebView2 doesn't expose a console-message event, and WKWebView routes
+ * console output through Safari's Web Inspector only.
+ */
+UENUM(BlueprintType)
+enum class EInoConsoleMessageLevel : uint8
+{
+    Tip      = 0   UMETA(DisplayName = "Tip"),
+    Log      = 1   UMETA(DisplayName = "Log"),
+    Warning  = 2   UMETA(DisplayName = "Warning"),
+    Error    = 3   UMETA(DisplayName = "Error"),
+    Debug    = 4   UMETA(DisplayName = "Debug"),
+};
+
+/**
  * One cookie to seed into a WebView's cookie store before its first
  * navigation. `Cookie` is the standard HTTP cookie syntax:
  *     "name=value; Path=/; Expires=Wed, 09 Jun 2026 10:18:14 GMT; Secure"
@@ -363,6 +389,52 @@ struct INOWEBUI_API FInoWebViewConfig
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
     bool bAllowNewWindows = false;
+
+    /**
+     * If false (default), mixed-content (an https:// page fetching http://
+     * subresources) is blocked. Mirrors the API 21+ Android default but is
+     * set explicitly to be defensive against future framework changes.
+     * Turn on only for dev flows where the page legitimately needs to mix
+     * schemes (e.g. an https:// app loading from a plain-HTTP dev API).
+     *
+     * Android: WebSettings.setMixedContentMode(MIXED_CONTENT_NEVER_ALLOW
+     * vs MIXED_CONTENT_ALWAYS_ALLOW). Windows / iOS have their own
+     * mixed-content handling; this flag is currently Android-only.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI",
+              meta = (DisplayName = "Allow Mixed Content (http on https, Android)"))
+    bool bAllowMixedContent = false;
+
+    /**
+     * If false (default), the WebView refuses to load file:// URLs. Game UI
+     * served from a virtual host (https://<vhost>/...) never needs file://
+     * — the vhost mapping serves bundled content via a real https origin.
+     *
+     * Defense-in-depth: even if lockdown is misconfigured or a redirect
+     * slips through, the WebView won't open a local file. Matters because
+     * file:// has historically had more permissive same-origin semantics
+     * than http(s), so a malicious page reaching it gets broader access
+     * than from any other scheme.
+     *
+     * Default behavior changed from API 30 (true → false) — we now set
+     * it explicitly so the behavior is the same on every supported
+     * Android version. Android-only flag.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI",
+              meta = (DisplayName = "Allow file:// URLs (Android)"))
+    bool bAllowFileURLs = false;
+
+    /**
+     * If false (default), the WebView refuses to load content:// URIs.
+     * content:// is Android's cross-app file-sharing scheme (images from
+     * the gallery, files from other apps). Game UI doesn't need it; turn
+     * on only if you intentionally embed media from a ContentProvider.
+     *
+     * Same defense-in-depth motivation as bAllowFileURLs — Android-only.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI",
+              meta = (DisplayName = "Allow content:// URIs (Android)"))
+    bool bAllowContentURIs = false;
 
     /**
      * Auto-terminate the renderer when it has been unresponsive for this

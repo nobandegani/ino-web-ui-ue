@@ -22,6 +22,7 @@ import android.util.SparseArray;
 import android.view.PixelCopy;
 import android.view.View;
 import android.view.ViewGroup;
+import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.RenderProcessGoneDetail;
@@ -32,6 +33,7 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
 import android.webkit.WebStorage;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -352,6 +354,29 @@ public class InoWebViewAndroid
             if (title != null) nativeOnDocumentTitleChanged(id, title);
         }
 
+        // ── Console message capture ──────────────────────────────────────
+        // Surface page console.log/.warn/.error to UE. The MessageLevel
+        // enum's ordinal matches EInoConsoleMessageLevel in InoWebUITypes.h
+        // (Tip=0, Log=1, Warning=2, Error=3, Debug=4) so we pass it through
+        // as a plain int with no mapping needed.
+        @Override
+        public boolean onConsoleMessage(ConsoleMessage cm)
+        {
+            if (cm == null) return false;
+            final int levelOrdinal = (cm.messageLevel() != null)
+                    ? cm.messageLevel().ordinal()
+                    : 1; // default to Log if (somehow) null
+            final String msg = (cm.message()   != null) ? cm.message()   : "";
+            final String src = (cm.sourceId()  != null) ? cm.sourceId()  : "";
+            final int    ln  = cm.lineNumber();
+            nativeOnConsoleMessage(id, levelOrdinal, msg, src, ln);
+            // Returning true would suppress System.out logging on devices
+            // where WebView mirrors console output to logcat; we keep
+            // returning false so the default behavior (logcat mirror) is
+            // unchanged for anyone watching `adb logcat | grep chromium`.
+            return false;
+        }
+
         // ── JS dialog suppression ────────────────────────────────────────
         // Default: cancel the dialog (alert returns, confirm→false, prompt→null).
         // When allowScriptDialogs=true, accept() lets the native dialog show.
@@ -662,6 +687,7 @@ public class InoWebViewAndroid
     private static native void nativeOnProcessFailed       (int id, String description);
     private static native void nativeOnRenderProcessUnresponsive(int id);
     private static native void nativeOnRenderProcessResponsive  (int id);
+    private static native void nativeOnConsoleMessage      (int id, int level, String message, String sourceId, int lineNumber);
     /** Fires after every page-end (success or fail) so C++ can cache nav-history flags. */
     private static native void nativeOnNavStateChanged     (int id, boolean canGoBack, boolean canGoForward);
 
@@ -872,6 +898,38 @@ public class InoWebViewAndroid
             }
         }
         return s.matches(re.toString());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Security — mixed-content / file:// / content:// access. All three
+    //  default off (the safe choice for game UI loading from a vhost over
+    //  https). Setting them explicitly removes reliance on Android-version
+    //  defaults that flipped between API releases (e.g. setAllowFileAccess
+    //  flipped to false in API 30).
+    // ─────────────────────────────────────────────────────────────────────
+    public static void configureSecurity(final int id,
+                                         final boolean allowMixedContent,
+                                         final boolean allowFileURLs,
+                                         final boolean allowContentURIs)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv == null) return;
+                WebSettings s = wv.getSettings();
+                s.setMixedContentMode(allowMixedContent
+                        ? WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                        : WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+                s.setAllowFileAccess(allowFileURLs);
+                s.setAllowContentAccess(allowContentURIs);
+                Log.debug("configureSecurity(" + id + "): mixedContent="
+                        + (allowMixedContent ? "ALLOW" : "BLOCK")
+                        + ", file://=" + (allowFileURLs ? "allow" : "deny")
+                        + ", content://=" + (allowContentURIs ? "allow" : "deny"));
+            }
+        });
     }
 
     // ─────────────────────────────────────────────────────────────────────

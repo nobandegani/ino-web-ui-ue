@@ -192,6 +192,44 @@ void UInoWebView::WireImplCallbacks()
         OnRenderProcessResponsive.Broadcast();
     };
 
+    // Page console.log / .warn / .error / .debug. Mirror to LogInoWebUI at
+    // matching verbosity so developers see page logs in their UE console
+    // without having to bind the delegate — and also fire the BP delegate
+    // so projects that want page logs in their own HUD can subscribe.
+    Impl->OnConsoleMessageCallback = [this](EInoConsoleMessageLevel Level,
+                                             const FString& Message,
+                                             const FString& SourceID,
+                                             int32 Line)
+    {
+        const TCHAR* Src = SourceID.IsEmpty() ? TEXT("(unknown)") : *SourceID;
+        switch (Level)
+        {
+        case EInoConsoleMessageLevel::Error:
+            UE_LOG(LogInoWebUI, Error,
+                TEXT("[Page %s] console.error @ %s:%d  %s"),
+                *WebViewName.ToString(), Src, Line, *Message);
+            break;
+        case EInoConsoleMessageLevel::Warning:
+            UE_LOG(LogInoWebUI, Warning,
+                TEXT("[Page %s] console.warn @ %s:%d  %s"),
+                *WebViewName.ToString(), Src, Line, *Message);
+            break;
+        case EInoConsoleMessageLevel::Debug:
+            UE_LOG(LogInoWebUI, Verbose,
+                TEXT("[Page %s] console.debug @ %s:%d  %s"),
+                *WebViewName.ToString(), Src, Line, *Message);
+            break;
+        case EInoConsoleMessageLevel::Tip:
+        case EInoConsoleMessageLevel::Log:
+        default:
+            UE_LOG(LogInoWebUI, Log,
+                TEXT("[Page %s] console.log @ %s:%d  %s"),
+                *WebViewName.ToString(), Src, Line, *Message);
+            break;
+        }
+        OnConsoleMessage.Broadcast(Level, Message, SourceID, Line);
+    };
+
     // OnReady deferral: impls may fire this callback synchronously (Android)
     // or asynchronously (Windows). Either way we queue the BP broadcast to
     // the next game tick so CreateWebView's caller has time to bind before

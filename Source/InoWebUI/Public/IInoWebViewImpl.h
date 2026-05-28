@@ -131,6 +131,15 @@ public:
     TFunction<void()>                                    OnRenderProcessUnresponsiveCallback;
     TFunction<void()>                                    OnRenderProcessResponsiveCallback;
 
+    /** Fired for every page-side console.log / .warn / .error / .debug.
+     *  Android-only today; Windows / iOS impls don't currently surface
+     *  console messages (WebView2 doesn't expose them as events; WKWebView
+     *  routes them only to Safari's Web Inspector). */
+    TFunction<void(EInoConsoleMessageLevel /*Level*/,
+                   const FString& /*Message*/,
+                   const FString& /*SourceID*/,
+                   int32          /*Line*/)>             OnConsoleMessageCallback;
+
     /** One-shot: fires when the native WebView transitions to ready. Called
      *  exactly once per impl lifetime. Owner (UInoWebView) defers the BP
      *  delegate broadcast to the next game tick so sync-ready platforms

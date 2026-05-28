@@ -65,6 +65,7 @@ namespace InoWebUIJNI
     static jmethodID MLoadURLWithHeaders = nullptr;
     static jmethodID MSetBoundsMode      = nullptr;
     static jmethodID MConfigureUnresponsiveTimeout = nullptr;
+    static jmethodID MConfigureSecurity  = nullptr;
 
     /**
      * Look up the Java helper class and all the static methods we call.
@@ -135,6 +136,7 @@ namespace InoWebUIJNI
         MLoadURLWithHeaders = Env->GetStaticMethodID(JavaClass, "loadURLWithHeaders", "(ILjava/lang/String;[Ljava/lang/String;[Ljava/lang/String;)V");
         MSetBoundsMode      = Env->GetStaticMethodID(JavaClass, "setBoundsMode",      "(IZ)V");
         MConfigureUnresponsiveTimeout = Env->GetStaticMethodID(JavaClass, "configureUnresponsiveTimeout", "(II)V");
+        MConfigureSecurity            = Env->GetStaticMethodID(JavaClass, "configureSecurity",            "(IZZZ)V");
 
         // Any GetStaticMethodID miss above throws NoSuchMethodError, which
         // sticks to the JNIEnv. CheckJNI (or the next throwing JNI call) will
@@ -159,7 +161,8 @@ namespace InoWebUIJNI
             || !MGoBack || !MGoForward || !MStopLoading || !MLoadHTMLString
             || !MSetCookie || !MClearAllData || !MCapturePreview
             || !MLoadURLWithHeaders || !MSetBoundsMode
-            || !MConfigureUnresponsiveTimeout)
+            || !MConfigureUnresponsiveTimeout
+            || !MConfigureSecurity)
         {
             UE_LOG(LogInoWebUI, Error,
                 TEXT("One or more InoWebViewAndroid methods not found — Java helper "
@@ -359,6 +362,14 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
         static_cast<jint>(InstanceId),
         static_cast<jboolean>(Config.bAllowScriptDialogs ? JNI_TRUE : JNI_FALSE),
         static_cast<jboolean>(Config.bAllowNewWindows     ? JNI_TRUE : JNI_FALSE));
+
+    // Step 2d.0: security — mixed content + file:// + content:// access.
+    // All default off; explicit so behaviour matches across API levels.
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MConfigureSecurity,
+        static_cast<jint>(InstanceId),
+        static_cast<jboolean>(Config.bAllowMixedContent ? JNI_TRUE : JNI_FALSE),
+        static_cast<jboolean>(Config.bAllowFileURLs     ? JNI_TRUE : JNI_FALSE),
+        static_cast<jboolean>(Config.bAllowContentURIs  ? JNI_TRUE : JNI_FALSE));
 
     // Step 2d.1: unresponsive-renderer detection. Installs a
     // WebViewRenderProcessClient regardless of timeout value (so the
@@ -758,6 +769,33 @@ Java_net_inoland_webui_InoWebViewAndroid_nativeOnRenderProcessResponsive(
         if (Impl->OnRenderProcessResponsiveCallback)
         {
             Impl->OnRenderProcessResponsiveCallback();
+        }
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnConsoleMessage(
+    JNIEnv* Env, jclass /*Cls*/, jint Id, jint Level,
+    jstring JMessage, jstring JSource, jint LineNumber)
+{
+    // Clamp Level to the EInoConsoleMessageLevel range (0..4). Anything
+    // outside maps to Log so a misbehaving Java enum can't blow up the
+    // C++ enum-cast.
+    int32 SafeLevel = static_cast<int32>(Level);
+    if (SafeLevel < 0 || SafeLevel > 4) SafeLevel = 1;
+    const EInoConsoleMessageLevel LevelEnum =
+        static_cast<EInoConsoleMessageLevel>(SafeLevel);
+
+    const FString Message  = JStringToFString(Env, JMessage);
+    const FString SourceID = JStringToFString(Env, JSource);
+    const int32   Line     = static_cast<int32>(LineNumber);
+
+    DispatchOnGameThread(static_cast<int32>(Id),
+        [LevelEnum, Message, SourceID, Line](FInoWebViewImpl_Android* Impl)
+    {
+        if (Impl->OnConsoleMessageCallback)
+        {
+            Impl->OnConsoleMessageCallback(LevelEnum, Message, SourceID, Line);
         }
     });
 }
