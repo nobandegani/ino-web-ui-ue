@@ -123,6 +123,14 @@ public:
     TFunction<void()>                                    OnLostFocusCallback;
     TFunction<void(const FString& Description)>          OnProcessFailedCallback;
 
+    /** Renderer-process responsiveness callbacks. The renderer is alive but
+     *  its main thread hasn't returned to the event loop in ~5s (Unresponsive)
+     *  or recovered (Responsive). Distinct from OnProcessFailed (which fires
+     *  only when the process actually dies). Android-only today; Windows /
+     *  iOS impls leave these slots untouched. */
+    TFunction<void()>                                    OnRenderProcessUnresponsiveCallback;
+    TFunction<void()>                                    OnRenderProcessResponsiveCallback;
+
     /** One-shot: fires when the native WebView transitions to ready. Called
      *  exactly once per impl lifetime. Owner (UInoWebView) defers the BP
      *  delegate broadcast to the next game tick so sync-ready platforms

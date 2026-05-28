@@ -173,6 +173,25 @@ void UInoWebView::WireImplCallbacks()
         HandleProcessFailed(Description);
     };
 
+    // Renderer-process responsiveness — distinct from "process died". The
+    // renderer is alive but its main thread is stuck. Auto-terminate (if
+    // configured) is driven from the Java side via Handler.postDelayed;
+    // we just surface the begin / end events to BP for telemetry.
+    Impl->OnRenderProcessUnresponsiveCallback = [this]
+    {
+        UE_LOG(LogInoWebUI, Warning,
+            TEXT("UInoWebView[%s]: renderer became unresponsive (UI thread stuck)."),
+            *WebViewName.ToString());
+        OnRenderProcessUnresponsive.Broadcast();
+    };
+    Impl->OnRenderProcessResponsiveCallback = [this]
+    {
+        UE_LOG(LogInoWebUI, Log,
+            TEXT("UInoWebView[%s]: renderer recovered (responsive again)."),
+            *WebViewName.ToString());
+        OnRenderProcessResponsive.Broadcast();
+    };
+
     // OnReady deferral: impls may fire this callback synchronously (Android)
     // or asynchronously (Windows). Either way we queue the BP broadcast to
     // the next game tick so CreateWebView's caller has time to bind before

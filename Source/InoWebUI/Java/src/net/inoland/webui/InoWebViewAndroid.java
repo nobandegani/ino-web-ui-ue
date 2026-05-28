@@ -39,6 +39,8 @@ import android.widget.FrameLayout;
 
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
+import androidx.webkit.WebViewRenderProcess;
+import androidx.webkit.WebViewRenderProcessClient;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -95,6 +97,21 @@ public class InoWebViewAndroid
         // false and onPageStarted remains the fallback.
         boolean docStartBridgeInstalled;
         boolean docStartOverlayInstalled;
+
+        // Renderer-unresponsive auto-terminate.
+        //
+        //   unresponsiveTimeoutMs > 0  → after the renderer has been stuck
+        //     for this many ms, the InoRenderProcessClient calls
+        //     WebViewRenderProcess.terminate() on it, which triggers
+        //     onRenderProcessGone → nativeOnProcessFailed → C++ auto-recover
+        //     (if enabled). 0 = observe-only, never auto-terminate.
+        //   pendingTerminateRunnable / pendingProcess: tracking the scheduled
+        //     postDelayed terminate so onRenderProcessResponsive can cancel
+        //     it if the renderer recovers on its own. Cleared after fire or
+        //     after cancel.
+        int unresponsiveTimeoutMs;
+        Runnable pendingTerminateRunnable;
+        WebViewRenderProcess pendingProcess;
     }
 
     /** Kind values match the C++ EInoScriptDialogKind enum in InoWebUITypes.h.
@@ -414,6 +431,128 @@ public class InoWebViewAndroid
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    //  Renderer-unresponsive detection — AndroidX WebViewRenderProcessClient.
+    //  Fires when the renderer's main thread hasn't returned to its event
+    //  loop in ~5s (alive but stuck). Distinct from onRenderProcessGone
+    //  (process dead). If Config.unresponsiveTimeoutMs > 0, schedules an
+    //  auto-terminate that promotes the hang to a process-gone event so the
+    //  existing recover path handles it uniformly.
+    // ─────────────────────────────────────────────────────────────────────
+    private static class InoRenderProcessClient extends WebViewRenderProcessClient
+    {
+        private final int id;
+        InoRenderProcessClient(int id) { this.id = id; }
+
+        @Override
+        public void onRenderProcessUnresponsive(WebView view, WebViewRenderProcess process)
+        {
+            final Config c = sConfigs.get(id);
+            if (c == null) return;
+
+            Log.warn("onRenderProcessUnresponsive(" + id + "): renderer main thread "
+                    + "hasn't responded for ~5s (page hung)");
+            nativeOnRenderProcessUnresponsive(id);
+
+            if (c.unresponsiveTimeoutMs <= 0 || c.pendingTerminateRunnable != null) {
+                // Observe-only mode OR a terminate is already queued.
+                return;
+            }
+
+            c.pendingProcess = process;
+            c.pendingTerminateRunnable = new Runnable() {
+                @Override public void run() {
+                    Config cur = sConfigs.get(id);
+                    if (cur == null || cur.pendingTerminateRunnable != this) {
+                        // WebView destroyed, or onRenderProcessResponsive
+                        // canceled us. No-op.
+                        return;
+                    }
+                    final WebViewRenderProcess p = cur.pendingProcess;
+                    final int ms = cur.unresponsiveTimeoutMs;
+                    cur.pendingTerminateRunnable = null;
+                    cur.pendingProcess = null;
+
+                    if (p == null) return;
+                    Log.warn("auto-terminating unresponsive renderer for id=" + id
+                            + " after " + ms + "ms — will trigger "
+                            + "onRenderProcessGone → C++ auto-recover");
+                    try {
+                        // Boolean return: true if termination was initiated.
+                        // We ignore it — the onRenderProcessGone callback is
+                        // the source of truth for follow-up.
+                        p.terminate();
+                    } catch (Exception e) {
+                        Log.error("WebViewRenderProcess.terminate threw "
+                                + e.getClass().getSimpleName() + ": " + e.getMessage());
+                    }
+                }
+            };
+            view.postDelayed(c.pendingTerminateRunnable, c.unresponsiveTimeoutMs);
+        }
+
+        @Override
+        public void onRenderProcessResponsive(WebView view, WebViewRenderProcess process)
+        {
+            final Config c = sConfigs.get(id);
+            if (c == null) return;
+
+            Log.debug("onRenderProcessResponsive(" + id + "): renderer recovered");
+
+            // Cancel any pending auto-terminate — the renderer unstuck itself.
+            if (c.pendingTerminateRunnable != null) {
+                view.removeCallbacks(c.pendingTerminateRunnable);
+                c.pendingTerminateRunnable = null;
+                c.pendingProcess = null;
+            }
+
+            nativeOnRenderProcessResponsive(id);
+        }
+    }
+
+    /**
+     * Configure the unresponsive timeout (ms) and install the
+     * WebViewRenderProcessClient. timeoutMs=0 still installs the client so
+     * the OnRenderProcessUnresponsive / Responsive callbacks fire — only the
+     * auto-terminate is suppressed.
+     *
+     * Must be called after createWebView, before the first load. Feature-
+     * gated by WEB_VIEW_RENDERER_CLIENT_BASIC_USAGE (WebView ~78+, i.e.
+     * effectively every device 2019+).
+     */
+    public static void configureUnresponsiveTimeout(final int id, final int timeoutMs)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                Config c = getOrCreateConfig(id);
+                c.unresponsiveTimeoutMs = timeoutMs;
+
+                WebView wv = sWebViews.get(id);
+                if (wv == null) return;
+
+                if (!WebViewFeature.isFeatureSupported(
+                        WebViewFeature.WEB_VIEW_RENDERER_CLIENT_BASIC_USAGE)) {
+                    Log.warn("configureUnresponsiveTimeout(" + id + "): "
+                            + "WEB_VIEW_RENDERER_CLIENT_BASIC_USAGE not supported "
+                            + "by this System WebView — hang detection disabled");
+                    return;
+                }
+                try {
+                    WebViewCompat.setWebViewRenderProcessClient(
+                            wv, new InoRenderProcessClient(id));
+                    Log.debug("configureUnresponsiveTimeout(" + id + "): client "
+                            + "installed (timeoutMs=" + timeoutMs + ")");
+                } catch (Exception e) {
+                    Log.warn("configureUnresponsiveTimeout(" + id + "): "
+                            + "setWebViewRenderProcessClient threw "
+                            + e.getClass().getSimpleName() + ": " + e.getMessage());
+                }
+            }
+        });
+    }
+
     /** JNI functions implemented in InoWebViewImpl_Android.cpp. All are
      *  called on arbitrary threads; C++ marshals onto the game thread
      *  before firing the corresponding BP delegates. */
@@ -426,6 +565,8 @@ public class InoWebViewAndroid
     private static native void nativeOnGotFocus            (int id);
     private static native void nativeOnLostFocus           (int id);
     private static native void nativeOnProcessFailed       (int id, String description);
+    private static native void nativeOnRenderProcessUnresponsive(int id);
+    private static native void nativeOnRenderProcessResponsive  (int id);
     /** Fires after every page-end (success or fail) so C++ can cache nav-history flags. */
     private static native void nativeOnNavStateChanged     (int id, boolean canGoBack, boolean canGoForward);
 

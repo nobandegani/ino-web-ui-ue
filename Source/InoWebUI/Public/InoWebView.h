@@ -60,6 +60,17 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebFocusChanged);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInoWebProcessFailed,
     const FString&, Description);
 
+/** Fired when the renderer becomes unresponsive — alive but its main thread
+ *  hasn't returned to the event loop in ~5 seconds (typically an infinite
+ *  JS loop or a pathologically long synchronous task). The plugin may
+ *  auto-terminate the renderer after FInoWebViewConfig::UnresponsiveTimeoutMs;
+ *  see that field's docs for the full state machine. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebRenderProcessUnresponsive);
+
+/** Fired when the renderer recovers from an unresponsive state on its own
+ *  (event loop pumped through whatever was blocking it). */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInoWebRenderProcessResponsive);
+
 /** One-shot signal: the native WebView has finished async construction and
  *  can safely accept operations. Fires exactly once on the game thread, on
  *  a tick AFTER CreateWebView returned — so BP bind order like
@@ -213,6 +224,15 @@ public:
     /** Fires when a Chromium subprocess fails (renderer crash, OOM, …). */
     UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
     FOnInoWebProcessFailed OnProcessFailed;
+
+    /** Fires when the renderer becomes unresponsive (stuck, not dead).
+     *  Android-only today; never fires on Windows / iOS. */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebRenderProcessUnresponsive OnRenderProcessUnresponsive;
+
+    /** Fires when the renderer recovers from an unresponsive state. */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebRenderProcessResponsive OnRenderProcessResponsive;
 
     /** Fires once when the underlying native WebView has finished async
      *  construction and is ready for operations. See FOnInoWebReady docs. */

@@ -365,6 +365,43 @@ struct INOWEBUI_API FInoWebViewConfig
     bool bAllowNewWindows = false;
 
     /**
+     * Auto-terminate the renderer when it has been unresponsive for this
+     * many milliseconds. 0 disables auto-terminate (observe-only — the
+     * OnRenderProcessUnresponsive / Responsive delegates still fire).
+     *
+     * "Unresponsive" means the renderer's main thread hasn't returned to
+     * its event loop for ~5 seconds — typically an infinite JS loop, a
+     * pathologically long synchronous task, or a wedged page. Different
+     * from "renderer process died" (covered by bAutoRecoverOnProcessFailed
+     * + the OnProcessFailed delegate); a hung renderer is alive but
+     * frozen, dead to the user either way.
+     *
+     * Default 10000 ms: the page gets 10 seconds of stuck time before the
+     * plugin kills the renderer, which then triggers the
+     * OnRenderProcessGone path, which (if bAutoRecoverOnProcessFailed is
+     * also true) reloads the page from scratch. End result: a hung page
+     * self-heals after 10 seconds, looking identical to the user as a
+     * normal F5 reload.
+     *
+     * Combined behavior:
+     *   bAutoRecoverOnProcessFailed=true  + UnresponsiveTimeoutMs>0
+     *     → hung pages auto-recover (recommended for shipping games)
+     *   bAutoRecoverOnProcessFailed=true  + UnresponsiveTimeoutMs=0
+     *     → only crashes auto-recover; hangs are observable but persist
+     *   bAutoRecoverOnProcessFailed=false + UnresponsiveTimeoutMs>0
+     *     → hangs get killed but no automatic re-create; the BP handler
+     *       is responsible for recreating from the OnProcessFailed event
+     *   bAutoRecoverOnProcessFailed=false + UnresponsiveTimeoutMs=0
+     *     → full manual control via the BP delegates
+     *
+     * Android-only feature today. WebView2 (Windows) and WKWebView (iOS)
+     * have no equivalent API; this field is a no-op on those platforms.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI",
+              meta = (DisplayName = "Unresponsive Timeout (ms, Android)"))
+    int32 UnresponsiveTimeoutMs = 10000;
+
+    /**
      * If true (default), the plugin automatically recreates the native
      * WebView when its renderer process dies (out-of-memory kill, renderer
      * crash, etc.). The OnProcessFailed delegate still fires first so you

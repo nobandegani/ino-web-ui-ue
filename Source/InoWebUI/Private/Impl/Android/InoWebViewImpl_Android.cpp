@@ -64,6 +64,7 @@ namespace InoWebUIJNI
     static jmethodID MCapturePreview     = nullptr;
     static jmethodID MLoadURLWithHeaders = nullptr;
     static jmethodID MSetBoundsMode      = nullptr;
+    static jmethodID MConfigureUnresponsiveTimeout = nullptr;
 
     /**
      * Look up the Java helper class and all the static methods we call.
@@ -133,6 +134,7 @@ namespace InoWebUIJNI
         MCapturePreview     = Env->GetStaticMethodID(JavaClass, "capturePreview",     "(IILjava/lang/String;)V");
         MLoadURLWithHeaders = Env->GetStaticMethodID(JavaClass, "loadURLWithHeaders", "(ILjava/lang/String;[Ljava/lang/String;[Ljava/lang/String;)V");
         MSetBoundsMode      = Env->GetStaticMethodID(JavaClass, "setBoundsMode",      "(IZ)V");
+        MConfigureUnresponsiveTimeout = Env->GetStaticMethodID(JavaClass, "configureUnresponsiveTimeout", "(II)V");
 
         // Any GetStaticMethodID miss above throws NoSuchMethodError, which
         // sticks to the JNIEnv. CheckJNI (or the next throwing JNI call) will
@@ -156,7 +158,8 @@ namespace InoWebUIJNI
             || !MSetAllowZoom || !MSetShowScrollBars
             || !MGoBack || !MGoForward || !MStopLoading || !MLoadHTMLString
             || !MSetCookie || !MClearAllData || !MCapturePreview
-            || !MLoadURLWithHeaders || !MSetBoundsMode)
+            || !MLoadURLWithHeaders || !MSetBoundsMode
+            || !MConfigureUnresponsiveTimeout)
         {
             UE_LOG(LogInoWebUI, Error,
                 TEXT("One or more InoWebViewAndroid methods not found — Java helper "
@@ -356,6 +359,14 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
         static_cast<jint>(InstanceId),
         static_cast<jboolean>(Config.bAllowScriptDialogs ? JNI_TRUE : JNI_FALSE),
         static_cast<jboolean>(Config.bAllowNewWindows     ? JNI_TRUE : JNI_FALSE));
+
+    // Step 2d.1: unresponsive-renderer detection. Installs a
+    // WebViewRenderProcessClient regardless of timeout value (so the
+    // observability callbacks always fire), and stores the timeout for the
+    // auto-terminate path. Timeout 0 = observe-only.
+    Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MConfigureUnresponsiveTimeout,
+        static_cast<jint>(InstanceId),
+        static_cast<jint>(Config.UnresponsiveTimeoutMs));
 
     // Step 2e: Phase 3 polish — dev tools, context menus, user agent.
     Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MSetDevToolsEnabled,
@@ -722,6 +733,32 @@ Java_net_inoland_webui_InoWebViewAndroid_nativeOnProcessFailed(
     DispatchOnGameThread(static_cast<int32>(Id), [Description](FInoWebViewImpl_Android* Impl)
     {
         if (Impl->OnProcessFailedCallback) Impl->OnProcessFailedCallback(Description);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnRenderProcessUnresponsive(
+    JNIEnv* /*Env*/, jclass /*Cls*/, jint Id)
+{
+    DispatchOnGameThread(static_cast<int32>(Id), [](FInoWebViewImpl_Android* Impl)
+    {
+        if (Impl->OnRenderProcessUnresponsiveCallback)
+        {
+            Impl->OnRenderProcessUnresponsiveCallback();
+        }
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_net_inoland_webui_InoWebViewAndroid_nativeOnRenderProcessResponsive(
+    JNIEnv* /*Env*/, jclass /*Cls*/, jint Id)
+{
+    DispatchOnGameThread(static_cast<int32>(Id), [](FInoWebViewImpl_Android* Impl)
+    {
+        if (Impl->OnRenderProcessResponsiveCallback)
+        {
+            Impl->OnRenderProcessResponsiveCallback();
+        }
     });
 }
 
