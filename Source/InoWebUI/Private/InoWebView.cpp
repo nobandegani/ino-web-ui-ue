@@ -253,6 +253,14 @@ void UInoWebView::WireImplCallbacks()
         {
             OnCapturePreviewComplete.Broadcast(bSuccess, FilePath);
         };
+
+    // Theme-color (iOS 15+ KVO on WKWebView.themeColor). The iOS impl
+    // marshals to the game thread before invoking us, so a direct broadcast
+    // is safe. Windows / Android leave this slot untouched.
+    Impl->OnThemeColorChangedCallback = [this](const FLinearColor& Color)
+    {
+        OnThemeColorChanged.Broadcast(Color);
+    };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

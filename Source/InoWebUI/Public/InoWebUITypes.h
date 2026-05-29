@@ -189,6 +189,34 @@ struct INOWEBUI_API FInoWebViewSettings
               meta = (DisplayName = "Show Scroll Bars (iOS, Android)"))
     bool bShowScrollBars = false;
 
+    /**
+     * If false (default), page JavaScript cannot request fullscreen via
+     * `element.requestFullscreen()`. WebKit ships fullscreen disabled by
+     * default in WKWebView; flip true when the page needs e.g. fullscreen
+     * HTML5 video or a fullscreen WebGL canvas. Maps to
+     * `WKPreferences.isElementFullscreenEnabled` (iOS 16+).
+     *
+     * iOS-only today — Windows / Android have different fullscreen models
+     * and ignore this flag.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View",
+              meta = (DisplayName = "Allow Element Fullscreen (iOS)"))
+    bool bAllowElementFullscreen = false;
+
+    /**
+     * If true (default), the user can select / long-press / use the system
+     * text-interaction callout inside the WebView. Game UI rarely needs text
+     * selection; flip false to suppress the selection UI entirely (taps
+     * still work, but the long-press callout / loupe never appears).
+     * Maps to `WKPreferences.isTextInteractionEnabled` (iOS 15+).
+     *
+     * iOS-only — Windows / Android have their own selection mechanics and
+     * ignore this flag.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View",
+              meta = (DisplayName = "Allow Text Interaction (iOS)"))
+    bool bAllowTextInteraction = true;
+
     // ── Media ──────────────────────────────────────────────────────────────
 
     /** Audio output from the page is muted on creation when true. */
@@ -255,6 +283,23 @@ struct INOWEBUI_API FInoWebViewSettings
     bool bAllowBounceOnScroll = false;
 
     // ── Identity ───────────────────────────────────────────────────────────
+
+    /**
+     * When non-empty, appends to the default WebKit user-agent string —
+     * "Mozilla/5.0 (...) AppleWebKit/... (KHTML, like Gecko) <ApplicationName>".
+     * Keeps the WebKit version and platform info that compatibility-detecting
+     * sites depend on, just tagged with your app name for analytics or
+     * Unreal-specific page branches. Maps to
+     * `WKWebViewConfiguration.applicationNameForUserAgent`.
+     *
+     * Prefer this over `UserAgentOverride` for tagging — the override below
+     * REPLACES the entire UA, which can break sites that sniff for the
+     * WebKit version. Both apply to iOS only; Windows / Android use their
+     * own paths.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI|View",
+              meta = (DisplayName = "Application Name (iOS, additive UA)"))
+    FString ApplicationName;
 
     /**
      * When non-empty, overrides navigator.userAgent inside the WebView.
@@ -389,6 +434,37 @@ struct INOWEBUI_API FInoWebViewConfig
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI")
     bool bAllowNewWindows = false;
+
+    /**
+     * If true (default), page JavaScript runs. Flip false to load pages as
+     * inert documents (CSS still renders, but no scripts execute, no
+     * fetch / XHR, no event handlers). Useful for displaying untrusted
+     * HTML or rendering offline help pages where you want zero attack
+     * surface.
+     *
+     * Applied per-navigation on iOS via
+     * `WKWebpagePreferences.allowsContentJavaScript` (iOS 14+) — the new
+     * Apple-recommended replacement for deprecated
+     * `WKPreferences.javaScriptEnabled`. iOS-only today; Windows / Android
+     * ignore this flag (their JS-enable knobs aren't wired yet).
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI",
+              meta = (DisplayName = "Allow JavaScript (iOS)"))
+    bool bAllowJavaScript = true;
+
+    /**
+     * If true, the WebView automatically retries plain-HTTP loads as HTTPS
+     * when the destination host is known to support TLS. Behaves like an
+     * inline HSTS upgrade for those requests. Defaults to false to match
+     * WebKit's own default (and so existing http:// dev flows aren't
+     * silently transformed). Maps to
+     * `WKWebViewConfiguration.upgradeKnownHostsToHTTPS` (iOS 15+).
+     *
+     * iOS-only today — Windows / Android use different upgrade paths.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI",
+              meta = (DisplayName = "Upgrade HTTP→HTTPS for Known Hosts (iOS)"))
+    bool bUpgradeHTTPToHTTPS = false;
 
     /**
      * If false (default), mixed-content (an https:// page fetching http://

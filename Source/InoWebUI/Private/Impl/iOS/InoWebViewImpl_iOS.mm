@@ -293,19 +293,26 @@ struct FInoWebViewImpl_iOS_Internal
 }
 
 // ── WKNavigationDelegate ─────────────────────────────────────────────────────
+// iOS 13+ richer variant of decidePolicyForNavigationAction — the WKWebpagePreferences
+// parameter lets us set per-navigation `allowsContentJavaScript` (iOS 14+), the
+// Apple-recommended replacement for the deprecated global
+// WKPreferences.javaScriptEnabled. WebKit calls THIS method instead of the
+// 2-arg legacy variant on iOS 13+, so we only implement this one.
 - (void)webView:(WKWebView*)webView
         decidePolicyForNavigationAction:(WKNavigationAction*)navigationAction
-                        decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
+                            preferences:(WKWebpagePreferences*)preferences
+                        decisionHandler:(void (^)(WKNavigationActionPolicy, WKWebpagePreferences*))decisionHandler
 {
     NSString* URLStr = navigationAction.request.URL.absoluteString;
     if (URLStr == nil) URLStr = @"";
     const FString URI = FStringFromNSString(URLStr);
 
-    // Lockdown — same rule as the other platforms. ShouldAllowURI runs on the
-    // game thread normally; here we read the cached config fields synchronously
-    // off the impl, which is safe because they're only mutated during
-    // Initialize (before the WebView ever navigates).
+    // Lockdown + per-nav config — same rule as the other platforms.
+    // ShouldAllowURI runs on the game thread normally; here we read the
+    // cached config fields synchronously off the impl, which is safe
+    // because they're only mutated during Initialize.
     bool bAllowed = true;
+    bool bAllowJS = true;
     {
         FScopeLock Lock(&GRegistryLock);
         if (FInoWebViewImpl_iOS** Found = GImplRegistry.Find(self.InstanceId))
@@ -313,6 +320,7 @@ struct FInoWebViewImpl_iOS_Internal
             if (FInoWebViewImpl_iOS* Impl = *Found)
             {
                 bAllowed = Impl->ShouldAllowURI(URI);
+                bAllowJS = Impl->bAllowJavaScript;
             }
         }
     }
@@ -323,13 +331,22 @@ struct FInoWebViewImpl_iOS_Internal
         Impl->SetCachedLoading(true);
     });
 
+    // Push per-nav prefs. allowsContentJavaScript is iOS 14+; on iOS 13 the
+    // property doesn't exist, so we silently skip (Config.bAllowJavaScript
+    // is then governed by WKPreferences.javaScriptEnabled if anyone ever
+    // sets that — we deliberately don't, to avoid the deprecation warning).
+    if (@available(iOS 14.0, *))
+    {
+        preferences.allowsContentJavaScript = bAllowJS ? YES : NO;
+    }
+
     if (!bAllowed)
     {
         UE_LOG(LogInoWebUI, Warning, TEXT("Navigation blocked by lockdown: %s"), *URI);
-        decisionHandler(WKNavigationActionPolicyCancel);
+        decisionHandler(WKNavigationActionPolicyCancel, preferences);
         return;
     }
-    decisionHandler(WKNavigationActionPolicyAllow);
+    decisionHandler(WKNavigationActionPolicyAllow, preferences);
 }
 
 - (void)webView:(WKWebView*)webView didFinishNavigation:(WKNavigation*)navigation
@@ -564,6 +581,44 @@ struct FInoWebViewImpl_iOS_Internal
     return nil;
 }
 
+// ── KVO ──────────────────────────────────────────────────────────────────────
+// Observer for WKWebView.themeColor (iOS 15+). Registered in Initialize after
+// the WebView is constructed; removed in Shutdown before the WebView is freed.
+// Apple guarantees KVO change notifications fire on the main thread for
+// WKWebView properties, so we marshal to the game thread via DispatchOnGameThread.
+- (void)observeValueForKeyPath:(NSString*)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey, id>*)change
+                       context:(void*)context
+{
+    if (![keyPath isEqualToString:@"themeColor"]) return;
+
+    // change[NSKeyValueChangeNewKey] is NSNull when the page clears its
+    // theme-color (or the page has none); UIColor when set. Treat both
+    // cases as "no theme color" by broadcasting FLinearColor(0,0,0,0) —
+    // alpha == 0 is the documented "cleared" signal in the BP delegate.
+    id RawNew = change[NSKeyValueChangeNewKey];
+    FLinearColor LC(0.0f, 0.0f, 0.0f, 0.0f);
+    if ([RawNew isKindOfClass:[UIColor class]])
+    {
+        UIColor* Color = (UIColor*)RawNew;
+        CGFloat R = 0, G = 0, B = 0, A = 0;
+        // getRed:green:blue:alpha: returns NO if the UIColor isn't in an
+        // RGB-compatible color space. Practically every theme-color from
+        // a CSS string is sRGB; the few exotic display-P3 cases get reported
+        // as their stored components (close enough for tinting UI).
+        if ([Color getRed:&R green:&G blue:&B alpha:&A])
+        {
+            LC = FLinearColor((float)R, (float)G, (float)B, (float)A);
+        }
+    }
+
+    DispatchOnGameThread(self.InstanceId, [LC](FInoWebViewImpl_iOS* Impl)
+    {
+        if (Impl->OnThemeColorChangedCallback) Impl->OnThemeColorChangedCallback(LC);
+    });
+}
+
 @end
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -599,6 +654,7 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
     bLockToVirtualHost = Config.bLockToVirtualHost;
     bAllowScriptDialogs = Config.bAllowScriptDialogs;
     bAllowNewWindows    = Config.bAllowNewWindows;
+    bAllowJavaScript    = Config.bAllowJavaScript;
     VirtualHostName     = Config.VirtualHostName.ToLower();
     AllowedURIPatterns  = Config.AllowedURIPatterns;
 
@@ -660,6 +716,54 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
             Configuration.mediaTypesRequiringUserActionForPlayback = Config.View.bAllowMediaAutoplay
                 ? WKAudiovisualMediaTypeNone
                 : WKAudiovisualMediaTypeAll;
+        }
+
+        // Per-WebView preferences (Phase 19+ hardening).
+        // ────────────────────────────────────────────
+        // WKPreferences governs page-wide behaviour. Most defaults are sane
+        // but Apple's documented values have shifted across iOS versions —
+        // we set the security-relevant ones explicitly so the contract is
+        // stable across the supported range.
+        WKPreferences* Preferences = Configuration.preferences;
+
+        // Anti-phishing warning. iOS 14+. Default is YES; we set explicitly
+        // so a future framework default change doesn't quietly weaken us.
+        if (@available(iOS 14.0, *))
+        {
+            Preferences.fraudulentWebsiteWarningEnabled = YES;
+        }
+
+        // HTML5 fullscreen API (element.requestFullscreen). iOS 16+. Default
+        // is NO in WKWebView, opt-in via Config.View.bAllowElementFullscreen.
+        if (@available(iOS 16.0, *))
+        {
+            Preferences.elementFullscreenEnabled = Config.View.bAllowElementFullscreen ? YES : NO;
+        }
+
+        // System text-interaction UI (selection caret, magnifier loupe,
+        // long-press callout). iOS 15+. Default YES; opt out for game UI
+        // that doesn't want the iOS edit menu to appear over content.
+        if (@available(iOS 15.0, *))
+        {
+            Preferences.textInteractionEnabled = Config.View.bAllowTextInteraction ? YES : NO;
+        }
+
+        // HTTPS upgrade for known-good hosts. iOS 15+. Default NO in WKWebView.
+        // When YES, plaintext http:// loads to hosts WebKit knows support TLS
+        // are silently retried as https:// — inline HSTS-style hardening.
+        if (@available(iOS 15.0, *))
+        {
+            Configuration.upgradeKnownHostsToHTTPS = Config.bUpgradeHTTPToHTTPS ? YES : NO;
+        }
+
+        // ApplicationName for User-Agent (iOS 9+). Appends to the default
+        // WebKit UA — preserves the WebKit version + platform info that
+        // compatibility-detecting sites depend on. Mutually-non-exclusive
+        // with View.UserAgentOverride below, but customUserAgent (set on
+        // the WebView itself after creation) wins when both are present.
+        if (!Config.View.ApplicationName.IsEmpty())
+        {
+            Configuration.applicationNameForUserAgent = NSStringFromFString(Config.View.ApplicationName);
         }
 
         // Bridge object — handles JS messages + nav delegate + UI delegate.
@@ -923,6 +1027,36 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
         {
             WebView.opaque = YES;
             WebView.backgroundColor = UIColor.whiteColor;
+        }
+
+        // underPageBackgroundColor (iOS 15+) — the color shown in the
+        // overscroll area when the user rubber-band scrolls past the page
+        // edges. Without this, iOS paints a system-default light color
+        // there, which leaks through the overlay's transparent gutter and
+        // breaks the see-through illusion. Match the WebView's own
+        // background opacity. SetBackgroundOpaque also re-syncs this at
+        // runtime when the toggle flips.
+        if (@available(iOS 15.0, *))
+        {
+            WebView.underPageBackgroundColor = bTransparent
+                ? UIColor.clearColor
+                : UIColor.whiteColor;
+        }
+
+        // KVO on themeColor (iOS 15+) — fires the OnThemeColorChanged BP
+        // delegate when the page sets / updates / clears its <meta
+        // name="theme-color">. Observer is the Bridge; cleanup happens in
+        // Shutdown before the WebView is released. NSKeyValueObservingOptionInitial
+        // is deliberately NOT used: the BP delegate may not be bound when
+        // Initialize returns (UInoWebView defers OnReady to the next game
+        // tick), so an initial broadcast would land before any subscriber
+        // exists. Real page-side theme-color changes always fire later.
+        if (@available(iOS 15.0, *))
+        {
+            [WebView addObserver:Bridge
+                      forKeyPath:@"themeColor"
+                         options:NSKeyValueObservingOptionNew
+                         context:nullptr];
         }
 
         // User-Agent override.
@@ -1245,6 +1379,19 @@ void FInoWebViewImpl_iOS::Shutdown()
         WKWebView* WebView = Internal->WebView;
         if (WebView != nil)
         {
+            // KVO cleanup must precede delegate teardown so a final change
+            // notification can't fire on a Bridge whose Impl pointer is
+            // already in the process of being released. @try/@catch covers
+            // the "not registered" exception (iOS 14 / 15-but-failed paths).
+            if (@available(iOS 15.0, *))
+            {
+                @try
+                {
+                    [WebView removeObserver:Internal->Bridge forKeyPath:@"themeColor"];
+                }
+                @catch (NSException* /*Unused*/) {}
+            }
+
             WebView.navigationDelegate = nil;
             WebView.UIDelegate         = nil;
             [WebView stopLoading];
@@ -1449,6 +1596,15 @@ void FInoWebViewImpl_iOS::SetBackgroundOpaque(bool bOpaque)
             {
                 WebView.scrollView.backgroundColor = UIColor.clearColor;
             }
+        }
+        // Re-sync the overscroll-area color (iOS 15+) so the rubber-band
+        // bounce reveals the same color as the WebView background instead
+        // of the system default light grey.
+        if (@available(iOS 15.0, *))
+        {
+            WebView.underPageBackgroundColor = bOpaque
+                ? UIColor.whiteColor
+                : UIColor.clearColor;
         }
     });
 }

@@ -16,7 +16,7 @@ pixels in the HTML reveal the 3D scene underneath.
 This is fundamentally different from UE's built-in `WebBrowser` plugin, which
 textures the browser output — we skip all of that, zero copy, zero stall.
 
-**Current status: Phase 19 — Win64 (full) + Android (full parity, hardened) + iOS (`WKWebView`, full parity bar `SetMuted`) + Web Bundle assets + dev-tools overlay + DirectComposition hosting for PIE + unified `bridge.js` / `dev_overlay.js` source + browser-style API surface (back/forward, state getters, capture, headers, sub-region bounds) + Android renderer auto-recover / unresponsive detection + `addWebMessageListener` bridge + page console capture + explicit security defaults + iOS content-world-isolated bridge (`WKContentWorld.defaultClientWorld`) + iOS 14+ native `pageZoom` + iOS 16.4+ Safari Web Inspector attach via `inspectable`.**
+**Current status: Phase 20 — Win64 (full) + Android (full parity, hardened) + iOS (`WKWebView`, full parity bar `SetMuted`) + Web Bundle assets + dev-tools overlay + DirectComposition hosting for PIE + unified `bridge.js` / `dev_overlay.js` source + browser-style API surface (back/forward, state getters, capture, headers, sub-region bounds) + Android renderer auto-recover / unresponsive detection + `addWebMessageListener` bridge + page console capture + explicit security defaults + iOS content-world-isolated bridge (`WKContentWorld.defaultClientWorld`) + iOS 14+ native `pageZoom` + iOS 16.4+ Safari Web Inspector attach via `inspectable` + iOS preferences-variant `decidePolicyForNavigationAction:preferences:` with per-nav `allowsContentJavaScript` + `WKPreferences` hardening (`fraudulentWebsiteWarningEnabled`, `isElementFullscreenEnabled`, `isTextInteractionEnabled`) + `WKWebViewConfiguration.upgradeKnownHostsToHTTPS` + additive `applicationNameForUserAgent` + `WKWebView.themeColor` KVO → `OnThemeColorChanged` BP delegate + `WKWebView.underPageBackgroundColor` synced to transparency.**
 
 ---
 
@@ -459,7 +459,7 @@ If you ship the same `FInoWebViewConfig` to both Android (https) and iOS (inoweb
 | Virtual-host mapping | ✔ | Custom `inoweb` scheme via `WKURLSchemeHandler` (see above) |
 | Web Bundle assets | ✔ | Cross-platform runtime logic |
 | Two-way messaging | ✔ | `WKScriptMessageHandler` in `WKContentWorld.defaultClientWorld` (iOS 14+) + `pageWorld` shim via DOM `CustomEvent` so page JS can't intercept the bridge; UE→JS uses `evaluateJavaScript:in:inContentWorld:` targeting `defaultClientWorld` |
-| Navigation events | ✔ | `WKNavigationDelegate.didStart/didFinish/didFail` |
+| Navigation events | ✔ | `decidePolicyForNavigationAction:preferences:` (iOS 13+ variant) with per-nav `WKWebpagePreferences.allowsContentJavaScript` from `Config.bAllowJavaScript` + `didStart/didFinish/didFail*Navigation` |
 | Lockdown | ✔ | `decidePolicyForNavigationAction` (whole-host + wildcard list) |
 | JS dialog suppression | ✔ | `runJavaScriptAlert/Confirm/TextInputPanel` immediate-cancel completion |
 | `window.open` blocking | ✔ | `createWebViewWithConfiguration` returns `nil`, fires callback |
@@ -1028,7 +1028,8 @@ directly — those are generated and will be overwritten.
 | 17 | JS bridge migration to `addWebMessageListener` — origin allowlist, `JavaScriptReplyProxy` for UE→JS, legacy `addJavascriptInterface` fallback for pre-2020 System WebView | ✔ done |
 | 18 | Console capture + explicit security defaults — `OnConsoleMessage` BP delegate + `LogInoWebUI` mirror, `bAllowMixedContent` / `bAllowFileURLs` / `bAllowContentURIs` defaults off | ✔ done |
 | 19 | iOS hardening — bridge into `WKContentWorld.defaultClientWorld` (page can't intercept `_InoWebUIHost`) + `pageWorld` shim via DOM `CustomEvent` so `window.InoWebUI` stays page-accessible, native `WKWebView.pageZoom` (iOS 14+) replacing the old "not supported" log, `WKWebView.inspectable` (iOS 16.4+) gated on `bEnableDevTools` so Safari Web Inspector attaches to TestFlight / Release builds | ✔ done |
-| 20 | macOS implementation (`WKWebView`) | — |
+| 20 | iOS preferences modernization — `decidePolicyForNavigationAction:preferences:decisionHandler:` (iOS 13+) replaces legacy 2-arg variant, with per-nav `allowsContentJavaScript` from `Config.bAllowJavaScript`. `WKPreferences` hardening defaults (`fraudulentWebsiteWarningEnabled` explicit, `isElementFullscreenEnabled` / `isTextInteractionEnabled` gated on Settings). `WKWebViewConfiguration.upgradeKnownHostsToHTTPS` (iOS 15+) as inline HSTS-style hardening. Additive `applicationNameForUserAgent` (preserves WebKit version in UA) alongside the full-replace `UserAgentOverride`. `WKWebView.themeColor` KVO → new `FOnInoWebThemeColorChanged` BP delegate. `WKWebView.underPageBackgroundColor` synced to background opacity at create + `SetBackgroundOpaque` time so the overscroll gutter never leaks system grey through a transparent overlay. | ✔ done |
+| 21 | macOS implementation (`WKWebView`) | — |
 
 Don't stub future phases — add them when they're needed.
 

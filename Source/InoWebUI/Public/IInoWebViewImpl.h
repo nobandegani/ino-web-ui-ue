@@ -241,6 +241,14 @@ public:
     /** Owner-settable; fired when CapturePreview finishes (success or fail). */
     TFunction<void(bool bSuccess, const FString& FilePath)> OnCapturePreviewCompleteCallback;
 
+    /** Fired when the loaded page's <meta name="theme-color"> changes (or is
+     *  cleared, in which case ThemeColor.A == 0). iOS-only today — driven by
+     *  KVO on WKWebView.themeColor (iOS 15+). Windows / Android leave this
+     *  slot unused. The 0–1 channel values are the sRGB-space float
+     *  components UIColor parses CSS colors into; assign directly to
+     *  FLinearColor-typed UMG / Slate brushes and they'll render correctly. */
+    TFunction<void(const FLinearColor& /*ThemeColor*/)> OnThemeColorChangedCallback;
+
     /**
      * Navigate to URL with extra HTTP headers attached to the top-level
      * request. Headers DO NOT propagate to subresource requests — only the

@@ -116,6 +116,11 @@ public:
     // dialog/popup callbacks.
     bool bAllowScriptDialogs = false;
     bool bAllowNewWindows    = false;
+    /** Snapshotted from FInoWebViewConfig::bAllowJavaScript. Read by the
+     *  navigation delegate's decidePolicyForNavigationAction:preferences:
+     *  variant (iOS 13+) and pushed into WKWebpagePreferences.allowsContentJavaScript
+     *  on every navigation. True = JS runs (default); false = scripts inert. */
+    bool bAllowJavaScript    = true;
 
 private:
     /** Process-unique identifier — keys the Objective-C side's instance map

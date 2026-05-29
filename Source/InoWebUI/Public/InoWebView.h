@@ -111,6 +111,15 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInoWebCapturePreviewComplete,
     bool,           bSuccess,
     const FString&, FilePath);
 
+/** Fired when the loaded page's <meta name="theme-color"> changes (or is
+ *  cleared, in which case ThemeColor.A == 0). iOS 15+ only — driven by KVO
+ *  on WKWebView.themeColor. Windows / Android don't surface a theme-color
+ *  event so the delegate never fires there. The float channels are sRGB
+ *  (0..1) — assign directly to FLinearColor-typed UMG / Slate brushes and
+ *  they render correctly without a color-space conversion. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInoWebThemeColorChanged,
+    const FLinearColor&, ThemeColor);
+
 /**
  * UInoWebView — Blueprint-visible handle to a single native WebView overlay.
  *
@@ -374,6 +383,11 @@ public:
     /** Fires when CapturePreview completes (success or fail). */
     UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
     FOnInoWebCapturePreviewComplete OnCapturePreviewComplete;
+
+    /** Fires when the page's <meta name="theme-color"> changes. iOS 15+ only;
+     *  never fires on Windows / Android (no equivalent event). */
+    UPROPERTY(BlueprintAssignable, Category = "Ino|WebUI")
+    FOnInoWebThemeColorChanged OnThemeColorChanged;
 
     /**
      * Navigate to URL with extra HTTP headers attached to the top-level
