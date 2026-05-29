@@ -19,7 +19,11 @@ $JavaOut    = Join-Path $PluginRoot 'Source/InoWebUI/Java/src/net/inoland/webui/
 
 $Bundles = @(
     @{ File = 'bridge.js';      CppName = 'GInoWebUIBridgeScript';          JavaName = 'BRIDGE_JS';            ObjCName = 'GInoWebUIBridgeScript' },
-    @{ File = 'dev_overlay.js'; CppName = 'GInoWebUIDevToolsOverlayScript'; JavaName = 'DEVTOOLS_OVERLAY_JS';  ObjCName = 'GInoWebUIDevToolsOverlayScript' }
+    @{ File = 'dev_overlay.js'; CppName = 'GInoWebUIDevToolsOverlayScript'; JavaName = 'DEVTOOLS_OVERLAY_JS';  ObjCName = 'GInoWebUIDevToolsOverlayScript' },
+    # iOS-only: the pageWorld ↔ defaultClientWorld relay/shim. Not emitted
+    # into the C++/Java constant files (Win64 and Android don't need it —
+    # they use bridge.js directly in their single-world model).
+    @{ File = 'bridge_ios.js';  ObjCName = 'GInoWebUIIOSWorldBridgeScript'; IOSOnly = $true }
 )
 
 # MSVC's hard limit on a single string-literal token is 16380 chars. We chunk
@@ -104,6 +108,7 @@ $cpp += '// Edit the .js files and re-run the script to regenerate.' + $nl + $nl
 $cpp += '#pragma once' + $nl + $nl
 
 foreach ($b in $Bundles) {
+    if ($b.IOSOnly) { continue }
     $jsPath = Join-Path $JsDir $b.File
     $content = Read-JsFile $jsPath
 
@@ -138,6 +143,7 @@ $java += 'public final class InoWebUIScripts' + $nl + '{' + $nl
 $java += '    private InoWebUIScripts() {}' + $nl + $nl
 
 foreach ($b in $Bundles) {
+    if ($b.IOSOnly) { continue }
     $jsPath = Join-Path $JsDir $b.File
     $content = Read-JsFile $jsPath
     $escaped = ConvertTo-JavaString $content

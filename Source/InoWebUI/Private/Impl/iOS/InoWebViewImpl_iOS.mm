@@ -682,23 +682,91 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
         // User-content controller — one place to add scripts + message handlers.
         WKUserContentController* UCC = Configuration.userContentController;
 
-        // window.webkit.messageHandlers._InoWebUIHost.postMessage(...) → bridge
-        [UCC addScriptMessageHandler:Bridge name:kInoMessageHandler];
+        // Phase-19 hardening — content-world isolation.
+        // ────────────────────────────────────────────
+        // Install the WK message handler and bridge.js into
+        // WKContentWorld.defaultClientWorld (iOS 14+) instead of the page's
+        // main world. This makes `_InoWebUIHost` and `window.InoWebUI`
+        // invisible to page scripts — a malicious or compromised page can
+        // no longer monkey-patch the bridge to intercept UE↔JS traffic.
+        //
+        // The trade-off: page JS in pageWorld can't see window.InoWebUI
+        // either. To preserve the cross-platform `window.InoWebUI.send /
+        // on / off / once` API, bridge_ios.js is injected into BOTH worlds:
+        //   - in defaultClientWorld it acts as a RELAY (forwards events
+        //     between pageWorld DOM events and bridge.js's send/dispatch);
+        //   - in pageWorld it acts as a SHIM (re-exposes window.InoWebUI
+        //     as a thin facade that talks to the relay via DOM events).
+        //
+        // Project min target is iOS 16 so the iOS 14 APIs are unconditionally
+        // available, but we keep the @available guard for documentation.
+        WKContentWorld* BridgeWorld = nil;
+        if (@available(iOS 14.0, *))
+        {
+            BridgeWorld = WKContentWorld.defaultClientWorld;
+        }
 
-        // Inject the bridge.js shim before any user script runs.
-        WKUserScript* BridgeScript =
-            [[WKUserScript alloc] initWithSource:GInoWebUIBridgeScript
-                                   injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-                                forMainFrameOnly:YES];
+        if (BridgeWorld != nil)
+        {
+            [UCC addScriptMessageHandler:Bridge contentWorld:BridgeWorld name:kInoMessageHandler];
+        }
+        else
+        {
+            // Pre-iOS 14 fallback: page world. (Unreachable with iOS 16 min.)
+            [UCC addScriptMessageHandler:Bridge name:kInoMessageHandler];
+        }
+
+        // bridge.js → defaultClientWorld. Same source as Win64 / Android;
+        // when it detects window.webkit.messageHandlers._InoWebUIHost (which
+        // is only visible in this world), it sets up window.InoWebUI here.
+        WKUserScript* BridgeScript = (BridgeWorld != nil)
+            ? [[WKUserScript alloc] initWithSource:GInoWebUIBridgeScript
+                                     injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                  forMainFrameOnly:YES
+                                    inContentWorld:BridgeWorld]
+            : [[WKUserScript alloc] initWithSource:GInoWebUIBridgeScript
+                                     injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                  forMainFrameOnly:YES];
         [UCC addUserScript:BridgeScript];
 
+        // bridge_ios.js → defaultClientWorld (acts as RELAY). MUST be added
+        // AFTER bridge.js so the relay's wrap of _InoWebUIDispatch sees the
+        // bridge.js-installed value.
+        if (BridgeWorld != nil)
+        {
+            WKUserScript* WorldBridgeIsolated =
+                [[WKUserScript alloc] initWithSource:GInoWebUIIOSWorldBridgeScript
+                                       injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                    forMainFrameOnly:YES
+                                      inContentWorld:BridgeWorld];
+            [UCC addUserScript:WorldBridgeIsolated];
+
+            // bridge_ios.js → pageWorld (acts as SHIM). _InoWebUIHost is
+            // absent here, which is how the script knows it's in pageWorld.
+            WKUserScript* WorldBridgePage =
+                [[WKUserScript alloc] initWithSource:GInoWebUIIOSWorldBridgeScript
+                                       injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                    forMainFrameOnly:YES
+                                      inContentWorld:WKContentWorld.pageWorld];
+            [UCC addUserScript:WorldBridgePage];
+        }
+
         // Dev overlay (gated by the same flag as the other platforms).
+        // Lives in defaultClientWorld so it uses bridge.js's window.InoWebUI
+        // directly without going through the relay/shim DOM-event hop. The
+        // overlay's DOM elements (FAB, modal) are visible from pageWorld
+        // because the DOM is shared across content worlds — only the JS
+        // namespaces are isolated.
         if (bDevToolsEnabled)
         {
-            WKUserScript* DevOverlay =
-                [[WKUserScript alloc] initWithSource:GInoWebUIDevToolsOverlayScript
-                                       injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
-                                    forMainFrameOnly:YES];
+            WKUserScript* DevOverlay = (BridgeWorld != nil)
+                ? [[WKUserScript alloc] initWithSource:GInoWebUIDevToolsOverlayScript
+                                         injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
+                                      forMainFrameOnly:YES
+                                        inContentWorld:BridgeWorld]
+                : [[WKUserScript alloc] initWithSource:GInoWebUIDevToolsOverlayScript
+                                         injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
+                                      forMainFrameOnly:YES];
             [UCC addUserScript:DevOverlay];
         }
 
@@ -773,6 +841,20 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
         WebView.UIDelegate         = Bridge;
         WebView.hidden             = !bVisibleOnCreate;
         WebView.allowsBackForwardNavigationGestures = NO; // game UI; we control nav
+
+        // Safari Web Inspector attachability (iOS 16.4+). Defaults to NO on
+        // every build configuration, so without this, Web Inspector silently
+        // fails to attach to TestFlight / Ad-Hoc / Release builds even on a
+        // dev device. Gated by bEnableDevTools so shipping builds don't
+        // expose the page to anyone with a Mac and a cable.
+        //
+        // Pre-iOS 16.4 behaviour (unreachable with iOS 16 min if devs ship
+        // 16.4+, but covers 16.0–16.3): debug builds are inspectable by
+        // default, release builds never were. Nothing to do for those.
+        if (@available(iOS 16.4, *))
+        {
+            WebView.inspectable = bDevToolsEnabled ? YES : NO;
+        }
 
         // bExtendUnderSafeArea (default true) → contentInsetAdjustmentBehavior
         // = Never so content extends edge-to-edge under the notch / home
@@ -1169,10 +1251,24 @@ void FInoWebViewImpl_iOS::Shutdown()
             [WebView removeFromSuperview];
 
             // Drop the script-message handler so the bridge doesn't leak.
+            // Use the contentWorld-aware removal on iOS 14+ because we
+            // installed the handler into defaultClientWorld (see Initialize).
+            // The legacy removeScriptMessageHandlerForName: only looks in
+            // pageWorld and would leave the defaultClientWorld registration
+            // dangling — Shutdown becomes a slow leak.
             if (Internal->Configuration.userContentController != nil)
             {
-                [Internal->Configuration.userContentController
-                    removeScriptMessageHandlerForName:kInoMessageHandler];
+                if (@available(iOS 14.0, *))
+                {
+                    [Internal->Configuration.userContentController
+                        removeScriptMessageHandlerForName:kInoMessageHandler
+                                             contentWorld:WKContentWorld.defaultClientWorld];
+                }
+                else
+                {
+                    [Internal->Configuration.userContentController
+                        removeScriptMessageHandlerForName:kInoMessageHandler];
+                }
             }
         }
         Internal->WebView       = nil;
@@ -1200,7 +1296,27 @@ void FInoWebViewImpl_iOS::PostMessageJson(const FString& Json)
         if (WebView == nil) return;
         NSString* Script =
             [NSString stringWithFormat:@"window._InoWebUIDispatch && window._InoWebUIDispatch(%@)", JSLiteral];
-        [WebView evaluateJavaScript:Script completionHandler:nil];
+
+        // Run in defaultClientWorld — that's where bridge.js installed
+        // _InoWebUIDispatch (Phase-19 content-world isolation). The legacy
+        // evaluateJavaScript:completionHandler: would run in pageWorld and
+        // the call would silently no-op (the global doesn't exist there).
+        // bridge_ios.js's relay then echoes the message to pageWorld via a
+        // DOM CustomEvent so the pageWorld shim's listeners fire too.
+        if (@available(iOS 14.0, *))
+        {
+            [WebView evaluateJavaScript:Script
+                                     in:nil  // main frame
+                         inContentWorld:WKContentWorld.defaultClientWorld
+                      completionHandler:nil];
+        }
+        else
+        {
+            // Pre-iOS 14 fallback — runs in pageWorld where bridge.js's
+            // legacy install path put _InoWebUIDispatch. Unreachable with
+            // iOS 16 min target.
+            [WebView evaluateJavaScript:Script completionHandler:nil];
+        }
     });
 }
 
@@ -1213,7 +1329,11 @@ void FInoWebViewImpl_iOS::OpenDevTools()
         TEXT("OpenDevTools on iOS: connect this device via USB to a Mac, open Safari, "
              "enable the Develop menu (Safari → Settings → Advanced → Show features for web developers), "
              "and pick this WKWebView from Develop → <DeviceName>. "
-             "Inline DevTools is not available on iOS."));
+             "Inline DevTools is not available on iOS. "
+             "NOTE: on iOS 16.4+, WKWebView is only attachable to Safari Web "
+             "Inspector when WKWebView.inspectable=YES — gated here by "
+             "FInoWebViewConfig::bEnableDevTools. Below iOS 16.4, debug builds "
+             "were always inspectable and release builds never were."));
 }
 
 void FInoWebViewImpl_iOS::ExecuteJavaScript(const FString& Code)
@@ -1259,20 +1379,33 @@ void FInoWebViewImpl_iOS::FocusWebView()
     });
 }
 
-void FInoWebViewImpl_iOS::SetZoomFactor(float /*Factor*/)
+void FInoWebViewImpl_iOS::SetZoomFactor(float Factor)
 {
     check(IsInGameThread());
     if (bDestroyed) return;
+    auto* Internal = static_cast<FInoWebViewImpl_iOS_Internal*>(InternalPtr);
+    if (!Internal) return;
 
-    // WKWebView has no native zoomFactor API. Earlier versions of this
-    // impl injected `document.body.style.zoom = <factor>` via JS; that's
-    // been removed to keep the plugin from injecting scripts into the
-    // page beyond the bridge. CachedZoomFactor stays at 1.0; consumers
-    // that need zoom can apply CSS zoom themselves.
-    UE_LOG(LogInoWebUI, Warning,
-        TEXT("SetZoomFactor on iOS: not supported. WKWebView has no native "
-             "zoomFactor API. Apply CSS `zoom` (or `transform: scale(...)`) "
-             "from your own page styles if you need scaling."));
+    // WKWebView.pageZoom is iOS 14+ (1.0 = 100%, persists across navigations).
+    // Project min target is iOS 16, so the @available is just documentation.
+    // Below iOS 14 the property doesn't exist and the call would silently
+    // no-op via Obj-C's nil-receiver semantics — but we'd rather log it.
+    CachedZoomFactor = Factor;
+    const CGFloat Z = (CGFloat)Factor;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView* WebView = Internal->WebView;
+        if (WebView == nil) return;
+        if (@available(iOS 14.0, *))
+        {
+            WebView.pageZoom = Z;
+        }
+        else
+        {
+            UE_LOG(LogInoWebUI, Warning,
+                TEXT("SetZoomFactor on iOS <14: not supported. "
+                     "WKWebView.pageZoom was added in iOS 14."));
+        }
+    });
 }
 
 void FInoWebViewImpl_iOS::ClearAllCookies()

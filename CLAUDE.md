@@ -16,7 +16,7 @@ pixels in the HTML reveal the 3D scene underneath.
 This is fundamentally different from UE's built-in `WebBrowser` plugin, which
 textures the browser output — we skip all of that, zero copy, zero stall.
 
-**Current status: Phase 18 — Win64 (full) + Android (full parity, hardened) + iOS (`WKWebView`, full parity bar `OpenDevTools` and `SetMuted`) + Web Bundle assets + dev-tools overlay + DirectComposition hosting for PIE + unified `bridge.js` / `dev_overlay.js` source + browser-style API surface (back/forward, state getters, capture, headers, sub-region bounds) + Android renderer auto-recover / unresponsive detection + `addWebMessageListener` bridge + page console capture + explicit security defaults.**
+**Current status: Phase 19 — Win64 (full) + Android (full parity, hardened) + iOS (`WKWebView`, full parity bar `SetMuted`) + Web Bundle assets + dev-tools overlay + DirectComposition hosting for PIE + unified `bridge.js` / `dev_overlay.js` source + browser-style API surface (back/forward, state getters, capture, headers, sub-region bounds) + Android renderer auto-recover / unresponsive detection + `addWebMessageListener` bridge + page console capture + explicit security defaults + iOS content-world-isolated bridge (`WKContentWorld.defaultClientWorld`) + iOS 14+ native `pageZoom` + iOS 16.4+ Safari Web Inspector attach via `inspectable`.**
 
 ---
 
@@ -458,7 +458,7 @@ If you ship the same `FInoWebViewConfig` to both Android (https) and iOS (inoweb
 | Transparent background | ✔ | `webView.opaque = NO` + `clearColor` |
 | Virtual-host mapping | ✔ | Custom `inoweb` scheme via `WKURLSchemeHandler` (see above) |
 | Web Bundle assets | ✔ | Cross-platform runtime logic |
-| Two-way messaging | ✔ | `WKScriptMessageHandler` + `evaluateJavaScript` |
+| Two-way messaging | ✔ | `WKScriptMessageHandler` in `WKContentWorld.defaultClientWorld` (iOS 14+) + `pageWorld` shim via DOM `CustomEvent` so page JS can't intercept the bridge; UE→JS uses `evaluateJavaScript:in:inContentWorld:` targeting `defaultClientWorld` |
 | Navigation events | ✔ | `WKNavigationDelegate.didStart/didFinish/didFail` |
 | Lockdown | ✔ | `decidePolicyForNavigationAction` (whole-host + wildcard list) |
 | JS dialog suppression | ✔ | `runJavaScriptAlert/Confirm/TextInputPanel` immediate-cancel completion |
@@ -470,8 +470,8 @@ If you ship the same `FInoWebViewConfig` to both Android (https) and iOS (inoweb
 | `LoadHTMLString(html, baseURI)` | ✔ | `loadHTMLString:baseURL:` (baseURI honoured natively) |
 | `LoadURLWithHeaders` | ✔ | `NSMutableURLRequest setValue:forHTTPHeaderField:` |
 | `CapturePreview` (PNG/JPEG) | ✔ | `takeSnapshotWithConfiguration:` + UIImagePNG/JPEGRepresentation |
-| `SetZoomFactor` / `GetZoomFactor` | ✔ | CSS `document.body.style.zoom` injected; cached value returned |
-| `OpenDevTools` (programmatic) | — | iOS has no in-process API — log explains Safari → Develop → device |
+| `SetZoomFactor` / `GetZoomFactor` | ✔ | Native `WKWebView.pageZoom` (iOS 14+); persists across navigations, no JS injection. Cached value returned by getter. |
+| `OpenDevTools` (programmatic) | ✔ (iOS 16.4+) | No in-process panel — Safari Web Inspector only. `bEnableDevTools` sets `WKWebView.inspectable = YES` so the WebView is attachable from the Mac's Safari → Develop menu in TestFlight / Release builds too; `OpenDevTools()` logs the workflow. Pre-16.4: debug builds were always inspectable, release builds never were. |
 | `SetMuted` / `bStartMuted` | partial | WKWebView has no first-class API; we walk `<audio>/<video>.muted` via JS as best-effort and log |
 | `bEnableAcceleratorKeys` | N/A | F5/F12/Ctrl+F are desktop-only concepts |
 | `bShowStatusBar` | N/A | Windows-only feature |
@@ -1027,7 +1027,8 @@ directly — those are generated and will be overwritten.
 | 16 | Hung-renderer detection + auto-terminate — `WebViewRenderProcessClient`, `OnRenderProcessUnresponsive` / `Responsive` BP delegates, `UnresponsiveTimeoutMs` config | ✔ done |
 | 17 | JS bridge migration to `addWebMessageListener` — origin allowlist, `JavaScriptReplyProxy` for UE→JS, legacy `addJavascriptInterface` fallback for pre-2020 System WebView | ✔ done |
 | 18 | Console capture + explicit security defaults — `OnConsoleMessage` BP delegate + `LogInoWebUI` mirror, `bAllowMixedContent` / `bAllowFileURLs` / `bAllowContentURIs` defaults off | ✔ done |
-| 19 | macOS implementation (`WKWebView`) | — |
+| 19 | iOS hardening — bridge into `WKContentWorld.defaultClientWorld` (page can't intercept `_InoWebUIHost`) + `pageWorld` shim via DOM `CustomEvent` so `window.InoWebUI` stays page-accessible, native `WKWebView.pageZoom` (iOS 14+) replacing the old "not supported" log, `WKWebView.inspectable` (iOS 16.4+) gated on `bEnableDevTools` so Safari Web Inspector attaches to TestFlight / Release builds | ✔ done |
+| 20 | macOS implementation (`WKWebView`) | — |
 
 Don't stub future phases — add them when they're needed.
 
