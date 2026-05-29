@@ -74,7 +74,13 @@ public class InoWebUI : ModuleRules
         // PCH with ARC enabled. Adds a small one-time compile cost
         // (a few seconds) and only on iOS — Win64 / Android still use the
         // shared PCH per the constructor's UseExplicitOrSharedPCHs default.
-        PCHUsage = PCHUsageMode.NoSharedPCHs;
+        //
+        // NoSharedPCHs without an explicit PrivatePCHHeaderFile makes UBT
+        // refuse to build the module ("must specify an explicit precompiled
+        // header"). The PCH file is intentionally minimal — see its header
+        // doc for what it does and doesn't include.
+        PCHUsage              = PCHUsageMode.NoSharedPCHs;
+        PrivatePCHHeaderFile  = "Private/InoWebUIPrivatePCH.h";
 
         // No UPL/IPL needed for the core WKWebView display path — Apple does
         // NOT require any Info.plist additions for inline WKWebView use.
