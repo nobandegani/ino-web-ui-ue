@@ -1381,22 +1381,18 @@ void FInoWebViewImpl_iOS::Shutdown()
         {
             // KVO cleanup must precede delegate teardown so a final change
             // notification can't fire on a Bridge whose Impl pointer is
-            // already in the process of being released. @try/@catch covers
-            // the "not registered" exception that NSObject raises if KVO
-            // wasn't actually wired (e.g. an addObserver branch that didn't
-            // run because of a runtime version check). Idiomatic named-with-
-            // (void)cast form to keep older clang Obj-C grammars happy —
-            // some toolchains reject unnamed @catch declarators.
+            // already in the process of being released. No @try/@catch
+            // needed: UE's iOS builds compile with -fno-objc-exceptions, so
+            // @try is a hard compile error. Symmetric add/remove gated on
+            // the same @available(iOS 15.0) check in Initialize — if we
+            // reached the addObserver branch there, removeObserver here
+            // matches. The local WebView pointer is the same one that was
+            // alive when addObserver ran (Initialize stored it under
+            // Internal->WebView), so the observer is always cleanly
+            // registered when we get here.
             if (@available(iOS 15.0, *))
             {
-                @try
-                {
-                    [WebView removeObserver:Internal->Bridge forKeyPath:@"themeColor"];
-                }
-                @catch (NSException* Ex)
-                {
-                    (void)Ex;
-                }
+                [WebView removeObserver:Internal->Bridge forKeyPath:@"themeColor"];
             }
 
             WebView.navigationDelegate = nil;
@@ -1457,10 +1453,14 @@ void FInoWebViewImpl_iOS::PostMessageJson(const FString& Json)
         // the call would silently no-op (the global doesn't exist there).
         // bridge_ios.js's relay then echoes the message to pageWorld via a
         // DOM CustomEvent so the pageWorld shim's listeners fire too.
+        //
+        // Selector is `evaluateJavaScript:inFrame:inContentWorld:completionHandler:`
+        // (NOT the Swift-style `in:in:` — the Obj-C name uses distinct
+        // labels). inFrame:nil targets the main frame.
         if (@available(iOS 14.0, *))
         {
             [WebView evaluateJavaScript:Script
-                                     in:nil  // main frame
+                                inFrame:nil  // main frame
                          inContentWorld:WKContentWorld.defaultClientWorld
                       completionHandler:nil];
         }
