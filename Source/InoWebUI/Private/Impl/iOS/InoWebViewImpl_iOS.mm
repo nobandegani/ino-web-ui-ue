@@ -1382,14 +1382,21 @@ void FInoWebViewImpl_iOS::Shutdown()
             // KVO cleanup must precede delegate teardown so a final change
             // notification can't fire on a Bridge whose Impl pointer is
             // already in the process of being released. @try/@catch covers
-            // the "not registered" exception (iOS 14 / 15-but-failed paths).
+            // the "not registered" exception that NSObject raises if KVO
+            // wasn't actually wired (e.g. an addObserver branch that didn't
+            // run because of a runtime version check). Idiomatic named-with-
+            // (void)cast form to keep older clang Obj-C grammars happy —
+            // some toolchains reject unnamed @catch declarators.
             if (@available(iOS 15.0, *))
             {
                 @try
                 {
                     [WebView removeObserver:Internal->Bridge forKeyPath:@"themeColor"];
                 }
-                @catch (NSException* /*Unused*/) {}
+                @catch (NSException* Ex)
+                {
+                    (void)Ex;
+                }
             }
 
             WebView.navigationDelegate = nil;
