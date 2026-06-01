@@ -961,6 +961,39 @@ public class InoWebViewAndroid
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    //  Layer type — optional View.LAYER_TYPE_HARDWARE promotion.
+    //
+    //  Workaround for transparent-WebView scroll-compositing corruption on
+    //  certain GPU drivers (Pixel 10 / Tensor G5 / PowerVR). Promoting the
+    //  WebView to a single offscreen hardware texture converts the broken
+    //  incremental tile re-blend into a full-frame blend on every scroll
+    //  frame — see FInoWebViewConfig::bForceHardwareLayer for the full
+    //  rationale. Only called from C++ when the flag is on; default
+    //  (LAYER_TYPE_NONE) is otherwise untouched.
+    //
+    //  setLayerType must run on the UI thread (it touches view state). Safe
+    //  to call before the view is attached / first draw — it's just a flag
+    //  the draw pipeline reads.
+    // ─────────────────────────────────────────────────────────────────────
+    public static void configureLayerType(final int id, final boolean forceHardware)
+    {
+        final Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WebView wv = sWebViews.get(id);
+                if (wv == null) return;
+                wv.setLayerType(
+                        forceHardware ? View.LAYER_TYPE_HARDWARE : View.LAYER_TYPE_NONE,
+                        null);
+                Log.debug("configureLayerType(" + id + "): "
+                        + (forceHardware ? "LAYER_TYPE_HARDWARE (PowerVR scroll workaround)"
+                                         : "LAYER_TYPE_NONE"));
+            }
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     //  Hardening — JS dialog suppression + window.open blocking.
     // ─────────────────────────────────────────────────────────────────────
     public static void configureDialogs(final int id,

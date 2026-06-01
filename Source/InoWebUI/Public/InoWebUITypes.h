@@ -513,6 +513,39 @@ struct INOWEBUI_API FInoWebViewConfig
     bool bAllowContentURIs = false;
 
     /**
+     * If true, the Android WebView is promoted to its own offscreen hardware
+     * layer via `View.setLayerType(LAYER_TYPE_HARDWARE, null)`. Default false.
+     *
+     * This is a targeted workaround for a specific class of GPU-driver bug —
+     * seen on the Pixel 10 series (Tensor G5 / Imagination PowerVR GPU,
+     * Android 16) — where a TRANSPARENT WebView composited over the 3D scene
+     * renders perfectly while static but corrupts on SCROLL: parts of the
+     * page fail to recomposite and go transparent, letting the game scene
+     * bleed through where content should be.
+     *
+     * Why it helps: by default the WebView tile-composites incrementally —
+     * on scroll it shifts existing tiles and only re-blends the moved /
+     * newly-exposed strips. The affected driver mishandles that incremental
+     * transparent re-blend. Promoting to a hardware layer makes the WebView
+     * re-render into one full-screen texture and blend the WHOLE thing each
+     * frame — the same full-frame blend that already works when the page is
+     * static — sidestepping the broken incremental path.
+     *
+     * Cost: one extra full-screen GPU texture (~view-size × 4 bytes, e.g.
+     * ~16 MB at 1440p) and a per-frame re-render of that texture while the
+     * page is animating. Negligible for a mostly-static menu / chat / HUD
+     * overlay; measurable on a constantly-animating page. The texture is
+     * VIEW-sized (not document-sized), so long scrollable pages don't blow
+     * the GPU's max-texture cap.
+     *
+     * Leave false on devices that render correctly (Adreno / Mali, etc.) —
+     * it's pure overhead there. Android-only; no-op on Windows / iOS.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InoWebUI",
+              meta = (DisplayName = "Force Hardware Layer (Pixel/PowerVR scroll fix, Android)"))
+    bool bForceHardwareLayer = false;
+
+    /**
      * Auto-terminate the renderer when it has been unresponsive for this
      * many milliseconds. 0 disables auto-terminate (observe-only — the
      * OnRenderProcessUnresponsive / Responsive delegates still fire).

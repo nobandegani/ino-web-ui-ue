@@ -73,6 +73,7 @@ namespace InoWebUIJNI
     static jmethodID MSetBoundsMode      = nullptr;
     static jmethodID MConfigureUnresponsiveTimeout = nullptr;
     static jmethodID MConfigureSecurity  = nullptr;
+    static jmethodID MConfigureLayerType = nullptr;
 
     /**
      * Look up the Java helper class and all the static methods we call.
@@ -160,6 +161,7 @@ namespace InoWebUIJNI
         MSetBoundsMode      = Env->GetStaticMethodID(JavaClass, "setBoundsMode",      "(IZ)V");
         MConfigureUnresponsiveTimeout = Env->GetStaticMethodID(JavaClass, "configureUnresponsiveTimeout", "(II)V");
         MConfigureSecurity            = Env->GetStaticMethodID(JavaClass, "configureSecurity",            "(IZZZ)V");
+        MConfigureLayerType           = Env->GetStaticMethodID(JavaClass, "configureLayerType",           "(IZ)V");
 
         // Any GetStaticMethodID miss above throws NoSuchMethodError, which
         // sticks to the JNIEnv. CheckJNI (or the next throwing JNI call) will
@@ -185,7 +187,8 @@ namespace InoWebUIJNI
             || !MSetCookie || !MClearAllData || !MCapturePreview
             || !MLoadURLWithHeaders || !MSetBoundsMode
             || !MConfigureUnresponsiveTimeout
-            || !MConfigureSecurity)
+            || !MConfigureSecurity
+            || !MConfigureLayerType)
         {
             UE_LOG(LogInoWebUI, Error,
                 TEXT("One or more InoWebViewAndroid methods not found — Java helper "
@@ -391,6 +394,21 @@ bool FInoWebViewImpl_Android::Initialize(void* /*ParentNativeHandle*/,
         static_cast<jboolean>(Config.bAllowMixedContent ? JNI_TRUE : JNI_FALSE),
         static_cast<jboolean>(Config.bAllowFileURLs     ? JNI_TRUE : JNI_FALSE),
         static_cast<jboolean>(Config.bAllowContentURIs  ? JNI_TRUE : JNI_FALSE));
+
+    // Step 2d.0b: optional hardware-layer promotion — workaround for the
+    // transparent-WebView scroll-compositing corruption on Pixel 10 /
+    // PowerVR. Only call when the flag is set; default leaves LAYER_TYPE_NONE
+    // untouched so non-affected devices pay nothing.
+    if (Config.bForceHardwareLayer)
+    {
+        Env->CallStaticVoidMethod(InoWebUIJNI::JavaClass, InoWebUIJNI::MConfigureLayerType,
+            static_cast<jint>(InstanceId),
+            static_cast<jboolean>(JNI_TRUE));
+        UE_LOG(LogInoWebUI, Log,
+            TEXT("FInoWebViewImpl_Android[%d]: forcing LAYER_TYPE_HARDWARE "
+                 "(bForceHardwareLayer — PowerVR transparent-scroll workaround)."),
+            InstanceId);
+    }
 
     // Step 2d.1: unresponsive-renderer detection. Installs a
     // WebViewRenderProcessClient regardless of timeout value (so the
