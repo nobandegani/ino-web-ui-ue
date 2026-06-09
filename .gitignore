@@ -1,4 +1,7 @@
 Binaries/Win64
+Binaries/Android
+Binaries/Mac
+Binaries/IOS
 Intermediate
 
 # Local model files (gigabytes; never committed). The plugin locates models
