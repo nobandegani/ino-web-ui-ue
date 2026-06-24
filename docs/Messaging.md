@@ -75,8 +75,14 @@ A small shim is injected into every page load, **before any user
 script runs**:
 
 - Windows: via `ICoreWebView2::AddScriptToExecuteOnDocumentCreated`.
-- Android: via `WebViewClient.onPageStarted` injection.
-- iOS: via `WKUserScript` with `WKUserScriptInjectionTimeAtDocumentStart`.
+- Android: via AndroidX `WebViewCompat.addDocumentStartJavaScript`
+  (runs before any page script on every navigation — the preferred path,
+  ~Chrome-WebView 83+). Falls back to `WebViewClient.onPageStarted`
+  injection only on pre-2020 System WebView.
+- iOS: via `WKUserScript` with `WKUserScriptInjectionTimeAtDocumentStart`,
+  installed into `WKContentWorld.defaultClientWorld` so page scripts can't
+  intercept the bridge (a `pageWorld` shim re-exposes `window.InoWebUI`
+  to the page — see `iOS.md`).
 
 The shim source-of-truth is
 [`Source/InoWebUI/JS/bridge.js`](../Source/InoWebUI/JS/bridge.js).
@@ -101,11 +107,11 @@ window.InoWebUI.once('readyToken', (data) => { initWith(data.token); });
 // Unsubscribe (pass the same handler reference)
 window.InoWebUI.off('playerState', playerStateHandler);
 
-// Bridge version string. Bumped on incompatible API changes; current = '1.1'.
+// Bridge version string. Bumped on incompatible API changes; current = '1.2'.
 console.log(window.InoWebUI.version);
 ```
 
-Behaviour notes (v1.1):
+Behaviour notes (v1.2):
 - Listener storage uses `Object.create(null)`, so channel names like
   `"toString"` or `"hasOwnProperty"` work normally instead of colliding
   with `Object.prototype`.

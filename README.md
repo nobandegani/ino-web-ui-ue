@@ -64,12 +64,15 @@ overlay window becomes invisible. Set `FullscreenMode=1` in
 | `SetCookie`, `ClearAllCookies`, `ClearAllData`, crash event | ✔ | ✔ | ✔ |
 | Screenshot to file (`CapturePreview`, PNG / JPEG) | ✔ | ✔ | ✔ |
 | Manual sub-region bounds (`SetBounds` / `SetBoundsAuto`) | ✔ | ✔ | ✔ |
-| Zoom factor (`SetZoomFactor`) | ✔ | ✔ | ✔ (CSS zoom) |
+| Zoom factor (`SetZoomFactor`) | ✔ | ✔ | ✔ (native `pageZoom`) |
 | DevTools | In-process panel (F12) | Remote via `chrome://inspect` | Remote via Safari Web Inspector |
 | ExecuteJavaScript, UA override, context-menu + accelerator toggles | ✔ | ✔ | ✔ (UA + JS) |
-| Audio mute (`SetMuted`) | ✔ | — | partial (best-effort JS walk) |
+| Audio mute (`SetMuted`) | ✔ | — | — (logs warning) |
+| Renderer auto-recover / hung-renderer detection | — | ✔ | — |
+| Console capture (`OnConsoleMessage`) | — | ✔ | — |
+| Theme-color change (`OnThemeColorChanged`) | — | — | ✔ |
 | Web Bundle asset type | ✔ | ✔ | ✔ |
-| Dev-tools floating overlay | ✔ | ✔ | ✔ |
+| Dev-tools floating overlay (gear + FPS chip) | ✔ | ✔ | ✔ |
 
 (1) iOS uses a custom `inoweb://` scheme for the virtual host instead of
 `https://` — see [`docs/iOS.md`](docs/iOS.md) for the divergence.
@@ -113,12 +116,14 @@ void AMyPlayerController::BeginPlay()
         GetGameInstance()->GetSubsystem<UInoWebUISubsystem>();
 
     FInoWebViewConfig Config;
-    Config.InitialURL             = TEXT("https://inoweb.local/index.html");
-    Config.VirtualHostName        = TEXT("inoweb.local");
-    Config.VirtualHostFolder      = TEXT("WebUI/dist"); // under Content/
-    Config.bTransparentBackground = true;
-    Config.bVisibleOnCreate       = true;
-    Config.bEnableDevTools        = true;   // dev builds only
+    Config.InitialURL                  = TEXT("https://inoweb.local/index.html");
+    Config.VirtualHostName             = TEXT("inoweb.local");
+    Config.VirtualHostFolder           = TEXT("WebUI/dist"); // under Content/
+    // View-level appearance / behavior toggles live in the nested View struct
+    // (they appear flat in the editor Details panel):
+    Config.View.bTransparentBackground = true;
+    Config.View.bVisibleOnCreate       = true;
+    Config.View.bEnableDevTools        = true;   // dev builds only
 
     UInoWebView* View = WebUI->CreateWebView(TEXT("MainUI"), Config);
 }
@@ -286,7 +291,14 @@ plugin touches engine-wide state — strictly opt-in (auto defaults off).
 | 11 | Bridge hardening (`once`, iteration safety, `Object.create(null)`, U+2028 fix) | done |
 | 12 | Browser API completeness (back/forward, state getters, capture, headers, sub-region bounds) | done |
 | 13 | iOS implementation (`WKWebView`) | done |
-| 14 | macOS implementation (`WKWebView`) | planned |
+| 14 | Android docs-review hardening (UTF-16 JNI, `PixelCopy` capture, AndroidX webkit 1.16, cleartext warning) | done |
+| 15 | Auto-recover on renderer process failure (`onRenderProcessGone` → recreate + reload, retry budget) | done |
+| 16 | Hung-renderer detection + auto-terminate (`UnresponsiveTimeoutMs`, responsive/unresponsive delegates) | done |
+| 17 | JS bridge → `addWebMessageListener` (origin allowlist, `JavaScriptReplyProxy`, legacy fallback) | done |
+| 18 | Console capture (`OnConsoleMessage`) + explicit Android security defaults | done |
+| 19 | iOS hardening (content-world bridge isolation, native `pageZoom`, `inspectable`) | done |
+| 20 | iOS preferences modernization (per-nav JS, `WKPreferences` hardening, theme-color, under-page bg) | done |
+| 21 | macOS implementation (`WKWebView`) | planned |
 
 ---
 

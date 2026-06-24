@@ -16,7 +16,7 @@ pixels in the HTML reveal the 3D scene underneath.
 This is fundamentally different from UE's built-in `WebBrowser` plugin, which
 textures the browser output — we skip all of that, zero copy, zero stall.
 
-**Current status: Phase 20 — Win64 (full) + Android (full parity, hardened) + iOS (`WKWebView`, full parity bar `SetMuted`) + Web Bundle assets + dev-tools overlay + DirectComposition hosting for PIE + unified `bridge.js` / `dev_overlay.js` source + browser-style API surface (back/forward, state getters, capture, headers, sub-region bounds) + Android renderer auto-recover / unresponsive detection + `addWebMessageListener` bridge + page console capture + explicit security defaults + iOS content-world-isolated bridge (`WKContentWorld.defaultClientWorld`) + iOS 14+ native `pageZoom` + iOS 16.4+ Safari Web Inspector attach via `inspectable` + iOS preferences-variant `decidePolicyForNavigationAction:preferences:` with per-nav `allowsContentJavaScript` + `WKPreferences` hardening (`fraudulentWebsiteWarningEnabled`, `isElementFullscreenEnabled`, `isTextInteractionEnabled`) + `WKWebViewConfiguration.upgradeKnownHostsToHTTPS` + additive `applicationNameForUserAgent` + `WKWebView.themeColor` KVO → `OnThemeColorChanged` BP delegate + `WKWebView.underPageBackgroundColor` synced to transparency.**
+**Current status: Phase 20 — Win64 (full) + Android (full parity, hardened) + iOS (`WKWebView`, full parity bar `SetMuted` and `bEnableContextMenus`) + Web Bundle assets + dev-tools overlay + DirectComposition hosting for PIE + unified `bridge.js` / `dev_overlay.js` source + browser-style API surface (back/forward, state getters, capture, headers, sub-region bounds) + Android renderer auto-recover / unresponsive detection + `addWebMessageListener` bridge + page console capture + explicit security defaults + iOS content-world-isolated bridge (`WKContentWorld.defaultClientWorld`) + iOS 14+ native `pageZoom` + iOS 16.4+ Safari Web Inspector attach via `inspectable` + iOS preferences-variant `decidePolicyForNavigationAction:preferences:` with per-nav `allowsContentJavaScript` + `WKPreferences` hardening (`fraudulentWebsiteWarningEnabled`, `isElementFullscreenEnabled`, `isTextInteractionEnabled`) + `WKWebViewConfiguration.upgradeKnownHostsToHTTPS` + additive `applicationNameForUserAgent` + `WKWebView.themeColor` KVO → `OnThemeColorChanged` BP delegate + `WKWebView.underPageBackgroundColor` synced to transparency.**
 
 ---
 
@@ -42,14 +42,18 @@ UObject / Blueprint layer (platform-agnostic, no Windows.h ever)
         │
 Native implementation layer (platform-specific)
 └── IInoWebViewImpl                              pure virtual interface
-    └── FInoWebViewImpl_Windows                  WebView2 COM impl
+    ├── FInoWebViewImpl_Windows                  WebView2 COM impl (child HWND)
+    ├── FInoWebViewImpl_Windows_Composition      WebView2 + DirectComposition (PIE)
+    ├── FInoWebViewImpl_Android                  JNI + android.webkit.WebView
+    └── FInoWebViewImpl_iOS                      WKWebView (Obj-C++ .mm)
 ```
 
 **Why pimpl?** WebView2.h drags Windows.h, wrl.h, dozens of COM headers. The
-pimpl pattern keeps them inside exactly **one** .cpp file
-(`InoWebViewImpl_Windows.cpp`). Nothing else in the plugin pays that compile
-cost, and adding macOS/Android later doesn't leak platform types into the
-UObject headers.
+pimpl pattern keeps them confined to the two Windows impl .cpp files
+(`InoWebViewImpl_Windows.cpp` and `InoWebViewImpl_Windows_Composition.cpp`);
+the Apple headers stay inside `InoWebViewImpl_iOS.mm` and the JNI inside the
+Android impl. Nothing else in the plugin pays that compile cost, and platform
+types never leak into the UObject headers.
 
 `IInoWebViewImpl.h` itself is **public** (not private) even though it's the
 "internal" interface. It has to be public because `UInoWebView` holds a
@@ -158,6 +162,7 @@ dispatches share one run loop, ordering is preserved end-to-end.
 | **UserAgentOverride** | ✔ | `WebSettings.setUserAgentString` |
 | **bEnableContextMenus** | ✔ | `setOnLongClickListener` + `getHitTestResult` — suppresses the browser long-press menu (links / images / page-text selection) but **keeps** the Paste / Select-All toolbar inside editable `<input>` / `<textarea>` so password/text paste still works |
 | **CapturePreview** | ✔ | `PixelCopy.request(Window, Rect, Bitmap, ...)` — reads the actual SurfaceFlinger output, works on HW-accelerated WebView. (Earlier `WebView.draw(Canvas)` was the deprecated software path and silently missed content.) |
+| **Force hardware layer** | ✔ | `bForceHardwareLayer` (default false) → `View.setLayerType(LAYER_TYPE_HARDWARE, null)` via `configureLayerType`. Targeted workaround for a GPU-driver bug (Pixel 10 / Tensor G5 / PowerVR, Android 16) where a transparent WebView corrupts on scroll. Promotes the WebView to one full-screen texture so the whole frame re-blends. One extra view-sized texture; negligible for static UI. Leave false on Adreno / Mali. |
 | `OpenDevTools` (programmatic) | — | Android has no in-process API; remote inspect only (log explains) |
 | `SetMuted` / `bStartMuted` | — | `android.webkit.WebView` has no audio mute; log warns |
 | `bEnableAcceleratorKeys` | N/A | F5/F12/Ctrl+F are desktop-only concepts |
@@ -188,9 +193,9 @@ effort). `Config.docStart{Bridge,Overlay}Installed` gates `onPageStarted`
 so the preferred path never double-injects. Requires the
 `androidx.webkit:webkit` gradle dep (added via `InoWebUI_UPL.xml`
 `buildGradleAdditions`); AndroidX must be enabled (UE 5.x default) and
-the webkit `1.8.0` artifact builds against compileSdk 34 (UE 5.7
-default — bump/lower the version in the UPL if the project overrides
-compileSdk).
+the webkit `1.16.0` artifact (pinned in the UPL) builds against
+compileSdk 34 (UE 5.7 default — bump/lower the version in the UPL if the
+project overrides compileSdk).
 
 JS bridge is the same `window.InoWebUI.send / on / off / once` API as
 Windows. `window.chrome.webview.postMessage` doesn't exist on Android;
@@ -203,7 +208,11 @@ falls back to `evaluateJavascript` otherwise. See "Android hardening"
 section below for the full migration story. User JS is identical
 across platforms.
 
-Events from Java to C++ go through six `nativeOn...` JNI exports
+Events from Java to C++ go through fourteen `nativeOn...` JNI exports
+(message / navigation-starting / navigation-completed / title-changed /
+script-dialog / new-window / got-focus / lost-focus / process-failed /
+render-unresponsive / render-responsive / console-message /
+nav-state-changed / capture-preview-complete)
 routed via a single `DispatchOnGameThread<Lambda>` helper that:
 (1) marshals onto the game thread via `AsyncTask`, (2) re-acquires the
 impl registry lock, (3) invokes the lambda with the live impl pointer.
@@ -472,7 +481,8 @@ If you ship the same `FInoWebViewConfig` to both Android (https) and iOS (inoweb
 | `CapturePreview` (PNG/JPEG) | ✔ | `takeSnapshotWithConfiguration:` + UIImagePNG/JPEGRepresentation |
 | `SetZoomFactor` / `GetZoomFactor` | ✔ | Native `WKWebView.pageZoom` (iOS 14+); persists across navigations, no JS injection. Cached value returned by getter. |
 | `OpenDevTools` (programmatic) | ✔ (iOS 16.4+) | No in-process panel — Safari Web Inspector only. `bEnableDevTools` sets `WKWebView.inspectable = YES` so the WebView is attachable from the Mac's Safari → Develop menu in TestFlight / Release builds too; `OpenDevTools()` logs the workflow. Pre-16.4: debug builds were always inspectable, release builds never were. |
-| `SetMuted` / `bStartMuted` | partial | WKWebView has no first-class API; we walk `<audio>/<video>.muted` via JS as best-effort and log |
+| `SetMuted` / `bStartMuted` | — | WKWebView has no native mute API; the call logs a warning and no-ops (parity with Android). Mute media from page JS instead. |
+| `bEnableContextMenus` | — | Not enforced on iOS — the long-press/context UI is not overridden by the impl. |
 | `bEnableAcceleratorKeys` | N/A | F5/F12/Ctrl+F are desktop-only concepts |
 | `bShowStatusBar` | N/A | Windows-only feature |
 
@@ -495,39 +505,44 @@ Plugins/InoWebUI/
 ├── Scripts/
 │   └── AcquireWebView2SDK.ps1                    downloads WebView2 from NuGet
 ├── Content/
-│   └── webview_test.html                         manual test harness
+│   ├── web/index.html                            self-contained showcase / test harness
+│   └── DA_IW_Main.uasset                          sample UInoWebBundle asset
 ├── Source/
 │   ├── ThirdParty/WebView2/                      headers + static lib
 │   │   ├── include/{WebView2.h, WebView2EnvironmentOptions.h}
 │   │   ├── lib/Win64/WebView2LoaderStatic.lib
 │   │   └── VERSION                               SDK version stamp
-│   └── InoWebUI/
-│       ├── InoWebUI.Build.cs                     links static loader + system libs
-│       ├── Public/
-│       │   ├── InoWebUI.h                        module
-│       │   ├── InoWebUILog.h                     LogInoWebUI category
-│       │   ├── InoWebUITypes.h                   FInoWebViewConfig
-│       │   ├── InoWebUISubsystem.h               UGameInstanceSubsystem API
-│       │   ├── InoWebView.h                      UObject handle API
-│       │   └── IInoWebViewImpl.h                 pimpl contract (no platform headers)
-│       └── Private/
-│           ├── InoWebUI.cpp
-│           ├── InoWebUISubsystem.cpp
-│           ├── InoWebView.cpp
-│           ├── Generated/
-│           │   ├── InoWebUIScripts.generated.h        (C++)
-│           │   └── InoWebUIScripts_iOS.generated.h    (Obj-C++ NSString*)
-│           └── Impl/
-│               ├── InoWebViewFactory.cpp         platform-dispatches
-│               ├── Windows/
-│               │   ├── InoWebViewImpl_Windows.h
-│               │   └── InoWebViewImpl_Windows.cpp
-│               ├── Android/
-│               │   ├── InoWebViewImpl_Android.h
-│               │   └── InoWebViewImpl_Android.cpp
-│               └── iOS/
-│                   ├── InoWebViewImpl_iOS.h
-│                   └── InoWebViewImpl_iOS.mm
+│   ├── InoWebUI/
+│   │   ├── InoWebUI.Build.cs                     links static loader + system libs
+│   │   ├── InoWebUI_UPL.xml                      Android Unreal Plugin Language config
+│   │   ├── Java/src/net/inoland/webui/           InoWebViewAndroid.java + InoWebUIScripts.java
+│   │   ├── JS/                                   bridge.js, bridge_ios.js, dev_overlay.js (source of truth)
+│   │   ├── Public/
+│   │   │   ├── InoWebUI.h                        module
+│   │   │   ├── InoWebUILog.h                     LogInoWebUI category
+│   │   │   ├── InoWebUITypes.h                   FInoWebViewConfig + FInoWebViewSettings (View)
+│   │   │   ├── InoWebUISubsystem.h               UGameInstanceSubsystem API
+│   │   │   ├── InoWebView.h                      UObject handle API
+│   │   │   ├── InoWebBundle.h                    UInoWebBundle + FInoWebBundleFile
+│   │   │   └── IInoWebViewImpl.h                 pimpl contract (no platform headers)
+│   │   └── Private/
+│   │       ├── InoWebUI.cpp
+│   │       ├── InoWebUISubsystem.cpp
+│   │       ├── InoWebView.cpp
+│   │       ├── InoWebBundle.cpp
+│   │       ├── Generated/
+│   │       │   ├── InoWebUIScripts.generated.h        (C++)
+│   │       │   └── InoWebUIScripts_iOS.generated.h    (Obj-C++ NSString*)
+│   │       └── Impl/
+│   │           ├── InoWebViewFactory.cpp         platform-dispatches
+│   │           ├── Windows/
+│   │           │   ├── InoWebViewImpl_Windows.{h,cpp}                child HWND
+│   │           │   └── InoWebViewImpl_Windows_Composition.{h,cpp}    DirectComposition (PIE)
+│   │           ├── Android/
+│   │           │   └── InoWebViewImpl_Android.{h,cpp}
+│   │           └── iOS/
+│   │               └── InoWebViewImpl_iOS.{h,mm}
+│   └── InoWebUIEditor/                           editor-only module (UInoWebBundle factory + actions)
 ```
 
 ---
@@ -549,7 +564,9 @@ a public header.
 
 `Build.cs` links `WebView2LoaderStatic.lib` (the static loader shim). No
 extra DLL is shipped — the shim finds the system Edge/WebView2 runtime at
-launch. Required system libs: `shlwapi.lib`, `version.lib`, `ole32.lib`.
+launch. Required system libs: `shlwapi.lib`, `version.lib`, `ole32.lib`,
+plus `dcomp.lib` (DirectComposition, used only by the PIE composition-hosting
+impl; ships on Win8+ so no new minimum-platform requirement).
 
 If the WebView2 Runtime is missing (rare on Win10+), `Initialize()` logs a
 clear error pointing to the Evergreen installer rather than crashing.
@@ -563,9 +580,9 @@ clear error pointing to the Evergreen installer rather than crashing.
 UInoWebUISubsystem* WebUI = GetGameInstance()->GetSubsystem<UInoWebUISubsystem>();
 
 FInoWebViewConfig Config;
-Config.InitialURL            = TEXT("http://localhost:5173");
-Config.bTransparentBackground = true;
-Config.bVisibleOnCreate       = true;
+Config.InitialURL                  = TEXT("http://localhost:5173");
+Config.View.bTransparentBackground = true;   // view-appearance toggles live in Config.View
+Config.View.bVisibleOnCreate       = true;
 
 UInoWebView* View = WebUI->CreateWebView(TEXT("MainUI"), Config);
 ```
@@ -851,17 +868,22 @@ strictly opt-in (auto default off / explicit manual call).
 
 Gated by `FInoWebViewConfig::bEnableDevTools`. When enabled, a circular
 **⚙** button appears in the WebView's bottom-right corner. Clicking it
-expands seven action buttons on a quarter-circle arc:
+expands a vertical toolbar of four action buttons. An always-visible
+**FPS chip** sits just left of the gear, measuring the WebView layer's
+own frame rate (UI jank, independent of UE's render thread):
 
 | Button | Action | Routing |
 |---|---|---|
 | ↻ Refresh | Reload the page | JS → `_devtools.refresh` → `Impl->Reload` |
-| ⌥ DevTools | Open Chromium DevTools (Windows native panel / Android `chrome://inspect` hint) | JS → `_devtools.openDevTools` → `Impl->OpenDevTools` |
-| ⌫ Clear Data | `ClearAllCookies` | JS → `_devtools.clearData` → `Impl->ClearAllCookies` |
-| ⓘ Info | Show a modal with URL, platform, viewport, UA, bridge status, etc. | JS-only, no UE hop |
-| ◉ Transparency | Flip between transparent and opaque white; plugin tracks state | JS → `_devtools.toggleTransparency` → `Impl->SetBackgroundOpaque` |
-| ⊘ Hide WebUI | `Hide()` the WebView (you need your own re-show trigger) | JS → `_devtools.hideWebUI` → `UInoWebView::Hide` |
+| ⌥ DevTools | Open Chromium DevTools (Windows native panel / Android `chrome://inspect` hint / iOS Safari Web Inspector hint) | JS → `_devtools.openDevTools` → `Impl->OpenDevTools` |
+| ⓘ Info | Show a modal with URL, title, platform, viewport, UA, bridge status, etc. | JS-only, no UE hop |
 | ◆ Dev Callback | Fire the `OnDevCallback` BP delegate (your project-specific hook) | JS → `_devtools.devCallback` → `FOnInoWebDevCallback` broadcast |
+
+(Earlier revisions also shipped Clear Data / Transparency / Hide WebUI
+buttons; those were removed from `dev_overlay.js`. The C++ interceptors
+for their `_devtools.clearData` / `_devtools.toggleTransparency` /
+`_devtools.hideWebUI` channels still exist in `UInoWebView` but are no
+longer reachable from the overlay.)
 
 `_devtools.*` channels are intercepted inside
 `UInoWebView::DispatchIncomingEnvelope` before the user's
@@ -1069,20 +1091,17 @@ Don't stub future phases — add them when they're needed.
   coords by the activity's display density to get correct physical-pixel
   layout params + margins.
 
-- **Transparent WebView shows DESKTOP through "empty" areas in PIE (but
-  works fine in standalone)** → known composition limitation. PIE uses
-  Slate-chromed windows with `DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED`
-  plus a rounded-rect `SetWindowRgn`. Under that combination, DWM
-  composites transparent child-HWND pixels against the desktop instead of
-  the parent's swap chain. Standalone Game and shipped builds use OS chrome
-  and work correctly. Workarounds:
-    1. Use **Standalone Game** play mode when visually testing the overlay.
-    2. Set `bTransparentBackground = false` during PIE iteration (opaque
-       WebView; messaging/bounds pipeline still fully testable).
-  A proper fix would require switching from `CreateCoreWebView2Controller`
-  (child HWND) to `CreateCoreWebView2CompositionController` with
-  DirectComposition visual hosting — a meaningful chunk of new code; left
-  as a future phase unless needed.
+- **Transparent WebView in PIE** → historically this leaked the desktop
+  through "empty" areas because PIE uses Slate-chromed windows with
+  `DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED` plus a rounded-rect
+  `SetWindowRgn`, under which DWM composited transparent child-HWND pixels
+  against the desktop instead of the parent's swap chain. **Fixed in
+  Phase 9:** the factory now auto-selects `FInoWebViewImpl_Windows_Composition`
+  (which uses `CreateCoreWebView2CompositionController` + DirectComposition
+  visual hosting) whenever running under the editor (`GIsEditor`, i.e. PIE),
+  and the child-HWND impl for Standalone / packaged builds. If you ever see
+  desktop bleed-through again, confirm the factory is picking the composition
+  impl for the editor branch (`InoWebViewFactory.cpp`).
 
 ---
 
@@ -1093,7 +1112,8 @@ Don't stub future phases — add them when they're needed.
   [Core.Log]
   LogInoWebUI=Verbose
   ```
-- The test harness at `Content/webview_test.html` auto-detects WebView2 and
-  reports bridge status in its footer.
-- For HTML-side issues, DevTools is disabled by default in Phase 1. When
-  enabled in a later phase, it opens on F12.
+- The self-contained showcase / test harness at `Content/web/index.html`
+  auto-detects the bridge and reports its status; point a `UInoWebBundle`
+  or `VirtualHostFolder` at `Content/web/` and load `index.html`.
+- For HTML-side issues, enable `View.bEnableDevTools` and use the floating
+  dev-overlay (or F12 on Windows when `View.bEnableAcceleratorKeys` is on).

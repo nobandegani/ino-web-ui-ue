@@ -2,22 +2,24 @@
 
 When `FInoWebViewConfig::bEnableDevTools = true`, InoWebUI injects a
 small in-page UI: a circular gear button in the bottom-right corner
-that, when clicked, fans out seven actions on a quarter-circle arc.
+that, when clicked, expands a vertical toolbar of four actions. An
+always-visible **FPS chip** is docked just left of the gear button — it
+measures the WebView layer's own frame rate (UI jank), independent of
+Unreal's render thread, and colour-codes green / amber / red.
 
-The overlay is injected on every page load — Windows via
-`AddScriptToExecuteOnDocumentCreated`, Android via
-`WebViewClient.onPageStarted`.
+The overlay is injected at document-start on every page load — Windows
+via `AddScriptToExecuteOnDocumentCreated`, Android via AndroidX
+`WebViewCompat.addDocumentStartJavaScript` (falling back to
+`WebViewClient.onPageStarted` only on pre-2020 System WebView), iOS via
+`WKUserScript` at `WKUserScriptInjectionTimeAtDocumentStart`.
 
 ## Button reference
 
 | Icon | Name | Action | Routing |
 |---|---|---|---|
 | refresh | Refresh | Reload the page | JS -> `_devtools.refresh` -> `Impl::Reload` |
-| devtools | DevTools | Open the Chromium DevTools panel (Windows) / show the `chrome://inspect` hint (Android) | JS -> `_devtools.openDevTools` -> `Impl::OpenDevTools` |
-| clear | Clear Data | `ClearAllCookies` | JS -> `_devtools.clearData` -> `Impl::ClearAllCookies` |
-| info | Info | Modal showing URL, platform, viewport size, user-agent, bridge status | JS-only, no UE round-trip |
-| transparency | Transparency | Flip between transparent and opaque white backgrounds; the plugin tracks state so the button reflects the current mode | JS -> `_devtools.toggleTransparency` -> `Impl::SetBackgroundOpaque` |
-| hide | Hide WebUI | Calls `Hide()` — you own the re-show trigger | JS -> `_devtools.hideWebUI` -> `UInoWebView::Hide` |
+| devtools | DevTools | Open the Chromium DevTools panel (Windows) / log the `chrome://inspect` hint (Android) / log the Safari Web Inspector hint (iOS) | JS -> `_devtools.openDevTools` -> `Impl::OpenDevTools` |
+| info | Info | Modal showing URL, title, platform, viewport / screen size, device pixel ratio, language, user-agent, bridge status | JS-only, no UE round-trip |
 | devcallback | Dev Callback | Fires the `OnDevCallback` BP delegate — wire this to whatever project-specific dev trigger you like (cheat menu, spawn enemy, reload level, ...) | JS -> `_devtools.devCallback` -> `FOnInoWebDevCallback` broadcast |
 
 ## Channel routing
@@ -39,8 +41,12 @@ files that the platform impls consume:
   C++ constant `GInoWebUIDevToolsOverlayScript`, used by both Windows
   impls (`InoWebViewImpl_Windows.cpp` and `InoWebViewImpl_Windows_Composition.cpp`).
 - `Source/InoWebUI/Java/src/net/inoland/webui/InoWebUIScripts.java` →
-  Java constant `InoWebUIScripts.DEVTOOLS_OVERLAY_JS`, used by
-  `InoWebViewAndroid.onPageStarted`.
+  Java constant `InoWebUIScripts.DEVTOOLS_OVERLAY_JS`, registered via
+  `WebViewCompat.addDocumentStartJavaScript` (or `onPageStarted` on the
+  legacy fallback path).
+- `Source/InoWebUI/Private/Generated/InoWebUIScripts_iOS.generated.h` →
+  Obj-C++ `NSString*` constant, injected as a `WKUserScript` by the iOS
+  impl.
 
 Workflow when you change the overlay:
 

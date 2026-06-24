@@ -115,28 +115,28 @@ default.
 
 ## Transparent WebView shows the desktop through empty areas in PIE
 
-**But works fine in Standalone Game and packaged builds.**
+**Fixed in Phase 9 — should no longer happen.**
 
-**Cause.** Known composition limitation. PIE uses Slate-chromed windows
-with `DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED` plus a rounded-rect
-`SetWindowRgn`. Under that combination, DWM composites transparent
-child-HWND pixels against the desktop instead of against the parent's
-swap chain. Standalone Game and shipped builds use OS chrome and
-composite correctly.
+**Background.** PIE uses Slate-chromed windows with
+`DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED` plus a rounded-rect
+`SetWindowRgn`. Under the original child-HWND hosting, DWM composited
+transparent child-HWND pixels against the desktop instead of against the
+parent's swap chain, so the overlay leaked the desktop in PIE (Standalone
+Game and packaged builds were always fine).
 
-**Workarounds (today).**
+**Fix (shipped).** The factory (`InoWebViewFactory.cpp`) now auto-selects
+`FInoWebViewImpl_Windows_Composition` — which uses
+`CreateCoreWebView2CompositionController` with DirectComposition visual
+hosting — whenever running under the editor (`GIsEditor`, i.e. PIE), and
+the child-HWND impl for Standalone / packaged builds. No action needed.
 
-1. Use **Standalone Game** play mode when you need to visually verify
-   the overlay.
-2. Set `bTransparentBackground = false` during PIE iteration; the
-   WebView is opaque, but the messaging / bounds / hardening pipeline
-   is fully testable.
+**If you still see desktop bleed-through:**
 
-**Proper fix (future phase).** Switch from
-`CreateCoreWebView2Controller` (child HWND) to
-`CreateCoreWebView2CompositionController` with DirectComposition
-visual hosting. A meaningful chunk of new code; tracked as roadmap
-Phase 9.
+1. Confirm the factory's `GIsEditor` branch is selecting the composition
+   impl (look for the composition impl in the construction log).
+2. As a fallback, use **Standalone Game** play mode, or set
+   `Config.View.bTransparentBackground = false` during PIE iteration (the
+   messaging / bounds / hardening pipeline is still fully testable opaque).
 
 ---
 

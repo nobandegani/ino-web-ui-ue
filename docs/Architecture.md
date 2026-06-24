@@ -13,17 +13,26 @@ UInoWebView             UObject                     one overlay handle
 Native implementation layer  (platform-specific)
 --------------------------
 IInoWebViewImpl                                   pure virtual interface
-   |-- FInoWebViewImpl_Windows                    WebView2 + COM
-   `-- FInoWebViewImpl_Android                    JNI + android.webkit.WebView
+   |-- FInoWebViewImpl_Windows                    WebView2 + COM (child HWND)
+   |-- FInoWebViewImpl_Windows_Composition        WebView2 + DirectComposition (PIE)
+   |-- FInoWebViewImpl_Android                    JNI + android.webkit.WebView
+   `-- FInoWebViewImpl_iOS                         WKWebView (Obj-C++ .mm)
 ```
+
+The factory (`InoWebViewFactory.cpp`) picks the DirectComposition Windows
+impl when running under the editor (`GIsEditor`, i.e. PIE) so transparency
+composites correctly against the Slate-chromed window, and the child-HWND
+impl for Standalone / packaged builds. macOS (`WKWebView`) is planned.
 
 ## Why a pimpl split
 
 `WebView2.h` drags in `Windows.h`, `wrl.h`, and a fleet of COM headers.
-The pimpl pattern keeps them inside exactly **one** `.cpp` file
-(`InoWebViewImpl_Windows.cpp`). Nothing else in the plugin pays that
-compile cost, and adding macOS / iOS later will not leak platform types
-into the UObject headers.
+The pimpl pattern keeps them confined to the two Windows impl `.cpp`
+files (`InoWebViewImpl_Windows.cpp` and
+`InoWebViewImpl_Windows_Composition.cpp`); the Apple headers stay inside
+`InoWebViewImpl_iOS.mm` and the JNI inside the Android impl. Nothing else
+in the plugin pays that compile cost, and platform types never leak into
+the UObject headers.
 
 `IInoWebViewImpl.h` is intentionally a **public** header even though it
 is morally "internal," because `UInoWebView` holds a
@@ -34,10 +43,12 @@ platform code hides in `Private/Impl/<Platform>/`.
 
 ## The four rules
 
-1. **Game thread only.** All public methods on `UInoWebView` /
-   `UInoWebUISubsystem` assert `check(IsInGameThread())`. WebView2
-   callbacks fire back on the thread that created the environment
-   (the game thread). Do not cross threads.
+1. **Game thread only.** Mutating public methods on `UInoWebView` /
+   `UInoWebUISubsystem` assert `check(IsInGameThread())` (a few const
+   getters skip the assert). WebView2 callbacks fire back on the thread
+   that created the environment (the game thread); Android / iOS native
+   callbacks marshal back onto the game thread before invoking delegates.
+   Do not cross threads.
 
 2. **Async-safe.** WebView2 construction is a two-step async operation.
    Any call (`Navigate`, `SetVisible`, `SyncBounds`, `Reload`,
@@ -63,7 +74,9 @@ platform code hides in `Private/Impl/<Platform>/`.
 Page JS  ->  window.InoWebUI.send(channel, payload)
              |
              v  (Windows) window.chrome.webview.postMessage(JSON)
-             v  (Android) addJavascriptInterface bridge
+             v  (Android) _InoWebUIHost via addWebMessageListener
+             v            (legacy fallback: addJavascriptInterface)
+             v  (iOS)     _InoWebUIHost handler in defaultClientWorld
              |
          Impl OnWebMessageReceived
              |
@@ -105,7 +118,8 @@ Plugins/InoWebUI/
 |   |-- InoWebUI/                                          runtime module
 |   |   |-- InoWebUI.Build.cs
 |   |   |-- InoWebUI_UPL.xml                               Android UPL
-|   |   |-- Java/src/net/inoland/webui/InoWebViewAndroid.java
+|   |   |-- Java/src/net/inoland/webui/                    InoWebViewAndroid.java + InoWebUIScripts.java
+|   |   |-- JS/                                            bridge.js, bridge_ios.js, dev_overlay.js (source of truth)
 |   |   |-- Public/
 |   |   |   |-- InoWebUI.h
 |   |   |   |-- InoWebUILog.h
@@ -119,14 +133,16 @@ Plugins/InoWebUI/
 |   |       |-- InoWebUISubsystem.cpp
 |   |       |-- InoWebView.cpp
 |   |       |-- InoWebBundle.cpp
+|   |       |-- Generated/                                 codegen'd JS constants (C++ + Obj-C++)
 |   |       `-- Impl/
 |   |           |-- InoWebViewFactory.cpp                  platform dispatch
 |   |           |-- Windows/
-|   |           |   |-- InoWebViewImpl_Windows.h
-|   |           |   `-- InoWebViewImpl_Windows.cpp
-|   |           `-- Android/
-|   |               |-- InoWebViewImpl_Android.h
-|   |               `-- InoWebViewImpl_Android.cpp
+|   |           |   |-- InoWebViewImpl_Windows.{h,cpp}                 child-HWND
+|   |           |   `-- InoWebViewImpl_Windows_Composition.{h,cpp}     DirectComposition (PIE)
+|   |           |-- Android/
+|   |           |   `-- InoWebViewImpl_Android.{h,cpp}
+|   |           `-- iOS/
+|   |               `-- InoWebViewImpl_iOS.{h,mm}
 |   `-- InoWebUIEditor/                                    editor-only module
 |       `-- Private/
 |           |-- InoWebBundleFactory.cpp

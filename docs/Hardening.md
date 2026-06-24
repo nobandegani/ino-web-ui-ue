@@ -58,7 +58,11 @@ https://cdn.jsdelivr.net/*       a specific CDN
 | `OnScriptDialog`           | `(Kind: EInoScriptDialogKind, Message: String)` | Any alert / confirm / prompt / beforeunload. |
 | `OnNewWindowRequested`     | `(URI: String)`                                | `window.open` / `_blank`. Blocked by default. |
 | `OnGotFocus` / `OnLostFocus` | (no params)                                  | WebView gained / lost keyboard focus. |
-| `OnProcessFailed`          | `(Description: String)`                        | Chromium subprocess crashed. Consider `Reload()` or recreate the view. |
+| `OnProcessFailed`          | `(Description: String)`                        | Renderer subprocess crashed / was OS-killed. With `bAutoRecoverOnProcessFailed` (default true) the plugin recreates the view and reloads automatically after this fires. |
+| `OnRenderProcessUnresponsive` / `OnRenderProcessResponsive` | `(URI: String)` | Renderer hung (~5s no event-loop response) / recovered. **Android only.** If `UnresponsiveTimeoutMs > 0` (default 10000) a hung renderer is auto-terminated, which routes through the `OnProcessFailed` recovery path. |
+| `OnConsoleMessage`         | `(Level, Message, SourceID, Line)`             | Page `console.*` call. **Android only** (also mirrored to `LogInoWebUI`). WebView2 / WKWebView have no equivalent event. |
+| `OnThemeColorChanged`      | `(Color: LinearColor)`                         | Page `<meta name="theme-color">` changed. **iOS only** (`WKWebView.themeColor` KVO). |
+| `OnCapturePreviewComplete` | `(bSuccess: bool, FilePath: String)`           | A `CapturePreview()` screenshot finished writing to disk. |
 
 ## Runtime methods (BP-callable on `UInoWebView`)
 
@@ -69,18 +73,32 @@ https://cdn.jsdelivr.net/*       a specific CDN
 | `GetZoomFactor()`          | Current zoom, returns 1.0 if not ready. |
 | `ClearAllCookies()`        | Delete all cookies in this view's isolated profile. Useful for logout. |
 | `ExecuteJavaScript(Code)`  | Run arbitrary JS in the page. Fire-and-forget — if you need a result, have the JS `window.InoWebUI.send(...)` instead. Queued if pre-ready. |
-| `SetMuted(bool)`           | Mute / unmute audio (Windows only; Android `WebView` has no audio-mute API and logs a warning). |
+| `SetMuted(bool)`           | Mute / unmute audio. Windows only — Android `WebView` and iOS `WKWebView` have no native audio-mute API, so the call logs a warning and does nothing on those platforms (mute from your own page JS instead). |
 | `OpenDevTools()`           | Open the Chromium DevTools panel (Windows). On Android the same call logs the `chrome://inspect/#devices` instructions — see `Android.md`. |
 
 ## Config toggles (applied once at `CreateWebView`)
 
 | Field | Default | Effect |
 |---|---|---|
-| `bEnableDevTools`          | `false` | Enables DevTools. F12 opens it if `bEnableAcceleratorKeys` is also true; otherwise call `OpenDevTools()`. Also gates the floating dev-tools overlay (see `DevToolsOverlay.md`). |
-| `bEnableContextMenus`      | `false` | Right-click browser context menu. |
-| `bEnableAcceleratorKeys`   | `false` | Browser shortcuts (F5, F12, Ctrl+F, Ctrl+P, ...). |
-| `bStartMuted`              | `false` | Audio muted on creation. Call `SetMuted(false)` to unmute. |
-| `UserAgentOverride`        | `""`    | Overrides `navigator.userAgent` inside the WebView. |
+| `View.bEnableDevTools`     | `false` | Enables DevTools. F12 opens it if `bEnableAcceleratorKeys` is also true; otherwise call `OpenDevTools()`. Also gates the floating dev-tools overlay (see `DevToolsOverlay.md`). |
+| `View.bEnableContextMenus` | `false` | Right-click browser context menu (Windows / Android; not enforced on iOS). |
+| `View.bEnableAcceleratorKeys` | `false` | Browser shortcuts (F5, F12, Ctrl+F, Ctrl+P, ...). Windows-only. |
+| `View.bStartMuted`         | `false` | Audio muted on creation (Windows; no-op on Android / iOS). |
+| `View.UserAgentOverride`   | `""`    | Replaces `navigator.userAgent`. (iOS also has `View.ApplicationName` for an *additive* UA tag that keeps the WebKit version.) |
+| `bAutoRecoverOnProcessFailed` | `true` | Recreate + reload the view automatically when the renderer dies (retry budget: 3 per 60s). |
+| `UnresponsiveTimeoutMs`    | `10000` | Auto-terminate a hung renderer after this many ms (0 = observe only). **Android only.** |
+| `bAllowMixedContent` / `bAllowFileURLs` / `bAllowContentURIs` | `false` | Explicit Android security defaults — block `http` subresources on `https`, `file://` URLs, and `content://` URIs respectively. |
+| `bUpgradeHTTPToHTTPS`      | `false` | Inline HSTS-style upgrade of known hosts. **iOS only** (`upgradeKnownHostsToHTTPS`). |
+| `bAllowJavaScript`         | `true`  | Per-navigation JS enable (`allowsContentJavaScript`). **iOS only.** |
+
+> **C++ note:** the view-appearance toggles above live in the nested
+> `FInoWebViewSettings` struct — in code you write
+> `Config.View.bEnableDevTools`, not `Config.bEnableDevTools`. They show
+> up flat in the editor Details panel (`ShowOnlyInnerProperties`). The
+> lockdown / security / recovery fields are top-level on
+> `FInoWebViewConfig`. Each field carries a full doc-comment in
+> `InoWebUITypes.h`; platform-specific behaviour is detailed in
+> `Android.md` / `iOS.md`.
 
 All defaults are chosen for shipping game UI. A dev build typically
-wants `bEnableDevTools = true` and leaves the rest at their defaults.
+wants `View.bEnableDevTools = true` and leaves the rest at their defaults.

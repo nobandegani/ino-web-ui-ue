@@ -69,11 +69,11 @@ can be merged.
   no `Map` / `Set` / `Promise` — assume the page's transpile target
   is unknown.
 - Source-of-truth lives in `Source/InoWebUI/JS/`
-  (`bridge.js` and `dev_overlay.js`). Edit those files, then run
-  `Plugins/InoWebUI/Scripts/GenerateJSConstants.ps1` to regenerate
-  the C++ header and Java constants the platform impls consume. Don't
-  edit the generated copies directly — they'll be overwritten on the
-  next regen.
+  (`bridge.js`, `bridge_ios.js`, and `dev_overlay.js`). Edit those
+  files, then run `Plugins/InoWebUI/Scripts/GenerateJSConstants.ps1` to
+  regenerate the C++ header, the Obj-C++ (iOS) header, and the Java
+  constants the platform impls consume. Don't edit the generated copies
+  directly — they'll be overwritten on the next regen.
 
 ## Commits
 
@@ -84,10 +84,10 @@ can be merged.
 
 ## Testing
 
-- `Content/webview_test.html` is the manual test harness. It
-  auto-detects the bridge and reports status at the bottom of the
-  page. Point a dev-mode view at it and smoke-test whatever you
-  changed.
+- `Content/web/index.html` is the self-contained showcase / manual
+  test harness. It auto-detects the bridge and reports status. Point a
+  dev-mode view (`VirtualHostFolder` or a `UInoWebBundle`) at
+  `Content/web/` and smoke-test whatever you changed.
 - For messaging / hardening work, drive the harness from a Blueprint
   in the demo project's root — it has wired-up `OnMessageReceived`
   logs and a set of test buttons.
@@ -96,8 +96,9 @@ can be merged.
 
 - **Bug fixes** across any platform — always welcome.
 - **Android parity** when gaps appear — always welcome.
-- **New platform ports** (macOS / iOS / Linux) — very welcome, please
-  open an issue first so we can coordinate the pimpl split.
+- **New platform ports** (macOS / Linux — Windows, Android and iOS are
+  already shipped) — very welcome, please open an issue first so we can
+  coordinate the pimpl split.
 - **New features** — please open an issue first. Some features get
   deferred to later roadmap phases; the plugin is intentionally
   minimalist at its public surface.

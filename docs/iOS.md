@@ -45,14 +45,18 @@ A single `InoWebViewBridge_iOS` Objective-C class hosts every callback
 we care about:
 
 - `<WKScriptMessageHandler>` — JS -> native bridge.
-- `<WKNavigationDelegate>` — `decidePolicyForNavigationAction:` for
-  lockdown, `didFinishNavigation:` / `didFailNavigation:` /
-  `didFailProvisionalNavigation:` for `OnNavigationCompleted`,
-  `webViewWebContentProcessDidTerminate:` for `OnProcessFailed`.
+- `<WKNavigationDelegate>` — `decidePolicyForNavigationAction:preferences:decisionHandler:`
+  (the iOS 13+ richer variant — see "Navigation events" below) for
+  lockdown + per-nav JS toggle, `didFinishNavigation:` /
+  `didFailNavigation:` / `didFailProvisionalNavigation:` for
+  `OnNavigationCompleted`, `webViewWebContentProcessDidTerminate:` for
+  `OnProcessFailed`.
 - `<WKUIDelegate>` — `runJavaScriptAlertPanel...:` /
   `runJavaScriptConfirmPanel...:` / `runJavaScriptTextInputPanel...:`
   for dialog suppression, `createWebViewWithConfiguration:...` for
   `window.open` blocking.
+- KVO observer on `WKWebView.themeColor` (iOS 15+) — drives the
+  `OnThemeColorChanged` BP delegate.
 
 Plus an `InoWebViewSchemeHandler_iOS` (`<WKURLSchemeHandler>`) that
 serves `inoweb://<host>/<path>` requests from a local folder — the iOS
@@ -66,12 +70,46 @@ platform. Detection inside `bridge.js` is by transport object:
 
 - Windows: `window.chrome.webview`.
 - iOS: `window.webkit.messageHandlers._InoWebUIHost`.
-- Android: `window._InoWebUIHost` (added via `addJavascriptInterface`).
+- Android: `window._InoWebUIHost` (added via `addWebMessageListener`, or
+  `addJavascriptInterface` on the legacy fallback path).
 
 The iOS host name (`_InoWebUIHost`) sits under
 `window.webkit.messageHandlers`, so it does NOT collide with the
 Android global of the same name. JS user code never has to care — the
 shim abstracts it.
+
+### Content-world isolation (Phase 19)
+
+The bridge does NOT live in the page's main JS world. The
+`WKScriptMessageHandler` and `bridge.js` are installed into
+`WKContentWorld.defaultClientWorld` (iOS 14+), so `_InoWebUIHost` and
+the `window.InoWebUI` that `bridge.js` creates are **invisible to page
+scripts** — a malicious or compromised page can't monkey-patch the
+bridge to intercept UE↔JS traffic.
+
+To still give page JS the cross-platform `window.InoWebUI` API,
+`bridge_ios.js` (source: `Source/InoWebUI/JS/bridge_ios.js`) is injected
+into both worlds at document-start:
+
+- In `defaultClientWorld` it acts as a **relay** — it forwards events
+  between the page-world DOM and `bridge.js`'s `send` / `_InoWebUIDispatch`.
+- In `pageWorld` it acts as a **shim** — it re-exposes `window.InoWebUI`
+  as a thin facade that talks to the relay via a DOM `CustomEvent`.
+
+The two halves recognise which world they're in by feature-detecting
+`_InoWebUIHost` (present only in `defaultClientWorld`).
+
+**UE → JS push** runs `window._InoWebUIDispatch(...)` through
+`evaluateJavaScript:inFrame:inContentWorld:completionHandler:` targeting
+`defaultClientWorld` — the legacy `evaluateJavaScript:completionHandler:`
+runs in `pageWorld`, where `_InoWebUIDispatch` doesn't exist, so it would
+silently no-op. The relay then echoes the message to the `pageWorld` shim
+via the DOM `CustomEvent` so the page's listeners fire too.
+
+The dev-tools overlay also lives in `defaultClientWorld` so it uses
+`bridge.js`'s `window.InoWebUI` directly; its DOM elements are still
+visible from `pageWorld` because the DOM is shared across content worlds
+— only the JS namespaces are isolated.
 
 ## Virtual host: the `inoweb://` scheme
 
@@ -109,22 +147,19 @@ The `bLockToVirtualHost` lockdown rule on iOS allows the `inoweb:`
 scheme as an internal scheme (always passes), in addition to whole-host
 matching against `VirtualHostName` for any URL.
 
-## Audio mute (`SetMuted` / `bStartMuted`) — partial
+## Audio mute (`SetMuted` / `bStartMuted`) — no-op
 
-`WKWebView` has no first-class audio-mute API. The plugin's iOS impl
-walks every `<audio>` and `<video>` element in the page via injected JS
-and toggles `.muted` — the closest cross-platform-symmetric behaviour
-we can synthesise.
+`WKWebView` has no first-class audio-mute API. Both `SetMuted` and the
+`bStartMuted` config flag are **no-ops on iOS** — they log a warning and
+do nothing. (An earlier impl walked `<audio>`/`<video>` elements via
+injected JS, but that was removed to keep the plugin from injecting any
+scripts into the page beyond the bridge.) This matches the Android
+posture, which logs the same warning.
 
-Caveats:
-
-- Media added to the DOM AFTER the call won't pick up the muted state.
-- AudioContext / Web Audio output is not affected.
-- The whole-app `AVAudioSession` mute switch is not toggled (and
-  shouldn't be — that would silence the game too).
-
-If you need strict app-level audio control on iOS, do it from your
-game's audio-session config rather than going through `SetMuted`.
+If you need to mute media on iOS, do it from your own page JS — set
+`.muted = true` on the individual `<audio>` / `<video>` elements you
+care about. The whole-app `AVAudioSession` is not touched (and shouldn't
+be — that would silence the game too).
 
 ## DevTools
 
@@ -139,6 +174,22 @@ There is no in-process DevTools on iOS — Apple does not ship one.
 4. In Safari on the Mac: **Develop -> \<DeviceName\> -> \<Your WebView page\>**.
 
 You'll get the full Safari Web Inspector against the live page.
+
+### Inspectability gating (iOS 16.4+)
+
+On iOS 16.4+ a `WKWebView` is only attachable to Safari Web Inspector
+when its `inspectable` property is `YES`. The impl sets
+`WKWebView.inspectable = bEnableDevTools` at create time, so:
+
+- With `bEnableDevTools = true`, the WebView is inspectable on **every**
+  build configuration — including TestFlight / Ad-Hoc / Release builds on
+  a dev device. Keep it false in shipping so the page isn't exposed to
+  anyone with a Mac and a cable.
+- With `bEnableDevTools = false` (default), the WebView is never
+  inspectable, even in debug.
+
+Below iOS 16.4 the property doesn't exist: debug builds were always
+inspectable and release builds never were, regardless of the flag.
 
 The floating dev-tools overlay (the round wrench button) does work on
 iOS — it's just JS, gated by the same `bEnableDevTools` flag as the
@@ -160,6 +211,67 @@ In **manual-bounds mode** (after `UInoWebView::SetBounds(X,Y,W,H)`),
 autoresizing is dropped and `SyncBounds` applies the supplied rect
 verbatim (with the pixel-to-point conversion). Switch back to auto with
 `UInoWebView::SetBoundsAuto()`.
+
+## Navigation events
+
+Navigation runs through the iOS 13+ richer delegate variant
+`decidePolicyForNavigationAction:preferences:decisionHandler:`. WebKit
+calls this in place of the legacy 2-arg method on iOS 13+, so the impl
+implements only this one. The `WKWebpagePreferences` parameter lets the
+impl push **per-navigation** `allowsContentJavaScript` (iOS 14+) from
+`Config.bAllowJavaScript` — the Apple-recommended replacement for the
+deprecated global `WKPreferences.javaScriptEnabled`. Lockdown
+(`ShouldAllowURI`) cancels disallowed navigations from inside the same
+method.
+
+Completion fires from `didFinishNavigation:` (success) and
+`didFailNavigation:` / `didFailProvisionalNavigation:` (failure), all
+mapping to `OnNavigationCompleted`. `OnNavigationStarting` fires from
+the decide-policy method.
+
+## View settings and preferences
+
+The impl honours the following `FInoWebViewSettings` (`Config.View`) and
+`FInoWebViewConfig` flags at create time. Anything not listed here is
+either platform-agnostic or not wired on iOS.
+
+### `WKWebViewConfiguration` / `WKPreferences` hardening (Phase 20)
+
+| Flag | Effect | Availability |
+|---|---|---|
+| (always) | `WKPreferences.fraudulentWebsiteWarningEnabled = YES` set explicitly so a future framework default change can't silently weaken it | iOS 14+ |
+| `View.bAllowElementFullscreen` (default false) | `WKPreferences.isElementFullscreenEnabled` — gates the HTML5 `element.requestFullscreen()` API | iOS 16+ |
+| `View.bAllowTextInteraction` (default true) | `WKPreferences.isTextInteractionEnabled` — the selection caret / magnifier loupe / long-press callout | iOS 15+ |
+| `bUpgradeHTTPToHTTPS` (default false) | `WKWebViewConfiguration.upgradeKnownHostsToHTTPS` — inline HSTS-style retry of plaintext `http://` as `https://` for hosts WebKit knows support TLS | iOS 15+ |
+| `View.ApplicationName` (when non-empty) | `WKWebViewConfiguration.applicationNameForUserAgent` — **appends** to the default WebKit UA, preserving the WebKit version + platform info. Distinct from `View.UserAgentOverride`, which **replaces** the whole UA via `WKWebView.customUserAgent` (and wins when both are set) | iOS 9+ |
+| `bAllowJavaScript` (default true) | per-nav `WKWebpagePreferences.allowsContentJavaScript` (see "Navigation events") | iOS 14+ |
+
+### `WKWebView` / scroll-view settings
+
+| Flag | Effect |
+|---|---|
+| `View.bAllowInlineMediaPlayback` (default true) | `WKWebViewConfiguration.allowsInlineMediaPlayback` — inline HTML5 video vs forced system fullscreen player |
+| `View.bAllowMediaAutoplay` (default true) | `WKWebViewConfiguration.mediaTypesRequiringUserActionForPlayback` (None vs All) |
+| `View.bAllowZoom` (default false) | When false, pinch / double-tap zoom is killed natively: scrollView min/max zoom clamped to 1.0, `pinchGestureRecognizer.enabled = NO`, plus any stray `UIPinchGestureRecognizer` on the WebView or scrollView disabled — **re-applied after every `didFinishNavigation:`** because iOS re-derives the zoom range from the page's viewport meta. (Does NOT cover iOS input-focus auto-zoom — fix that HTML-side.) |
+| `View.bAllowBounceOnScroll` (default false) | `scrollView.bounces` — the iOS rubber-band over-scroll effect |
+| `View.bShowScrollBars` (default false) | `scrollView.shows{Vertical,Horizontal}ScrollIndicator` |
+| `View.bExtendUnderSafeArea` (default true) | `scrollView.contentInsetAdjustmentBehavior` — `Never` (edge-to-edge under the notch / home indicator) vs `Automatic` (inset by safe area) |
+
+## Theme color and transparency
+
+The impl registers a KVO observer on `WKWebView.themeColor` (iOS 15+).
+When the page sets / updates / clears its `<meta name="theme-color">`,
+the observer fires the **`OnThemeColorChanged(ThemeColor: LinearColor)`**
+BP delegate. A cleared theme-color is signalled as `FLinearColor(0,0,0,0)`
+(`ThemeColor.A == 0`). KVO is iOS 15+ only; Windows / Android don't
+surface a theme-color event so the delegate never fires there.
+
+The impl also keeps `WKWebView.underPageBackgroundColor` (iOS 15+) in
+sync with the background-opacity state — clear when transparent, white
+when opaque — at create time and again on every `SetBackgroundOpaque`
+flip. Without this, iOS paints the overscroll gutter a system-default
+light grey, which would leak through a transparent overlay and break the
+see-through illusion.
 
 ## Build setup
 
@@ -190,21 +302,23 @@ call to add.)
 | SyncBounds | yes | Pixel -> point conversion via `UIScreen.scale` |
 | Transparent background | yes | `webView.opaque = NO` + `clearColor` |
 | Virtual-host mapping | yes | Custom `inoweb` scheme via `WKURLSchemeHandler` |
-| Two-way messaging | yes | `WKScriptMessageHandler` + `evaluateJavaScript` |
-| Navigation events | yes | `decidePolicyForNavigationAction` + `didFinish/didFail*Navigation` |
+| Two-way messaging | yes | `WKScriptMessageHandler` in `WKContentWorld.defaultClientWorld` (page can't intercept the bridge) + `pageWorld` shim via DOM `CustomEvent`; UE→JS via `evaluateJavaScript:inFrame:inContentWorld:` targeting `defaultClientWorld` |
+| Navigation events | yes | `decidePolicyForNavigationAction:preferences:` (iOS 13+) with per-nav `allowsContentJavaScript` from `bAllowJavaScript` + `didFinish/didFail*Navigation` |
 | Lockdown | yes | Whole-host + wildcard list, plus `inoweb:` allowlist |
 | JS dialog suppression | yes | `runJavaScriptAlert/Confirm/TextInputPanel...:` immediate-cancel |
 | `window.open` blocking | yes | `createWebViewWithConfiguration:` returns `nil` |
 | Focus events + `FocusWebView` | partial | `becomeFirstResponder`; KVO on `firstResponder` not wired up (bind via the on-screen events you actually need) |
-| `SetZoomFactor` / `GetZoomFactor` | yes | CSS `document.body.style.zoom` injected; cached value returned |
+| `SetZoomFactor` / `GetZoomFactor` | yes | Native `WKWebView.pageZoom` (iOS 14+); persists across navigations, no JS injection. Getter returns the cached value |
 | `ClearAllCookies` / `SetCookie` / `ClearAllData` | yes | `WKWebsiteDataStore.httpCookieStore` / `removeDataOfTypes:` |
 | `OnProcessFailed` | yes | `webViewWebContentProcessDidTerminate:` |
-| DevTools (programmatic) | no | Apple does not expose one - use Safari Web Inspector |
+| DevTools (programmatic) | no | Apple does not expose one - use Safari Web Inspector. `bEnableDevTools` sets `WKWebView.inspectable` (iOS 16.4+) so TestFlight / Release builds are attachable too |
 | `ExecuteJavaScript` | yes | `evaluateJavaScript:` |
 | `UserAgentOverride` | yes | `WKWebView.customUserAgent` |
 | `bEnableContextMenus` | partial | Default WKWebView UI includes copy/lookup; not currently overridden |
-| `OpenDevTools` (programmatic) | no | Logs the Safari Web Inspector workflow |
-| `SetMuted` / `bStartMuted` | partial | Best-effort `<audio>/<video>.muted` JS walk |
+| `OpenDevTools` (programmatic) | no | Logs the Safari Web Inspector workflow (incl. the iOS 16.4+ `inspectable` gating) |
+| `SetMuted` / `bStartMuted` | no | No native WKWebView mute API; logs a warning and does nothing (parity with Android). Mute media from your own page JS |
+| `OnThemeColorChanged` | yes | KVO on `WKWebView.themeColor` (iOS 15+); cleared theme-color → `ThemeColor.A == 0` |
+| `SetBackgroundTransparent` | yes | `webView.opaque` + `clearColor` + `underPageBackgroundColor` (iOS 15+) kept in sync so the overscroll gutter never leaks system grey |
 | `bEnableAcceleratorKeys` | N/A | F5 / F12 / Ctrl+F are desktop-only |
 | `bShowStatusBar` | N/A | Windows-only feature |
 | Capture preview (PNG / JPEG) | yes | `takeSnapshotWithConfiguration:` + UIImagePNG/JPEGRepresentation |
@@ -221,16 +335,22 @@ call to add.)
   Web Inspector is enabled on the device (Settings -> Safari ->
   Advanced) AND your Mac's Safari has the Develop menu enabled.
   Connecting via USB sometimes also requires the iOS device to trust
-  the computer.
+  the computer. On iOS 16.4+ the WebView is only inspectable when
+  `bEnableDevTools = true` (the impl sets `WKWebView.inspectable`); a
+  Release / TestFlight build with the flag off will never appear in the
+  Develop menu.
 - **Transparent background isn't working.** `bTransparentBackground` is
   applied to both `webView.opaque` and the underlying `scrollView`'s
   background colour. If your HTML has its own background colour, that
   paints on top — set `body { background: transparent; }` in CSS.
 - **Can't paste into an `<input>` (e.g. password) on iOS.** This is
-  *not* a native-code issue — the iOS impl never disables long-press,
-  text-interaction or the edit menu (only `UIPinchGestureRecognizer`
-  for zoom-lock), and `bEnableContextMenus` is not overridden on iOS, so
-  WKWebView's default Cut/Copy/Paste menu is available. The cause is the
+  *not* a native-code issue (assuming `View.bAllowTextInteraction` is
+  left at its default `true`) — the impl doesn't disable long-press or
+  the edit menu (it only disables `UIPinchGestureRecognizer` for the
+  zoom-lock), and `bEnableContextMenus` is not overridden on iOS, so
+  WKWebView's default Cut/Copy/Paste menu is available. (If you set
+  `bAllowTextInteraction = false`, the selection UI is suppressed by
+  design — re-enable it if you need paste.) The usual cause is the
   page's own game-UI CSS reset: a global `-webkit-touch-callout: none`
   that isn't restored on form fields can suppress the long-press "Paste"
   callout on some iOS versions (the only paste path for an empty field).
