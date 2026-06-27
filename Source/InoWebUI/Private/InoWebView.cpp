@@ -374,6 +374,37 @@ void UInoWebView::PostMessage(FName Channel, const FJsonObjectWrapper& Payload)
     Impl->PostMessageJson(Envelope);
 }
 
+void UInoWebView::ShowNotification(const FString& Text, EInoNotifyCategory Category,
+                                   float DurationSeconds)
+{
+    check(IsInGameThread());
+
+    // Map the enum to the lowercase category string the overlay's CATS table
+    // keys on. Keep these in sync with notify_overlay.js.
+    const TCHAR* CategoryStr = TEXT("info");
+    switch (Category)
+    {
+        case EInoNotifyCategory::Warning: CategoryStr = TEXT("warning"); break;
+        case EInoNotifyCategory::Error:   CategoryStr = TEXT("error");   break;
+        case EInoNotifyCategory::Info:
+        default:                          CategoryStr = TEXT("info");    break;
+    }
+
+    // <= 0 → 0, which the JS side reads as "use the overlay's default duration".
+    const double DurationMs = DurationSeconds > 0.f ? double(DurationSeconds) * 1000.0 : 0.0;
+
+    FJsonObjectWrapper Payload;
+    Payload.JsonObject = MakeShared<FJsonObject>();
+    Payload.JsonObject->SetStringField(TEXT("text"), Text);
+    Payload.JsonObject->SetStringField(TEXT("category"), CategoryStr);
+    Payload.JsonObject->SetNumberField(TEXT("durationMs"), DurationMs);
+
+    // Reuse the messaging path — queued-before-ready and cross-platform for
+    // free. The "_notify." channel is UE→JS only, so it never round-trips
+    // back through OnMessageReceived.
+    PostMessage(TEXT("_notify.show"), Payload);
+}
+
 bool UInoWebView::HandleDevToolsAction(const FString& Channel)
 {
     check(IsInGameThread());

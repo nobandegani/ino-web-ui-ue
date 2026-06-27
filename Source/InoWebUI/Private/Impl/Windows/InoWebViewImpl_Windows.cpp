@@ -379,6 +379,13 @@ void FInoWebViewImpl_Windows::OnControllerReady(int32 HResult, void* ControllerP
         }
     }
 
+    // ── Notification overlay — always injected (the toast container stays
+    //    empty until ShowNotification is called, so it costs nothing on
+    //    pages that never use it) ──────────────────────────────────────────
+    Internal->WebView->AddScriptToExecuteOnDocumentCreated(
+        GInoWebUINotifyOverlayScript,
+        /*completed handler=*/ nullptr);
+
     // ── Dev overlay — only when the user opted in via config ────────────────
     if (Internal->Config.View.bEnableDevTools)
     {

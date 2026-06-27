@@ -75,6 +75,20 @@ enum class EInoImageFormat : uint8
     JPEG  UMETA(DisplayName = "JPEG"),
 };
 
+/**
+ * Severity / styling category for UInoWebView::ShowNotification. Drives the
+ * toast's accent colour and glyph in the injected notify_overlay.js. The
+ * enum names map to the lowercase JS category strings ('info' / 'warning' /
+ * 'error') the overlay expects.
+ */
+UENUM(BlueprintType)
+enum class EInoNotifyCategory : uint8
+{
+    Info     UMETA(DisplayName = "Info"),
+    Warning  UMETA(DisplayName = "Warning"),
+    Error    UMETA(DisplayName = "Error"),
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  FInoWebViewSettings
 //

@@ -103,6 +103,7 @@ public class InoWebViewAndroid
         // false and onPageStarted remains the fallback.
         boolean docStartBridgeInstalled;
         boolean docStartOverlayInstalled;
+        boolean docStartNotifyInstalled;
 
         // Renderer-unresponsive auto-terminate.
         //
@@ -243,6 +244,12 @@ public class InoWebViewAndroid
             if (c.messagingEnabled && !c.docStartBridgeInstalled)
             {
                 view.evaluateJavascript(InoWebUIScripts.BRIDGE_JS, null);
+            }
+            // Notification overlay runs AFTER the bridge because its sub calls
+            // window.InoWebUI.on(...). Always on, independent of dev tools.
+            if (c.messagingEnabled && !c.docStartNotifyInstalled)
+            {
+                view.evaluateJavascript(InoWebUIScripts.NOTIFY_OVERLAY_JS, null);
             }
             // Dev overlay runs AFTER the bridge because its buttons call
             // window.InoWebUI.send(...).
@@ -1101,6 +1108,15 @@ public class InoWebViewAndroid
                         cfg.docStartBridgeInstalled = true;
                         Log.debug("setupMessaging(" + id + "): bridge.js via "
                                 + "addDocumentStartJavaScript (pre-page guarantee)");
+
+                        // Notification overlay — registered right after the
+                        // bridge (so its window.InoWebUI.on('_notify.show') sub
+                        // resolves) and always on, independent of dev tools.
+                        // notify_overlay.js self-guards + self-defers, so a
+                        // double inject is harmless.
+                        WebViewCompat.addDocumentStartJavaScript(
+                                wv, InoWebUIScripts.NOTIFY_OVERLAY_JS, allOrigins);
+                        cfg.docStartNotifyInstalled = true;
                     } catch (Exception e) {
                         Log.warn("setupMessaging(" + id + "): addDocumentStartJavaScript "
                                 + "failed (" + e.getMessage() + ") — falling back to "

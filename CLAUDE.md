@@ -516,7 +516,7 @@ Plugins/InoWebUI/
 │   │   ├── InoWebUI.Build.cs                     links static loader + system libs
 │   │   ├── InoWebUI_UPL.xml                      Android Unreal Plugin Language config
 │   │   ├── Java/src/net/inoland/webui/           InoWebViewAndroid.java + InoWebUIScripts.java
-│   │   ├── JS/                                   bridge.js, bridge_ios.js, dev_overlay.js (source of truth)
+│   │   ├── JS/                                   bridge.js, bridge_ios.js, dev_overlay.js, notify_overlay.js (source of truth)
 │   │   ├── Public/
 │   │   │   ├── InoWebUI.h                        module
 │   │   │   ├── InoWebUILog.h                     LogInoWebUI category
@@ -902,6 +902,48 @@ constant (`Java/.../InoWebUIScripts.java`). Edit the `.js` file then
 re-run the script — both platforms stay in sync automatically. The
 generated outputs are committed so a fresh checkout builds without
 the script.
+
+---
+
+## Notifications — toast overlay
+
+A lightweight on-screen log / status printer. `UInoWebView::ShowNotification`
+pops a transient card into the **top-right** corner of the overlay; cards stack
+(newest on top, capped at 6), auto-dismiss after a per-call duration, dismiss on
+click, and pause their countdown while hovered.
+
+```cpp
+View->ShowNotification(TEXT("Model downloaded"), EInoNotifyCategory::Info, 4.f);
+View->ShowNotification(TEXT("Low VRAM"),         EInoNotifyCategory::Warning, 6.f);
+View->ShowNotification(TEXT("Inference failed"), EInoNotifyCategory::Error,   8.f);
+```
+
+BlueprintCallable too (`Ino|WebUI` category). `EInoNotifyCategory`
+(`InoWebUITypes.h`) sets the accent colour + glyph: Info = blue, Warning =
+amber, Error = red. `DurationSeconds <= 0` uses the overlay default (4s).
+
+### How it's wired (no platform impl methods)
+
+`ShowNotification` is pure consumer of the existing messaging path — it builds
+`{ text, category, durationMs }` and calls `PostMessage` on the reserved
+**`_notify.show`** channel. So it inherits queue-before-ready and full
+Win64 / Android / iOS parity for free, with zero new pure-virtuals / JNI /
+Obj-C++. The channel is UE→JS only, so it never reaches the user's
+`OnMessageReceived` delegate (no `_devtools`-style interception needed).
+
+The renderer is **`JS/notify_overlay.js`** — same self-contained, page-proof
+(`all:initial`) pattern as `dev_overlay.js`. Unlike the dev overlay it is
+**always injected** at document-start (right after `bridge.js`), independent of
+`bEnableDevTools`; the toast container stays empty until a notification arrives,
+so it costs nothing on pages that never call it. It also exposes
+`window.InoNotify.show(text, category, durationMs)` / `.clear()` so page JS can
+raise toasts directly. Injection sites: `InoWebViewImpl_Windows.cpp`,
+`InoWebViewImpl_Windows_Composition.cpp`, `InoWebViewImpl_iOS.mm`, and Android
+`setupMessaging` (+ `onPageStarted` fallback, gated by `docStartNotifyInstalled`).
+
+Edit `JS/notify_overlay.js` then re-run `Scripts/GenerateJSConstants.ps1` —
+the constant is `GInoWebUINotifyOverlayScript` (C++/Obj-C) /
+`InoWebUIScripts.NOTIFY_OVERLAY_JS` (Java).
 
 ---
 

@@ -20,6 +20,7 @@ $JavaOut    = Join-Path $PluginRoot 'Source/InoWebUI/Java/src/net/inoland/webui/
 $Bundles = @(
     @{ File = 'bridge.js';      CppName = 'GInoWebUIBridgeScript';          JavaName = 'BRIDGE_JS';            ObjCName = 'GInoWebUIBridgeScript' },
     @{ File = 'dev_overlay.js'; CppName = 'GInoWebUIDevToolsOverlayScript'; JavaName = 'DEVTOOLS_OVERLAY_JS';  ObjCName = 'GInoWebUIDevToolsOverlayScript' },
+    @{ File = 'notify_overlay.js'; CppName = 'GInoWebUINotifyOverlayScript'; JavaName = 'NOTIFY_OVERLAY_JS'; ObjCName = 'GInoWebUINotifyOverlayScript' },
     # iOS-only: the pageWorld ↔ defaultClientWorld relay/shim. Not emitted
     # into the C++/Java constant files (Win64 and Android don't need it —
     # they use bridge.js directly in their single-world model).

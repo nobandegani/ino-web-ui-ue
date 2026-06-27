@@ -741,6 +741,10 @@ void FInoWebViewImpl_Windows_Composition::OnCompositionControllerReady(int32 HRe
     Internal->WebView->AddScriptToExecuteOnDocumentCreated(
         GInoWebUIBridgeScript, nullptr);
 
+    // Notification overlay — always injected (empty until ShowNotification).
+    Internal->WebView->AddScriptToExecuteOnDocumentCreated(
+        GInoWebUINotifyOverlayScript, nullptr);
+
     if (Internal->Config.View.bEnableDevTools)
     {
         Internal->WebView->AddScriptToExecuteOnDocumentCreated(

@@ -213,6 +213,30 @@ public:
     void PostMessage(FName Channel, const FJsonObjectWrapper& Payload);
 
     /**
+     * Pop a transient toast notification in the corner of the WebView overlay
+     * — a lightweight on-screen log / status printer. Renders through the
+     * injected notify_overlay.js (always present on every page), so it works
+     * regardless of what content is loaded and needs no cooperation from the
+     * page itself.
+     *
+     * Toasts stack (newest on top, capped), auto-dismiss after DurationSeconds,
+     * dismiss on click, and pause their countdown while hovered. The category
+     * sets the accent colour + icon (Info = blue, Warning = amber, Error = red).
+     *
+     * @param Text             The message to show. Multi-line is fine.
+     * @param Category         Info / Warning / Error styling.
+     * @param DurationSeconds  Auto-dismiss delay. <= 0 uses the overlay default (4s).
+     *
+     * Routes through PostMessage on the reserved "_notify.show" channel, so it
+     * is safe to call before the WebView is ready (queued and replayed) and
+     * works identically on Windows / Android / iOS. Game-thread only.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Ino|WebUI")
+    void ShowNotification(const FString& Text,
+                          EInoNotifyCategory Category = EInoNotifyCategory::Info,
+                          float DurationSeconds = 4.0f);
+
+    /**
      * Fires whenever the page calls window.InoWebUI.send(Channel, payload).
      * Bind as a Blueprint event pin or with AddDynamic() in C++.
      */

@@ -855,6 +855,23 @@ bool FInoWebViewImpl_iOS::Initialize(void* /*ParentNativeHandle*/,
             [UCC addUserScript:WorldBridgePage];
         }
 
+        // Notification overlay — always injected (the toast container stays
+        // empty until ShowNotification is called). Lives in defaultClientWorld
+        // alongside the bridge so its window.InoWebUI.on('_notify.show') sub
+        // resolves directly; the toast DOM is visible from pageWorld since the
+        // DOM is shared across content worlds.
+        {
+            WKUserScript* NotifyOverlay = (BridgeWorld != nil)
+                ? [[WKUserScript alloc] initWithSource:GInoWebUINotifyOverlayScript
+                                         injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
+                                      forMainFrameOnly:YES
+                                        inContentWorld:BridgeWorld]
+                : [[WKUserScript alloc] initWithSource:GInoWebUINotifyOverlayScript
+                                         injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
+                                      forMainFrameOnly:YES];
+            [UCC addUserScript:NotifyOverlay];
+        }
+
         // Dev overlay (gated by the same flag as the other platforms).
         // Lives in defaultClientWorld so it uses bridge.js's window.InoWebUI
         // directly without going through the relay/shim DOM-event hop. The
