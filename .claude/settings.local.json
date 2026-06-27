@@ -15,7 +15,8 @@
       "Bash(git mv *)",
       "Bash(git grep *)",
       "Bash(xargs -0 sed -i 's/Inoland/Inoland/g')",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(git check-ignore *)"
     ]
   }
 }
