@@ -330,11 +330,11 @@ UInoWebView* UInoWebUISubsystem::CreateWebViewFromAsset(FName Name, UInoWebBundl
     FInoWebViewConfig Config = Bundle->Config;
 
 #if WITH_EDITOR
-    // Dev-server shortcut: if the user set DevInitialURL, prefer it over the
-    // packaged flow. Virtual host becomes irrelevant (dev server serves its
-    // own URLs) and lockdown would otherwise block the dev URL since it
-    // doesn't match VirtualHostName.
-    if (!Bundle->DevInitialURL.IsEmpty())
+    // Dev-server shortcut: if the user set DevInitialURL (and left the
+    // bUseDevInitialURL switch on), prefer it over the packaged flow. Virtual
+    // host becomes irrelevant (dev server serves its own URLs) and lockdown
+    // would otherwise block the dev URL since it doesn't match VirtualHostName.
+    if (Bundle->bUseDevInitialURL && !Bundle->DevInitialURL.IsEmpty())
     {
         UE_LOG(LogInoWebUI, Log,
             TEXT("CreateWebViewFromAsset('%s'): editor build — using DevInitialURL '%s' "
@@ -347,6 +347,16 @@ UInoWebView* UInoWebUISubsystem::CreateWebViewFromAsset(FName Name, UInoWebBundl
         Config.bLockToVirtualHost = false;
 
         return CreateWebView(Name, Config);
+    }
+    else if (!Bundle->DevInitialURL.IsEmpty())
+    {
+        // DevInitialURL is set but the switch is off — the user wants to
+        // exercise the cooked-build load path (virtual host + bundled files)
+        // from inside the editor. Fall through to the packaged path below.
+        UE_LOG(LogInoWebUI, Log,
+            TEXT("CreateWebViewFromAsset('%s'): editor build — bUseDevInitialURL is OFF, "
+                 "ignoring DevInitialURL '%s' and using the packaged content path."),
+            *Name.ToString(), *Bundle->DevInitialURL);
     }
 #endif
 

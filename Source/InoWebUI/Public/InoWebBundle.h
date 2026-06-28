@@ -79,6 +79,24 @@ public:
     FDirectoryPath SourceFolder;
 
     /**
+     * Master switch for DevInitialURL. Editor / uncooked builds only.
+     *
+     *   true  (default) — in the editor, DevInitialURL (when non-empty)
+     *                     overrides Config.InitialURL and points the WebView
+     *                     at your live dev server.
+     *   false           — ignore DevInitialURL and run the PACKAGED content
+     *                     path (Config.InitialURL + virtual-host mapping onto
+     *                     the bundle's SourceFolder / extracted Files[]) even
+     *                     in the editor. Lets you reproduce a cooked build's
+     *                     load behaviour in PIE without clearing DevInitialURL.
+     *
+     * No effect in cooked builds — the dev path is compiled out there (the
+     * packaged content path always runs), so this flag only matters in-editor.
+     */
+    UPROPERTY(EditAnywhere, Category = "InoWebBundle")
+    bool bUseDevInitialURL = true;
+
+    /**
      * Optional override used ONLY in editor / uncooked builds (PIE,
      * Standalone Game launched from the editor). When non-empty, overrides
      * Config.InitialURL so you can point the WebView at a live dev server
@@ -96,8 +114,11 @@ public:
      * build type.
      *
      * Typical value:  http://localhost:5173
+     *
+     * Gated by bUseDevInitialURL — uncheck that to force the packaged content
+     * path even in the editor, without having to clear this URL.
      */
-    UPROPERTY(EditAnywhere, Category = "InoWebBundle")
+    UPROPERTY(EditAnywhere, Category = "InoWebBundle", meta = (EditCondition = "bUseDevInitialURL"))
     FString DevInitialURL;
 
     /**
