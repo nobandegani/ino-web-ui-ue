@@ -17,3 +17,5 @@ Models/
 # Staged LiteRT-LM artifacts (produced by LiteRtLm/scripts/build-win64.ps1, not tracked)
 #Source/ThirdParty/InoAgentsLibrary/Public/litert/
 #Source/ThirdParty/InoAgentsLibrary/Win64/LiteRtLm.lib
+# Claude Code per-developer permission grants - machine-specific paths.
+.claude/settings.local.json

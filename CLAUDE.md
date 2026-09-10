@@ -560,7 +560,7 @@ a public header.
 1. Run `Scripts/AcquireWebView2SDK.ps1` once (downloads ~5 MB from NuGet).
    Idempotent — re-running is a no-op if the version stamp matches.
 2. Regenerate UE project files.
-3. Build. `Source/ThirdParty/WebView2/` is gitignored; the script produces it.
+3. Build. `Source/ThirdParty/WebView2/` is COMMITTED (headers + WebView2LoaderStatic.lib + VERSION), so a fresh clone builds without running the script; run it only to move the SDK version.
 
 `Build.cs` links `WebView2LoaderStatic.lib` (the static loader shim). No
 extra DLL is shipped — the shim finds the system Edge/WebView2 runtime at
